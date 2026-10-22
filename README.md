@@ -250,7 +250,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--no-escape` | 不使用转义（写出前校验，数据含冲突定界符时报错） | `false` |
 | `--timestamp-fmt` | 时间戳格式（作用于 DATETIME/TIMESTAMP 列） | `yyyy-MM-dd HH:mm:ss` |
 | `--date-fmt` | 日期格式（作用于 DATE 列） | `yyyy-MM-dd` |
-| `--no-char-del` | 不使用字符串定界符 | `false` |
+| `--no-char-del` | 不使用字符串定界符（裸字段不转义：数据含列/行分隔符时导出报错） | `false` |
 | `--no-col-names` | 不输出列名 | `false` |
 
 **全局选项：**
@@ -328,7 +328,7 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | `--skip-count` | 跳过前 n 行数据（列名行单独读取，不计入） | `0` |
 | `--row-count` | 最多导入 n 行 | `0`（无限制） |
 | `--commit-count` | 每 n 行提交一次事务 | `1000` |
-| `--no-char-del` | 不使用字符串定界符 | `false` |
+| `--no-char-del` | 不使用字符串定界符（裸字段不转义：数据含列/行分隔符时导出报错） | `false` |
 | `--no-col-names` | 输入文件第一行不是列名（无表头时须用 `-c/--columns` 指定目标列，否则报清晰错误） | `false` |
 
 **全局选项：**

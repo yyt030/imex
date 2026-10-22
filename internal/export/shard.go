@@ -19,6 +19,7 @@ type ShardInfo struct {
 	Mins        []interface{} // minimum values for each column
 	Maxs        []interface{} // maximum values for each column
 	IsNumeric   []bool        // whether each column is numeric
+	Nullable    []bool        // whether each column accepts NULL
 }
 
 // DetectShardKey detects the best column(s) for sharding
@@ -131,23 +132,26 @@ func getShardInfo(db *sql.DB, tableName string, columnNames []string) (*ShardInf
 		Mins:        make([]interface{}, len(columnNames)),
 		Maxs:        make([]interface{}, len(columnNames)),
 		IsNumeric:   make([]bool, len(columnNames)),
+		Nullable:    make([]bool, len(columnNames)),
 	}
 
 	// Get column types
 	for i, colName := range columnNames {
 		colQuery := common.TagSQL(`
-			SELECT DATA_TYPE 
+			SELECT DATA_TYPE, IS_NULLABLE
 			FROM INFORMATION_SCHEMA.COLUMNS 
 			WHERE TABLE_SCHEMA = DATABASE() 
 				AND TABLE_NAME = ? 
 				AND COLUMN_NAME = ?
 		`)
 		var colType string
-		err := db.QueryRow(colQuery, tableName, colName).Scan(&colType)
+		var isNullable string
+		err := db.QueryRow(colQuery, tableName, colName).Scan(&colType, &isNullable)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to get column type for %s", colName)
 		}
 		info.ColumnTypes[i] = colType
+		info.Nullable[i] = strings.EqualFold(isNullable, "YES")
 
 		// Determine if numeric
 		numericTypes := map[string]bool{
@@ -289,7 +293,7 @@ func GenerateShardRanges(info *ShardInfo, numShards int) []ShardRange {
 		bounds[i] = new(big.Rat).Add(min, new(big.Rat).Mul(step, new(big.Rat).SetInt64(int64(i))))
 	}
 
-	ranges := make([]ShardRange, 0, numShards)
+	ranges := make([]ShardRange, 0, numShards+1)
 	for i := 0; i < numShards; i++ {
 		mins := make([]interface{}, len(info.Columns))
 		maxs := make([]interface{}, len(info.Columns))
@@ -309,14 +313,37 @@ func GenerateShardRanges(info *ShardInfo, numShards int) []ShardRange {
 		})
 	}
 
+	// MIN()/MAX() ignore NULLs and no range comparison ever matches a NULL, so
+	// rows with a NULL shard key would be dropped from every shard. A
+	// single-column key gets one extra shard for exactly those rows; a composite
+	// key cannot be expressed that way, so sharding is refused altogether (the
+	// caller falls back to a single-threaded export).
+	if anyNullable(info.Nullable) {
+		if len(info.Columns) > 1 {
+			return nil
+		}
+		ranges = append(ranges, ShardRange{NullOnly: true})
+	}
+
 	return ranges
+}
+
+// anyNullable reports whether any key column accepts NULL.
+func anyNullable(nullable []bool) bool {
+	for _, n := range nullable {
+		if n {
+			return true
+		}
+	}
+	return false
 }
 
 // ShardRange represents a range of values for a shard (supports composite keys)
 type ShardRange struct {
-	Mins   []interface{} // minimum values for each column
-	Maxs   []interface{} // maximum values for each column
-	IsLast bool          // whether this is the last shard (inclusive max)
+	Mins     []interface{} // minimum values for each column
+	Maxs     []interface{} // maximum values for each column
+	IsLast   bool          // whether this is the last shard (inclusive max)
+	NullOnly bool          // shard holding only the rows whose key IS NULL
 }
 
 // formatValue formats a value for SQL query

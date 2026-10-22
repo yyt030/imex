@@ -78,8 +78,9 @@ compress:
 vet:
 	CGO_ENABLED=$(CGO_ENABLED) go vet ./...
 
+# -race 需要 cgo，与发布构建的 CGO_ENABLED=0 无关，这里固定为 1。
 test:
-	CGO_ENABLED=$(CGO_ENABLED) go test -race ./...
+	CGO_ENABLED=1 go test -race ./...
 
 # 真实 MySQL 端到端测试。需要一个已存在的库：
 #   GOMYDUMP_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/gomydump_it' make test-live
@@ -88,7 +89,7 @@ test-live:
 		echo "GOMYDUMP_TEST_DSN is not set (e.g. 'root:secret@tcp(127.0.0.1:3306)/gomydump_it')"; \
 		exit 2; \
 	fi
-	CGO_ENABLED=$(CGO_ENABLED) go test -race ./test/integration -run Live -v
+	CGO_ENABLED=1 go test -race ./test/integration -run Live -v
 
 clean:
 	rm -rf $(BUILD_DIR)

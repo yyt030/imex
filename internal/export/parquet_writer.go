@@ -26,6 +26,20 @@ type ParquetWriter struct {
 // underlying parquet writer.
 const parquetWriteBatch = 1000
 
+// DefaultParquetRowsPerRowGroup caps how many rows one row group accumulates
+// before it is compressed and flushed. parquet-go's own default is
+// math.MaxInt64, which makes the writer buffer the *entire* result set in
+// memory: peak RSS grows linearly with the export (~270 B/row measured on a
+// 10-column table), so a multi-million-row export costs hundreds of MB and an
+// oversized one can exhaust memory. Capping the row group keeps writer memory
+// flat while growing the file by well under 0.1% (more, smaller compressed
+// blocks).
+const DefaultParquetRowsPerRowGroup int64 = 100_000
+
+// parquetRowsPerRowGroup is the value actually applied; it is a variable only
+// so tests can exercise the flushing behaviour with a small row count.
+var parquetRowsPerRowGroup int64 = DefaultParquetRowsPerRowGroup
+
 // NewParquetWriter creates a new Parquet format writer.
 // w is the output writer (typically *os.File), columns defines the schema.
 // binaryFlags (optional, may be nil or shorter than columns) marks columns
@@ -43,7 +57,7 @@ func NewParquetWriter(w io.Writer, columns []string, binaryFlags []bool) (*Parqu
 
 	writer := parquet.NewGenericWriter[map[string]interface{}](
 		w,
-		&parquet.WriterConfig{Schema: schema},
+		&parquet.WriterConfig{Schema: schema, MaxRowsPerRowGroup: parquetRowsPerRowGroup},
 	)
 
 	return &ParquetWriter{

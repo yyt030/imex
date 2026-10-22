@@ -386,7 +386,8 @@ func TestLive_ImportModes(t *testing.T) {
 		input:  writeDel("replace.del", [2]string{"2", "replaced"}),
 		format: "del", mode: config.ImportModeReplace, table: target, commitCount: 10,
 	})
-	if got := values(); len(got) != 3 || got["2"] != "replaced" {
+	// Replace mode empties the table first, so only the file's rows survive.
+	if got := values(); len(got) != 1 || got["2"] != "replaced" {
 		t.Fatalf("replace mode: got %v", got)
 	}
 

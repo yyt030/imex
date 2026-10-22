@@ -73,6 +73,14 @@ func (d *DelWriter) WriteHeader(columns []string) error {
 	if !d.writeCols {
 		return nil
 	}
+	// Column names are identifiers, never row data: the per-index binary/hex
+	// treatment that writeRow applies must not touch them, otherwise a
+	// --hex-blob (or non-utf8mb4 charset) export writes header fields such as
+	// 0x7662 instead of "vb" and the file can no longer be imported.
+	hexBlob := d.hexBlob
+	d.hexBlob = false
+	defer func() { d.hexBlob = hexBlob }()
+
 	values := make([]interface{}, len(columns))
 	for i, col := range columns {
 		values[i] = col
@@ -161,11 +169,11 @@ func (d *DelWriter) kind(i int) common.ColumnKind {
 	return d.kinds[i]
 }
 
-// validateNoEscapeRow rejects values that --no-escape cannot represent
+// validateNoEscapeRow rejects values the writer cannot represent
 // unambiguously. Validation runs before anything is written so a rejected row
 // never leaves a half-written, corrupt record in the output.
 func (d *DelWriter) validateNoEscapeRow(values []interface{}) error {
-	if !d.noEscape {
+	if !d.noEscape && !d.bareFields() {
 		return nil
 	}
 	for i, val := range values {
@@ -197,7 +205,7 @@ func (d *DelWriter) validateNoEscapeRow(values []interface{}) error {
 
 // validateNoEscapeRaw is validateNoEscapeRow for the RawBytes fast path.
 func (d *DelWriter) validateNoEscapeRaw(values []sql.RawBytes) error {
-	if !d.noEscape {
+	if !d.noEscape && !d.bareFields() {
 		return nil
 	}
 	for i, val := range values {
@@ -211,6 +219,14 @@ func (d *DelWriter) validateNoEscapeRaw(values []sql.RawBytes) error {
 	return nil
 }
 
+// bareFields reports whether fields go out without character delimiters. The
+// DEL reader only honours escapes *inside* quoted fields, so a bare field is
+// written verbatim even when --no-escape was not given: it must not contain a
+// structural delimiter either.
+func (d *DelWriter) bareFields() bool {
+	return d.noCharDel || d.charDel == ""
+}
+
 // checkNoEscapeText reports whether s can be written verbatim. A quoted field
 // (character delimiter in use) can contain the column and row delimiters, but
 // not the quote itself. An unquoted field has to avoid both structural
@@ -219,23 +235,31 @@ func (d *DelWriter) checkNoEscapeText(s string, idx int) error {
 	if s == "" {
 		return nil
 	}
-	if !d.noCharDel && d.charDel != "" {
+	if !d.bareFields() {
 		if strings.Contains(s, d.charDel) {
-			return d.noEscapeError(idx, "character delimiter", d.charDel)
+			return d.unrepresentableError(idx, "character delimiter", d.charDel)
 		}
 		return nil
 	}
 	if d.colDel != "" && strings.Contains(s, d.colDel) {
-		return d.noEscapeError(idx, "column delimiter", d.colDel)
+		return d.unrepresentableError(idx, "column delimiter", d.colDel)
 	}
 	if d.mod.RowDel != "" && strings.Contains(s, d.mod.RowDel) {
-		return d.noEscapeError(idx, "row delimiter", d.mod.RowDel)
+		return d.unrepresentableError(idx, "row delimiter", d.mod.RowDel)
 	}
 	return nil
 }
 
-func (d *DelWriter) noEscapeError(idx int, kind, delim string) error {
-	return fmt.Errorf("--no-escape: column %d value contains the %s %q, which would corrupt the DEL record; remove --no-escape or choose a different delimiter", idx+1, kind, delim)
+// unrepresentableError names the flag that made the field bare, so the user
+// sees an actionable remedy in both --no-escape and --no-char-del mode.
+func (d *DelWriter) unrepresentableError(idx int, kind, delim string) error {
+	flag := "--no-escape"
+	remedy := "remove --no-escape or choose a different delimiter"
+	if d.bareFields() && !d.noEscape {
+		flag = "--no-char-del"
+		remedy = "drop --no-char-del so fields are quoted, or choose delimiters absent from the data"
+	}
+	return fmt.Errorf("%s: column %d value contains the %s %q, which would corrupt the DEL record; %s", flag, idx+1, kind, delim, remedy)
 }
 
 func (d *DelWriter) formatValue(val interface{}, idx int) {

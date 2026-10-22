@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+
 	"github.com/pkg/errors"
 	"os"
 	"regexp"
@@ -170,6 +172,11 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// Read header/columns
 	fileColumns, err := reader.ReadHeader()
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			// Reached end of file without finding any header row or INSERT:
+			// a plain EOF is meaningless to the user here.
+			err = errors.New("the input file contains no importable data: no header row (DEL), no INSERT statement (SQL) and no column schema (Parquet) were found")
+		}
 		if imp.msg != nil {
 			imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to read header: %v", err))
 		}
@@ -204,7 +211,13 @@ func (imp *Importer) Import(ctx context.Context) error {
 		targetColumns = fileColumns
 	}
 
-	if len(targetColumns) == 0 {
+	// A structure-only SQL file (--no-data export) carries CREATE statements
+	// but no rows: create mode applies them and finishes with 0 rows instead
+	// of demanding a column list it cannot have.
+	structureOnly := imp.cfg.Format == "sql" && imp.cfg.Mode == config.ImportModeCreate &&
+		len(targetColumns) == 0 && isStructureOnlySQL(reader)
+
+	if len(targetColumns) == 0 && !structureOnly {
 		return errors.New("no target columns available: the input file has no header row, specify --columns/-c with the target column list")
 	}
 
@@ -213,11 +226,28 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// expression column exported via --query (e.g. "SELECT 1, name ...")
 	// would otherwise surface as a cryptic server error 1054 during INSERT —
 	// and in replace mode only after the table had already been emptied.
-	// SQL format is skipped: create mode legitimately runs before the table
-	// exists, and its column list comes from the file's own INSERT statements.
-	if imp.cfg.Format != "sql" {
+	// SQL format is only exempt in create mode, which legitimately runs before
+	// the table exists; for every other mode the table must already be there,
+	// so the same pre-flight check applies.
+	if imp.cfg.Format != "sql" || imp.cfg.Mode != config.ImportModeCreate {
 		if err := imp.validateTargetColumns(ctx, targetColumns); err != nil {
 			return err
+		}
+	}
+
+	// insert_update relies on a UNIQUE key to decide insert-vs-update. On a
+	// table without one every ON DUPLICATE KEY clause degenerates to plain
+	// INSERT and re-imports silently duplicate rows, so make that visible
+	// before any data is written.
+	if imp.cfg.Mode == config.ImportModeInsertUpdate {
+		if n, err := imp.countUniqueKeys(ctx); err != nil {
+			common.Logger.Warn("Failed to verify unique keys for insert_update mode", "error", err)
+		} else if n == 0 {
+			msg := fmt.Sprintf("table %q has no PRIMARY or UNIQUE key: insert_update mode degenerates to plain INSERT and repeated imports will duplicate rows", imp.cfg.Table)
+			common.Logger.Warn(msg)
+			if imp.msg != nil {
+				imp.msg.WriteMessage(fmt.Sprintf("SQL3107N  WARNING: %s", msg))
+			}
 		}
 	}
 
@@ -284,6 +314,24 @@ func (imp *Importer) Import(ctx context.Context) error {
 		imp.msg.WriteBegin(imp.cfg.Table)
 	}
 
+	if structureOnly {
+		total := imp.stats.Snapshot()
+		common.Logger.Info("Import completed",
+			"read", total.Processed,
+			"inserted", total.Inserted,
+			"updated", total.Updated,
+			"failed", total.Failed,
+			"bytes", common.FileSize(imp.cfg.Input),
+			"input", imp.cfg.Input,
+			"duration", time.Since(startTime).Truncate(time.Millisecond),
+			"note", "structure-only SQL file: table created, no data rows",
+		)
+		if imp.msg != nil {
+			imp.msg.WriteFooter(0)
+		}
+		return nil
+	}
+
 	// For DEL import, teach the reader the target column kinds so the text
 	// modifiers (--dec-pt/--date-fmt/--timestamp-fmt) reverse-transform only
 	// numeric/temporal fields; string fields are never rewritten. The binary
@@ -320,6 +368,13 @@ func (imp *Importer) Import(ctx context.Context) error {
 		)
 	}
 	return importErr
+}
+
+// isStructureOnlySQL reports whether reader is a SQL reader that finished
+// ReadHeader with captured CREATE statements but no INSERT rows.
+func isStructureOnlySQL(reader Reader) bool {
+	s, ok := reader.(*SQLReader)
+	return ok && !s.HasData() && len(s.GetCreateStatements()) > 0
 }
 
 // validatePositionalColumns checks the positional --columns form ("a,b,c"):
@@ -400,6 +455,25 @@ func (imp *Importer) validateTargetColumns(ctx context.Context, cols []string) e
 			imp.cfg.Table, strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// countUniqueKeys returns the number of PRIMARY or UNIQUE indexes on the
+// target table. A result of 0 means INSERT ... ON DUPLICATE KEY UPDATE can
+// never match an existing row.
+func (imp *Importer) countUniqueKeys(ctx context.Context) (int, error) {
+	if imp.cfg.Table == "" {
+		return 0, nil
+	}
+	var n int
+	err := imp.db.QueryRowContext(ctx,
+		common.TagSQL(`SELECT COUNT(DISTINCT INDEX_NAME)
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND (NON_UNIQUE = 0 OR INDEX_NAME = 'PRIMARY')`),
+		imp.cfg.Database, imp.cfg.Table).Scan(&n)
+	if err != nil {
+		return 0, errors.Wrap(err, "failed to inspect unique indexes")
+	}
+	return n, nil
 }
 
 // columnInfoFor resolves the ColumnKind of each target column (by name) from

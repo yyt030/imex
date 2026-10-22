@@ -64,6 +64,13 @@ func init() {
 	// Disable cobra auto-generated completion subcommand.
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
+	// Every flag-parsing failure (unknown flag, bad enum/duration/bool value) is
+	// a parameter problem, so it must exit 2 like the explicit validators rather
+	// than being reported as a runtime failure.
+	rootCmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		return common.Usagef("%v", err)
+	})
+
 	// --- Persistent flags (appear on root, inherited by export/import) ---
 
 	rootCmd.PersistentFlags().BoolVar(&errorStack, "error-stack", false,

@@ -739,3 +739,75 @@ func TestDelWriter_NoEscapeRejectsDelimiters(t *testing.T) {
 		}
 	})
 }
+
+// The reader only honours escapes inside quoted fields, so with --no-char-del
+// (or an empty character delimiter) every field is written verbatim even when
+// escaping is still enabled. A delimiter inside such a bare field silently
+// produced an unparseable file; it must be rejected like --no-escape does.
+func TestDelWriter_NoCharDelRejectsDelimiters(t *testing.T) {
+	bare := func() *config.DelModifier {
+		return &config.DelModifier{
+			CharDel:   `"`,
+			NoCharDel: true,
+			ColDel:    "\t",
+			RowDel:    "\n",
+			Escape:    `\`,
+		}
+	}
+
+	t.Run("column delimiter in bare field", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, bare(), false, nil)
+		err := w.WriteRow([]interface{}{"a\tb"})
+		if err == nil || !strings.Contains(err.Error(), "column delimiter") {
+			t.Fatalf("error = %v, want column delimiter error", err)
+		}
+		if !strings.Contains(err.Error(), "--no-char-del") {
+			t.Errorf("error = %v, want it to name --no-char-del", err)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("output was buffered despite the error: %q", buf.String())
+		}
+	})
+
+	t.Run("row delimiter in bare field", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, bare(), false, nil)
+		err := w.WriteRawRow([]sql.RawBytes{[]byte("line1\nline2")})
+		if err == nil || !strings.Contains(err.Error(), "row delimiter") {
+			t.Fatalf("WriteRawRow() error = %v, want row delimiter error", err)
+		}
+	})
+
+	t.Run("other delimiters stay exportable", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, bare(), false, nil)
+		if err := w.WriteRow([]interface{}{"a,b", "c|d\re"}); err != nil {
+			t.Fatalf("WriteRow() error = %v", err)
+		}
+		w.Flush()
+		if got, want := buf.String(), "a,b\tc|d\re\n"; got != want {
+			t.Errorf("output = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestDelWriter_HeaderNotHexEncodedWithHexBlob(t *testing.T) {
+	var buf bytes.Buffer
+	mod := &config.DelModifier{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`}
+	w := NewDelWriter(&buf, mod, true, []common.ColumnKind{common.KindUnknown, common.KindUnknown})
+	w.SetBinaryFormat([]bool{false, true}, true)
+
+	if err := w.WriteHeader([]string{"id", "vb"}); err != nil {
+		t.Fatalf("WriteHeader() error = %v", err)
+	}
+	if err := w.WriteRawRow([]sql.RawBytes{[]byte("1"), []byte{0x76, 0x62}}); err != nil {
+		t.Fatalf("WriteRawRow() error = %v", err)
+	}
+	w.Flush()
+
+	// The header must keep the identifier; only the data row is hex-encoded.
+	if got, want := buf.String(), "\"id\",\"vb\"\n\"1\",0x7662\n"; got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+}

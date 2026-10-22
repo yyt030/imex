@@ -3,6 +3,7 @@ package _import
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 )
@@ -159,6 +160,38 @@ func TestSQLReader_CreateStatements(t *testing.T) {
 	}
 	if !strings.Contains(stmts[0], "CREATE TABLE") {
 		t.Fatalf("unexpected CREATE stmt: %s", stmts[0])
+	}
+}
+
+func TestSQLReader_StructureOnly(t *testing.T) {
+	// A --no-data export carries CREATE statements but no INSERTs. ReadHeader
+	// must report the structure without erroring (the importer's create mode
+	// applies it), and isStructureOnlySQL must recognize that state.
+	input := "-- Table structure\nCREATE TABLE `t` (`id` INT) ENGINE=InnoDB;\n"
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+
+	cols, err := sr.ReadHeader()
+	if err != nil {
+		t.Fatalf("ReadHeader on structure-only file: %v", err)
+	}
+	if len(cols) != 0 {
+		t.Fatalf("expected no columns, got %v", cols)
+	}
+	if sr.HasData() {
+		t.Fatal("HasData true for structure-only file")
+	}
+	if !isStructureOnlySQL(sr) {
+		t.Fatal("isStructureOnlySQL false for captured CREATEs without rows")
+	}
+
+	// A file with neither CREATE nor INSERT must still be an EOF error, so the
+	// importer reports "no importable data" rather than silently succeeding.
+	empty := NewSQLReader(bufio.NewReader(strings.NewReader("SET NAMES utf8mb4;\n")))
+	if _, err := empty.ReadHeader(); err != io.EOF {
+		t.Fatalf("expected io.EOF for contentless file, got %v", err)
+	}
+	if isStructureOnlySQL(empty) {
+		t.Fatal("isStructureOnlySQL true without CREATE statements")
 	}
 }
 

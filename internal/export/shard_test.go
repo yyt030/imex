@@ -200,3 +200,65 @@ func TestFormatValue(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateShardRanges_NullKeyCoverage(t *testing.T) {
+	t.Run("single nullable column gets an IS NULL shard", func(t *testing.T) {
+		info := &ShardInfo{
+			Columns:   []string{"k"},
+			Mins:      []interface{}{[]byte("1")},
+			Maxs:      []interface{}{[]byte("10")},
+			IsNumeric: []bool{true},
+			Nullable:  []bool{true},
+		}
+		ranges := GenerateShardRanges(info, 3)
+		if len(ranges) != 4 {
+			t.Fatalf("want 3 range shards + 1 NULL shard, got %d", len(ranges))
+		}
+		if !ranges[3].NullOnly {
+			t.Error("last shard must be the NULL shard")
+		}
+		for i := 0; i < 3; i++ {
+			if ranges[i].NullOnly {
+				t.Errorf("shard %d unexpectedly marked NullOnly", i)
+			}
+		}
+	})
+
+	t.Run("not-null key gets no NULL shard", func(t *testing.T) {
+		info := &ShardInfo{
+			Columns:   []string{"id"},
+			Mins:      []interface{}{[]byte("1")},
+			Maxs:      []interface{}{[]byte("10")},
+			IsNumeric: []bool{true},
+			Nullable:  []bool{false},
+		}
+		if got := len(GenerateShardRanges(info, 4)); got != 4 {
+			t.Errorf("shards = %d, want 4", got)
+		}
+	})
+
+	t.Run("legacy info without nullability stays sharded", func(t *testing.T) {
+		info := &ShardInfo{
+			Columns:   []string{"id"},
+			Mins:      []interface{}{[]byte("1")},
+			Maxs:      []interface{}{[]byte("10")},
+			IsNumeric: []bool{true},
+		}
+		if got := len(GenerateShardRanges(info, 2)); got != 2 {
+			t.Errorf("shards = %d, want 2", got)
+		}
+	})
+
+	t.Run("composite nullable key refuses to shard", func(t *testing.T) {
+		info := &ShardInfo{
+			Columns:   []string{"a", "b"},
+			Mins:      []interface{}{[]byte("1"), []byte("1")},
+			Maxs:      []interface{}{[]byte("10"), []byte("10")},
+			IsNumeric: []bool{true, true},
+			Nullable:  []bool{false, true},
+		}
+		if ranges := GenerateShardRanges(info, 4); len(ranges) != 0 {
+			t.Errorf("want no ranges (single-threaded fallback), got %d", len(ranges))
+		}
+	})
+}

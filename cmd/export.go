@@ -15,6 +15,7 @@ var exportCfg = config.NewExportConfig()
 var exportCmd = &cobra.Command{
 	Use:     "export",
 	Aliases: []string{"exp"},
+	Args:    cobra.NoArgs,
 	Short:   "Export data from MySQL/OceanBase",
 	Long: `Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.
@@ -90,7 +91,9 @@ Examples:
 		// Parse session variables.
 		vars, err := common.ParseSessionVars(exportCfg.SessionVars)
 		if err != nil {
-			return err
+			// Malformed --session-var values are parameter errors: report them
+			// as usage errors so they exit 2 like every other validation.
+			return common.Usagef("%v", err)
 		}
 		exportCfg.Vars = vars
 		if len(vars) > 0 {

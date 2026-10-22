@@ -185,3 +185,18 @@ func TestSQLParser_SimpleTableName(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildShardedQuery_NullShard(t *testing.T) {
+	p := NewSQLParser()
+	info := &ShardInfo{Columns: []string{"k"}, IsNumeric: []bool{true}}
+	q, err := p.BuildShardedQuery("SELECT * FROM t", info, ShardRange{NullOnly: true})
+	if err != nil {
+		t.Fatalf("BuildShardedQuery() error = %v", err)
+	}
+	if !strings.Contains(strings.ToLower(q), "is null") {
+		t.Errorf("query = %q, want an IS NULL condition", q)
+	}
+	if strings.Contains(q, ">=") || strings.Contains(q, "<") {
+		t.Errorf("query = %q, want no range comparison for the NULL shard", q)
+	}
+}

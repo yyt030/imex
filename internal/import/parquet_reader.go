@@ -24,7 +24,18 @@ type ParquetReader struct {
 // NewParquetReader creates a new Parquet format reader.
 // file is the input file (already opened by importer); column names are taken
 // from the file's schema in schema order.
-func NewParquetReader(file *os.File) (*ParquetReader, error) {
+func NewParquetReader(file *os.File) (rdr *ParquetReader, err error) {
+	// parquet-go panics on structurally invalid input (bad magic header/footer,
+	// truncated metadata) instead of returning an error. A corrupt input file
+	// must be a clean runtime failure, not a stack dump, so convert any panic
+	// into an error here.
+	defer func() {
+		if rec := recover(); rec != nil {
+			rdr = nil
+			err = errors.Errorf("invalid parquet file: %v", rec)
+		}
+	}()
+
 	info, err := file.Stat()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to stat parquet file")
@@ -65,7 +76,16 @@ func (p *ParquetReader) ReadHeader() ([]string, error) {
 }
 
 // ReadRow reads a single row from the Parquet file.
-func (p *ParquetReader) ReadRow() ([]interface{}, error) {
+func (p *ParquetReader) ReadRow() (values []interface{}, err error) {
+	// Same reason as NewParquetReader: a damaged page can panic inside the
+	// library rather than report an error.
+	defer func() {
+		if rec := recover(); rec != nil {
+			values = nil
+			err = errors.Errorf("invalid parquet file: %v", rec)
+		}
+	}()
+
 	if p.bufIdx >= len(p.rowBuf) {
 		p.rowBuf = make([]parquet.Row, p.bufSize)
 		n, err := p.reader.ReadRows(p.rowBuf)
@@ -82,7 +102,7 @@ func (p *ParquetReader) ReadRow() ([]interface{}, error) {
 	row := p.rowBuf[p.bufIdx]
 	p.bufIdx++
 
-	values := make([]interface{}, len(p.columns))
+	values = make([]interface{}, len(p.columns))
 	for _, v := range row {
 		idx := v.Column()
 		if idx < 0 || idx >= len(values) {

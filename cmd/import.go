@@ -15,6 +15,7 @@ var importCfg = config.NewImportConfig()
 var importCmd = &cobra.Command{
 	Use:     "import",
 	Aliases: []string{"imp"},
+	Args:    cobra.NoArgs,
 	Short:   "Import data into MySQL/OceanBase",
 	Long: `Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
 MySQL or OceanBase database.
@@ -85,7 +86,9 @@ Examples:
 		// Parse session variables.
 		vars, err := common.ParseSessionVars(importCfg.SessionVars)
 		if err != nil {
-			return err
+			// Malformed --session-var values are parameter errors: report them
+			// as usage errors so they exit 2 like every other validation.
+			return common.Usagef("%v", err)
 		}
 		importCfg.Vars = vars
 		if len(vars) > 0 {

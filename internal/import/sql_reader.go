@@ -19,6 +19,7 @@ type SQLReader struct {
 	columns     []string
 	createStmts []string        // captured CREATE TABLE statements for create mode
 	pending     [][]interface{} // rows parsed from the current INSERT, not yet returned
+	hasData     bool            // ReadHeader found at least one INSERT statement
 }
 
 // NewSQLReader creates a new SQL format reader.
@@ -31,12 +32,19 @@ func NewSQLReader(r *bufio.Reader) *SQLReader {
 // ReadHeader advances to the first INSERT statement, extracting the column
 // list and buffering its rows. CREATE TABLE statements encountered along the
 // way are captured for create mode.
+//
+// A file with CREATE statements but no INSERTs (a --no-data export) is not an
+// error: it returns no columns and HasData() reports false, so create mode can
+// still apply the captured structure.
 func (s *SQLReader) ReadHeader() ([]string, error) {
 	for {
 		stmt, ok := s.nextStatement()
 		if !ok {
 			if err := s.rd.Err(); err != nil {
 				return nil, errors.Wrap(err, "failed to read SQL file")
+			}
+			if len(s.createStmts) > 0 {
+				return nil, nil
 			}
 			return nil, io.EOF
 		}
@@ -48,6 +56,7 @@ func (s *SQLReader) ReadHeader() ([]string, error) {
 		case strings.HasPrefix(upper, "INSERT "):
 			cols := s.extractColumns(stmt)
 			s.columns = cols
+			s.hasData = true
 			rows := s.extractRows(stmt)
 			s.pending = rows
 			return cols, nil
@@ -57,6 +66,10 @@ func (s *SQLReader) ReadHeader() ([]string, error) {
 		}
 	}
 }
+
+// HasData reports whether ReadHeader found an INSERT statement. It is false for
+// a structure-only SQL file.
+func (s *SQLReader) HasData() bool { return s.hasData }
 
 // nextStatement assembles one complete SQL statement (terminated by a top-level
 // ';'), handling quoted strings and line comments. Returns (stmt, true) or

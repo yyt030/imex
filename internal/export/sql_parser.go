@@ -73,6 +73,14 @@ func (p *SQLParser) BuildShardedQuery(originalQuery string, shardInfo *ShardInfo
 
 // buildShardCondition creates the WHERE condition for sharding
 func (p *SQLParser) buildShardCondition(shardInfo *ShardInfo, shardRange ShardRange) sqlparser.Expr {
+	if shardRange.NullOnly {
+		// Rows the numeric range shards can never match: the key is NULL.
+		return &sqlparser.IsExpr{
+			Left:  sqlparser.NewColName(shardInfo.Columns[0]),
+			Right: sqlparser.IsNullOp,
+		}
+	}
+
 	if len(shardInfo.Columns) == 1 {
 		colName := shardInfo.Columns[0]
 		minVal := shardRange.Mins[0]
