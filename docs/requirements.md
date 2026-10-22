@@ -866,6 +866,31 @@ DEL 与 SQL 导入不再使用 `bufio.Scanner`（有 token 长度上限 10 MB）
 
 **导出覆盖语义：** 默认行为为覆盖输出文件（`os.Create` 截断）。`--no-replace` 开启后，若输出文件已存在则报错退出，不覆盖。
 
+### 7.7 连接加固与瞬断重试
+
+云环境的 LB/NAT 网关会静默回收长时间无往返的 TCP 连接，工具随后在读写时得到 `broken pipe` / `connection reset` / `invalid connection` / `server has gone away`。从三个层面加固，默认值内置、无需配置：
+
+**1) 连接池老化（`common/pool.go`）**
+
+| 参数 | 默认值 | 适用范围 |
+|------|--------|----------|
+| `SetConnMaxIdleTime` | 1 分钟 | 所有连接池 |
+| `SetConnMaxLifetime` | 5 分钟 | 所有连接池；导出主连接显式设为 0（保一致性快照） |
+| `SetMaxOpenConns(1)` | — | 导出主连接、每个并行导入 worker |
+
+已被借出的连接（事务内、快照读）不受 TTL 影响，只有归还到空闲池后才会被回收。
+
+**2) 事务空闲提交（`import/session.go`）**
+
+导入写入端（单线程管线与每个并行 worker）在 **30s** 内没有收到新批次，且当前事务已有行时，主动 `COMMIT` 并开启下一个事务。`--commit-count` 到期时同样提交（按事务内累计行数判断，而非总行数取模，避免批大小不能整除时永不提交）。
+
+**3) 瞬态错误重试与回放（`common/dberr.go`、`common/retry.go`）**
+
+- **判定为瞬态**：`driver.ErrBadConn`、`mysql.ErrInvalidConn`、`io.EOF` / `io.ErrUnexpectedEOF`、`ECONNRESET` / `ECONNABORTED` / `EPIPE`、网络超时、MySQL `1040/1053/1152/1927/2006/2013/2055`，以及 `invalid connection` / `broken pipe` / `connection reset` / `server has gone away` / `lost connection` 等文本兜底（穿透代理时不会得到类型化错误）。
+- **策略**：默认最多 3 次尝试（首次 + 2 次重试），退避 1s → 2s，上限 4s，带 20% 向下抖动以避免多个 worker 同步重连；`ctx` 取消会中断退避并立即返回。
+- **回放规则**：连接级错误意味着 MySQL 已回滚整个打开的事务。重连后先按顺序回放该事务内所有已执行但未提交的批次，再重试失败批次；仅重试单批会静默丢失同事务先前的行。回放缓冲只保留当前 `--commit-count` 窗口（默认 1000 行）。
+- **不重试**：`COMMIT`（响应丢失时无法判断是否生效，重放可能重复写入）；`context.Canceled` / `DeadlineExceeded`；语法/约束类语义错误；`1213` 死锁与 `1205` 锁等待超时（`innodb_rollback_on_timeout=OFF` 下只回滚语句，盲目回放整个事务可能重复行）；`1153` 包过大（应缩小批次而非重试）。
+
 ---
 
 ## 八、非功能性需求
@@ -887,7 +912,9 @@ DEL 与 SQL 导入不再使用 `bufio.Scanner`（有 token 长度上限 10 MB）
 |------|------|
 | 消息文件 | 记录所有错误、警告和信息 |
 | 失败处理 | 明确标识失败原因和行号 |
-| 连接重连 | 连接断开后自动重试 |
+| 连接重连 | 连接级瞬态错误（`ErrBadConn`、2006/2013、网络超时等）默认最多 3 次尝试，指数退避 1s→2s（上限 4s、20% 抖动）；重连后先回放当前事务的未提交批次再重试失败批次；`COMMIT` 与语义错误不重试（§7.7） |
+| 连接池老化 | 所有池 `ConnMaxIdleTime=1m`、`ConnMaxLifetime=5m`（导出主连接 lifetime 显式设为 0 以保快照）；并行导入 worker `MaxOpenConns=1` |
+| 事务空闲提交 | 导入写入端 30s 未收到新批次时提交当前部分事务，缩短未提交窗口与断线重放集合 |
 
 ### 8.3 可观测性
 
@@ -942,6 +969,9 @@ gomydump/
 │   │   ├── sessionvars.go     # 会话变量解析与 DSN 注入（--session-var）
 │   │   ├── sqlpreview.go      # 失败 SQL 脱敏回显（--echo-sql-values）
 │   │   ├── sqltag.go          # SQL 归因注释（/* gomydump:<commit> */）
+│   │   ├── dberr.go           # 瞬态错误判定（连接级错误码/网络错误/文本兜底）
+│   │   ├── retry.go           # 重试策略（次数、指数退避、抖动、ctx 取消）
+│   │   ├── pool.go            # 连接池老化（ConnMaxIdleTime / ConnMaxLifetime）
 │   │   ├── log.go             # 日志模块（版本信息、启动日志、日志格式）
 │   │   ├── message.go         # 消息文件处理
 │   │   ├── password.go        # 密码加密/解密（AES-256-GCM）
@@ -956,6 +986,7 @@ gomydump/
 │   └── import/
 │       ├── importer.go        # 导入调度器（Pipeline 模式、列映射、并行导入）
 │       ├── batchcap.go        # 导入攒批字节上限（max_allowed_packet 与 65535 占位符）
+│       ├── session.go         # 写入会话（事务、重连回放、空闲提交、commit-count）
 │       ├── record_reader.go   # 无上限记录读取器（替代 bufio.Scanner）
 │       ├── del_reader.go      # DEL 格式读取器
 │       ├── sql_reader.go      # SQL 格式读取器
@@ -1168,3 +1199,4 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 4 | 新增 `--single-row-insert` | SQL 格式专属选项，开启后每行一条 INSERT 语句（等价 mysqldump `--skip-extended-insert`），`--statement-size` 退化为告警阈值 |
 | 5 | 并行导出 header/footer 统一 | `mergeShardFiles` 由 SQLWriter 统一写出 SET NAMES、CREATE TABLE、LOCK/UNLOCK TABLES；各分片片段设置 `SetSkipTableLocks(true)` 且 `writeCreate=false`，不再各自写 LOCK/UNLOCK |
 | 6 | DEL 导入解码 `0x` 二进制字面量 | 此前 DEL 导出在 `--hex-blob`（或非 utf8mb4 自动开启）下写出 `0x…`，但 DEL 读取端无列类型信息，按原文返回字符串，往返不还原字节。现由 `columnInfoFor` 在同一次 `information_schema` 查询中同时取回列类型与二进制标记，`DelReader.SetBinaryColumns` 据此解码；判定要求"无引号 + 目标列二进制 + 合法偶数长度十六进制"，因此文本列中的 `0xdead` 保持原样 |
+| 7 | 补齐连接加固三件套 | 新增 `common/dberr.go`（瞬态错误判定）、`common/retry.go`（3 次尝试、1s→2s 退避、上限 4s、20% 抖动）、`common/pool.go`（所有池 1m 空闲 / 5m 生存；导出主连接保留 lifetime=0）、`import/session.go`（事务、重连回放、30s 空闲提交）。修复单线程导入 `rowCount % commitCount` 在批大小不能整除时永不提交的缺陷，改为按事务内累计行数判断；重连后回放整个未提交事务而非仅失败批次，避免丢行；`COMMIT` 永不重试 |

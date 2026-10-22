@@ -39,6 +39,7 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to connect to database")
 	}
+	common.ApplyPoolHardening(db)
 
 	// Test connection with retry
 	var pingErr error
@@ -465,9 +466,10 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 	// the pool is ever limited to one connection.
 	batchSize, maxBatchBytes := imp.resolveBatchSize(len(columns))
 
-	// Start transaction
-	tx, err := imp.db.BeginTx(ctx, nil)
-	if err != nil {
+	// Open the writer session. It owns the transaction, the --commit-count
+	// policy, idle commits and transient-error replay.
+	session := newWriteSession(imp, imp.db, ctx, int64(imp.cfg.CommitCount), "single-threaded")
+	if err := session.begin(); err != nil {
 		if imp.msg != nil {
 			imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to begin transaction: %v", err))
 		}
@@ -475,13 +477,12 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 	}
 	// Roll back whatever transaction is active when the function returns.
 	// Committed transactions return a benign ErrTxDone, which we ignore.
-	defer func() { _ = tx.Rollback() }()
+	defer session.rollback()
 
 	// Pipeline configuration
 	rowCount := int64(0)
 	skipCount := int64(imp.cfg.SkipCount)
 	rowLimit := int64(imp.cfg.RowCount)
-	commitCount := int64(imp.cfg.CommitCount)
 
 	// Pipeline: Reader goroutine → Channel → Writer (main goroutine)
 	type rowBatch struct {
@@ -564,8 +565,38 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 	// The batch INSERT placeholder count must match the actual number of rows
 	// in each batch (the final batch is usually smaller than batchSize), so the
 	// statement is built per batch rather than prepared once for a fixed size.
-	for batch := range rowCh {
+	//
+	// The idle timer commits a partial transaction when the reader stalls:
+	// leaving rows uncommitted across a long network pause is exactly the
+	// window a cloud LB/NAT idle reaper closes, and every unnotified commit
+	// shrinks the replay set after a reconnect.
+	idleTimer := time.NewTimer(DefaultIdleCommitTimeout)
+	defer idleTimer.Stop()
+
+	var batch rowBatch
+	var ok bool
+loop:
+	for {
+		select {
+		case batch, ok = <-rowCh:
+			if !ok {
+				break loop
+			}
+		case <-idleTimer.C:
+			if err := session.idleCommit(); err != nil {
+				if imp.msg != nil {
+					imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to commit idle transaction: %v", err))
+				}
+				return errors.Wrap(err, "failed to commit idle transaction")
+			}
+			idleTimer.Reset(DefaultIdleCommitTimeout)
+			continue
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
 		if len(batch.data) == 0 {
+			armIdleTimer(idleTimer, DefaultIdleCommitTimeout)
 			continue
 		}
 
@@ -577,9 +608,8 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 
 		insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))
 
-		// 执行批量插入
-		res, err := tx.ExecContext(ctx, insertSQL, batchValues...)
-		if err != nil {
+		// 执行批量插入（瞬断时自动重连并回放本事务的未提交批次）
+		if err := session.write(insertSQL, batchValues, len(batch.data)); err != nil {
 			preview := common.FailingSQL(insertSQL, batchValues)
 			imp.stats.AddFailed(int64(len(batch.data)))
 			common.Logger.Error("Insert batch failed", "error", err, "sql", preview)
@@ -588,26 +618,19 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 			}
 			return errors.Wrapf(err, "failed to insert batch (SQL: %s)", preview)
 		}
-		imp.addBatchResult(int64(len(batch.data)), res)
 
 		rowCount += int64(len(batch.data))
 
-		// Commit transaction periodically
-		if rowCount%commitCount == 0 {
-			if err := tx.Commit(); err != nil {
-				if imp.msg != nil {
-					imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to commit transaction: %v", err))
-				}
-				return errors.Wrap(err, "failed to commit transaction")
+		// Commit transaction periodically, counting the rows actually held by
+		// the open transaction (a batch size that does not divide the commit
+		// count must not postpone the commit indefinitely).
+		if err := session.maybeCommit(); err != nil {
+			if imp.msg != nil {
+				imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to commit transaction: %v", err))
 			}
-			tx, err = imp.db.BeginTx(ctx, nil)
-			if err != nil {
-				if imp.msg != nil {
-					imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to begin new transaction: %v", err))
-				}
-				return errors.Wrap(err, "failed to begin new transaction")
-			}
+			return errors.Wrap(err, "failed to commit transaction")
 		}
+		armIdleTimer(idleTimer, DefaultIdleCommitTimeout)
 	}
 
 	// 检查 reader goroutine 的错误
@@ -618,7 +641,7 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 	}
 
 	// Final commit
-	if err := tx.Commit(); err != nil {
+	if err := session.commit(); err != nil {
 		if imp.msg != nil {
 			imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to commit final transaction: %v", err))
 		}
@@ -755,21 +778,48 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 			// batch to write at a time, so a single pooled conn is enough and
 			// keeps the server-side connection count equal to numThreads.
 			db.SetMaxOpenConns(1)
+			common.ApplyPoolHardening(db)
 			defer db.Close()
 
-			tx, err := db.BeginTx(ctx, nil)
-			if err != nil {
+			session := newWriteSession(imp, db, ctx, commitCount, fmt.Sprintf("thread %d", threadID))
+			if err := session.begin(); err != nil {
 				errCh <- errors.Wrapf(err, "thread %d: failed to begin transaction", threadID)
 				cancel()
 				return
 			}
 			// Committed txs return a benign ErrTxDone from Rollback.
-			defer func() { _ = tx.Rollback() }()
+			defer session.rollback()
 
-			rowsInTx := int64(0)
+			// See importSingle: commit a partial transaction rather than let an
+			// idle connection hold uncommitted rows across a network pause.
+			idleTimer := time.NewTimer(DefaultIdleCommitTimeout)
+			defer idleTimer.Stop()
 
-			for batch := range batchCh {
+			var batch rowBatch
+			var ok bool
+		workerLoop:
+			for {
+				select {
+				case batch, ok = <-batchCh:
+					if !ok {
+						break workerLoop
+					}
+				case <-idleTimer.C:
+					if err := session.idleCommit(); err != nil {
+						errCh <- errors.Wrapf(err, "thread %d: failed to commit idle transaction", threadID)
+						cancel()
+						return
+					}
+					idleTimer.Reset(DefaultIdleCommitTimeout)
+					continue
+				case <-ctx.Done():
+					// Preserve the progress made before cancellation.
+					_ = session.commit()
+					return
+				}
+
 				if len(batch.data) == 0 {
+					armIdleTimer(idleTimer, DefaultIdleCommitTimeout)
 					continue
 				}
 
@@ -779,8 +829,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 				}
 
 				insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))
-				res, err := tx.ExecContext(ctx, insertSQL, flat...)
-				if err != nil {
+				if err := session.write(insertSQL, flat, len(batch.data)); err != nil {
 					preview := common.FailingSQL(insertSQL, flat)
 					imp.stats.AddFailed(int64(len(batch.data)))
 					common.Logger.Error("Insert batch failed", "thread", threadID, "error", err, "sql", preview)
@@ -788,36 +837,17 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 					cancel()
 					return
 				}
-				imp.addBatchResult(int64(len(batch.data)), res)
 
-				rowsInTx += int64(len(batch.data))
-
-				if rowsInTx >= commitCount {
-					if err := tx.Commit(); err != nil {
-						errCh <- errors.Wrapf(err, "thread %d: failed to commit transaction", threadID)
-						cancel()
-						return
-					}
-					tx, err = db.BeginTx(ctx, nil)
-					if err != nil {
-						errCh <- errors.Wrapf(err, "thread %d: failed to begin new transaction", threadID)
-						cancel()
-						return
-					}
-					rowsInTx = 0
-				}
-
-				// Honor cancellation promptly without busy-waiting.
-				select {
-				case <-ctx.Done():
-					_ = tx.Commit()
+				if err := session.maybeCommit(); err != nil {
+					errCh <- errors.Wrapf(err, "thread %d: failed to commit transaction", threadID)
+					cancel()
 					return
-				default:
 				}
+				armIdleTimer(idleTimer, DefaultIdleCommitTimeout)
 			}
 
 			// Final commit for this worker's last partial transaction.
-			if err := tx.Commit(); err != nil {
+			if err := session.commit(); err != nil {
 				errCh <- errors.Wrapf(err, "thread %d: failed to commit final transaction", threadID)
 				cancel()
 				return

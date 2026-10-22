@@ -37,7 +37,11 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	// Configure connection pool for optimal performance
 	db.SetMaxOpenConns(1) // Single-threaded export uses one connection
 	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(0) // No limit for export operations
+	// Age idle connections so a paused export does not keep a dead socket, but
+	// leave the lifetime unlimited: this pool carries the consistent snapshot
+	// transaction and must not be recycled under it.
+	common.ApplyPoolHardening(db)
+	db.SetConnMaxLifetime(0)
 
 	// Test connection with retry
 	var pingErr error
@@ -662,6 +666,7 @@ func (e *Exporter) createShardConnection() (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	common.ApplyPoolHardening(db)
 
 	// Test connection
 	if err := db.Ping(); err != nil {

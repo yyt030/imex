@@ -471,10 +471,11 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 在云上（LB/NAT 网关、SNAT 空闲超时等），长时间没有网络往返的 TCP 连接可能被中间设备静默回收，工具在读写时会得到 `broken pipe` / `connection reset` / `invalid connection` / `gone away` 等瞬断错误。三个层面同时加固：
 
 - **驱动层 socket 超时**（对应 JDBC `connectTimeout`/`socketTimeout`）：`--connect-timeout`（默认 5s）、`--socket-read-timeout`/`--socket-write-timeout`（默认 300s）。这三个参数以 DSN 字段（`timeout` / `readTimeout` / `writeTimeout`）形式传入 go-sql-driver，作用于**每次 socket 读/写**；由于是 DSN 级参数，`--session-var` 无法覆盖（同名会被拒绝）。
-- **连接池 TTL**：并行 worker 每线程 `SetMaxOpenConns(1)` + `SetConnMaxIdleTime` + `SetConnMaxLifetime`，让连接在 LB 空闲阈值前主动老化重建，而不是被动被中间设备切断。
-- **事务空闲提交 + 瞬断重试**：并行导入的 worker 在 batch 长时间不到达时（默认 30s）主动 `COMMIT` 当前部分事务，释放未提交窗口；对 `driver.ErrBadConn` / `io.EOF` / 网络超时 / `invalid connection` / `broken pipe` / `gone away` 这类瞬态错误，重连后**回放**该批未提交数据（默认 3 次尝试，指数退避 1s–4s）。`context.Canceled` 与语义错误不重试。
+- **连接池 TTL**：所有连接池（导出主连接与分片、导入主连接与并行 worker）统一设置 `SetConnMaxIdleTime(1m)` + `SetConnMaxLifetime(5m)`，让连接在 LB 空闲阈值前主动老化重建，而不是被中间设备切断；并行 worker 另设 `SetMaxOpenConns(1)`。正在使用中的连接（例如持有一致性快照事务的那条）不受 TTL 影响，只有归还到空闲池后才会被回收。
+- **事务空闲提交**：导入的写入端（单线程管线与每个并行 worker）在 30s 内没有收到新批次时，主动 `COMMIT` 当前已写入的部分事务并开启下一个，缩短未提交窗口和重放集合；`--commit-count` 到期时同样提交。
+- **瞬断自动重试**：对 `driver.ErrBadConn` / `invalid connection` / `io.EOF` / 网络超时 / `broken pipe` / `connection reset` / `server has gone away`(2006) / `lost connection`(2013) 等连接级错误，默认最多 3 次尝试，指数退避约 1s→2s（上限 4s，带 20% 向下抖动，避免多个 worker 同时重连）。重连后**先回放当前事务内所有已执行但未提交的批次，再重试失败批次**——连接断开时 MySQL 已回滚整个事务，只重试单批会静默丢掉同事务中先前的行。`COMMIT` 本身不重试（响应丢失时无法判断是否已生效，重放可能重复写入），直接报错。`context.Canceled`、语法/约束类错误以及 `1213` 死锁 / `1205` 锁等待超时不重试。
 
-对导出而言，主连接使用 `SetConnMaxLifetime(0)`（不因 TTL 关闭，保证一致性快照期间连接稳定），worker 使用 TTL 池；读写超时对每条连接独立生效，长时间零字节的响应（如大 result set 起始阶段）会命中 `socket-read-timeout`，请按需调大。
+对导出而言，主连接仍保留 `SetConnMaxLifetime(0)`（不因 TTL 关闭，保证一致性快照期间连接稳定），但空闲超时照常生效；并行分片连接使用完整 TTL 池。读写超时对每条连接独立生效，长时间零字节的响应（如大 result set 起始阶段）会命中 `socket-read-timeout`，请按需调大。
 
 ### 参数边界校验
 
@@ -735,6 +736,9 @@ mysql-backup-tool/
 │   │   ├── sessionvars.go       # 会话变量解析与 DSN 注入（--session-var）
 │   │   ├── sqlpreview.go        # 失败 SQL 脱敏回显（--echo-sql-values）
 │   │   ├── sqltag.go            # 运行时 SQL 归因注释 /* gomydump:<commit> */（--no-sql-tag）
+│   │   ├── dberr.go             # 瞬态错误判定（连接级 MySQL 错误码/网络错误/文本兜底）
+│   │   ├── retry.go             # 重试策略（次数、指数退避、抖动、ctx 取消）
+│   │   ├── pool.go              # 连接池老化（ConnMaxIdleTime / ConnMaxLifetime）
 │   │   ├── usage.go             # 用法错误分类（退出码 2）
 │   │   ├── log.go               # 日志模块（java/text 两种格式、版本信息、启动日志）
 │   │   ├── stats.go             # 吞吐统计与速率计算
@@ -751,6 +755,7 @@ mysql-backup-tool/
 │   └── import/
 │       ├── importer.go          # 导入调度器（单线程流水线、并行 worker、列映射、攒批）
 │       ├── batchcap.go          # 攒批上限（max_allowed_packet 字节预算 + 65535 占位符）
+│       ├── session.go           # 写入会话（事务、重连回放、空闲提交、commit-count）
 │       ├── record_reader.go     # 无上限记录读取器（自定义 SplitFunc，零拷贝别名）
 │       ├── del_reader.go        # DEL 格式读取器
 │       ├── sql_reader.go        # SQL 格式读取器
