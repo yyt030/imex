@@ -61,7 +61,7 @@ func registerImportFlags(cmd *cobra.Command) {
 	f.BoolVar(&importCfg.DelModifier.NoColNames, "no-col-names", false, "First line is not column names")
 
 	// Import-specific DEL options
-	f.IntVar(&importCfg.SkipCount, "skip-count", 0, "Skip first n rows")
+	f.IntVar(&importCfg.SkipCount, "skip-count", 0, "Skip first n data rows (header is consumed separately)")
 	f.IntVar(&importCfg.RowCount, "row-count", 0, "Import at most n rows (0=unlimited)")
 	f.IntVar(&importCfg.CommitCount, "commit-count", 1000, "Commit every n rows")
 

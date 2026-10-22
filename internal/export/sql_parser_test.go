@@ -137,3 +137,51 @@ func TestBuildShardedQuery_DecimalBoundaryStaysNumeric(t *testing.T) {
 		t.Fatalf("decimal boundary was quoted as a string: %q", out)
 	}
 }
+
+func TestSQLParser_SimpleTableName(t *testing.T) {
+	p := NewSQLParser()
+
+	t.Run("accepts single-table queries", func(t *testing.T) {
+		cases := map[string]string{
+			"SELECT * FROM users":                        "users",
+			"SELECT id FROM `db`.`users`":                "db.users",
+			"SELECT * FROM users u WHERE u.id = 1":       "users",
+			"SELECT * FROM users WHERE a > 1 ORDER BY a": "users",
+		}
+		for query, want := range cases {
+			got, err := p.SimpleTableName(query)
+			if err != nil {
+				t.Errorf("SimpleTableName(%q) error = %v", query, err)
+				continue
+			}
+			if got != want {
+				t.Errorf("SimpleTableName(%q) = %q, want %q", query, got, want)
+			}
+		}
+		// A FROM-less SELECT parses against the implicit DUAL table.
+		if got, err := p.SimpleTableName("SELECT 1"); err != nil || got != "dual" {
+			t.Errorf("SimpleTableName(%q) = %q, %v, want %q, nil", "SELECT 1", got, err, "dual")
+		}
+	})
+
+	t.Run("rejects non single-table queries", func(t *testing.T) {
+		queries := []string{
+			"SELECT * FROM a JOIN b ON a.id = b.id",
+			"SELECT * FROM a LEFT JOIN b ON a.id = b.id",
+			"SELECT * FROM a, b",
+			"SELECT * FROM (SELECT * FROM users) t",
+			"WITH c AS (SELECT 1) SELECT * FROM c",
+			"UPDATE users SET a = 1",
+		}
+		for _, query := range queries {
+			name, err := p.SimpleTableName(query)
+			if err == nil {
+				t.Errorf("SimpleTableName(%q) = %q, want error", query, name)
+				continue
+			}
+			if !strings.Contains(err.Error(), "--format del") {
+				t.Errorf("SimpleTableName(%q) error = %v, want alternative format hint", query, err)
+			}
+		}
+	})
+}

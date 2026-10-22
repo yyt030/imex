@@ -145,8 +145,18 @@ func (e *Exporter) Export(ctx context.Context) error {
 		"hex_blob", e.config.HexBlob,
 	)
 
+	// --format sql writes CREATE TABLE plus INSERT statements aimed at one
+	// concrete table, so a join, CTE, or derived-table result cannot be
+	// represented. Reject it here, before the output file is created.
+	if e.config.Format == "sql" {
+		if _, err := e.sqlParser.SimpleTableName(e.config.Query); err != nil {
+			return err
+		}
+	}
+
 	if e.msg != nil {
 		e.msg.WriteHeader(fmt.Sprintf("export -o %s -q \"%s\"", e.config.Output, e.config.Query))
+		e.msg.WriteBegin(e.messageTableName())
 	}
 
 	common.Logger.Info("Starting export", "query", e.config.Query, "format", e.config.Format, "threads", e.config.Threads)
@@ -167,6 +177,24 @@ func (e *Exporter) Export(ctx context.Context) error {
 	return e.exportSingle(ctx, startTime)
 }
 
+// warningFunc returns a callback that mirrors writer warnings into the message
+// file, or nil when no message file was requested.
+func (e *Exporter) warningFunc() func(string) {
+	if e.msg == nil {
+		return nil
+	}
+	return func(msg string) { e.msg.WriteWarning(msg) }
+}
+
+// messageTableName returns the table named in the query for the message file,
+// or "" when it cannot be derived (joins still report their first table).
+func (e *Exporter) messageTableName() string {
+	if name, err := e.sqlParser.ExtractTableName(e.config.Query); err == nil {
+		return name
+	}
+	return ""
+}
+
 // exportSingle performs single-threaded export with pipeline optimization
 func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) error {
 	// Detect server type BEFORE opening the streaming cursor: the single
@@ -181,7 +209,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) error 
 	// connection is still free.
 	var createStmt string
 	if e.config.Format == "sql" && !e.config.NoCreate {
-		tableName, err := e.sqlParser.ExtractTableName(e.config.Query)
+		tableName, err := e.sqlParser.SimpleTableName(e.config.Query)
 		if err != nil {
 			return errors.Wrap(err, "failed to extract table name")
 		}
@@ -246,6 +274,9 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) error 
 	if e.config.NoHexBlob && config.HexBlobForCharset(e.config.DefaultCharset) {
 		// Explicit --no-hex-blob with non-utf8mb4 charset: warn about potential corruption
 		common.Logger.Warn("hex-blob explicitly disabled with non-utf8mb4 charset; raw binary bytes may be corrupted by charset conversion", "charset", e.config.DefaultCharset)
+		if e.msg != nil {
+			e.msg.WriteWarning(fmt.Sprintf("hex-blob explicitly disabled with non-utf8mb4 charset %q; raw binary bytes may be corrupted by charset conversion", e.config.DefaultCharset))
+		}
 	}
 
 	// Create output file
@@ -273,6 +304,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) error 
 		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, !e.config.NoCreate, !e.config.NoData, serverType, createStmt, e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetSingleRowInsert(e.config.SingleRowInsert)
+		sqlWriter.SetWarningFunc(e.warningFunc())
 		writer = sqlWriter
 	case "parquet":
 		parquetWriter, err := NewParquetWriter(outputFile, columns, binaryFlags)
@@ -601,6 +633,7 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, false, !e.config.NoData, serverType, "", e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetSingleRowInsert(e.config.SingleRowInsert)
+		sqlWriter.SetWarningFunc(e.warningFunc())
 		// A fragment of a parallel dump must not lock or unlock the table on its
 		// own; the merge step wraps the concatenated result in one pair.
 		sqlWriter.SetSkipTableLocks(true)

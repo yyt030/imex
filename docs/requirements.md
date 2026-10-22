@@ -116,7 +116,7 @@ gomydump export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQ
 | `--col-del` | 列分隔符（分隔同一行中的列） | `,` | 单字符、多字节、十六进制（0x） |
 | `--row-del` | 行分隔符（标记一行结束） | `\n` | 单字符、多字节、十六进制（0x） |
 | `--escape` | 转义符（用于转义定界符） | `"`（双写转义） | 单字符、多字节、十六进制（0x） |
-| `--no-escape` | 不使用转义（数据中包含定界符时报错） | `false` | - |
+| `--no-escape` | 不使用转义（写出前校验，数据含冲突定界符时报错） | `false` | - |
 | `--timestamp-fmt` | 时间戳格式（作用于 DATETIME/TIMESTAMP 列） | `yyyy-MM-dd HH:mm:ss` | - |
 | `--date-fmt` | 日期格式（作用于 DATE 列） | `yyyy-MM-dd` | - |
 | `--no-char-del` | 不使用字符串定界符 | `false` | - |
@@ -163,6 +163,8 @@ gomydump export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQ
 - MySQL 下数据段带 `LOCK TABLES <table> WRITE;` / `UNLOCK TABLES;` 一对
 - OceanBase 下不输出 LOCK/UNLOCK（OceanBase 对 LOCK TABLES 支持有限）
 - 并行导出时，LOCK/UNLOCK 由合并步骤（`mergeShardFiles`）统一写出，各分片片段自身不写 LOCK/UNLOCK
+
+**SQL 格式的单表限制：** SQL 输出文件描述的是**一张真实表**（`CREATE TABLE <table>` + `LOCK TABLES <table> WRITE` + 指向该表的 `INSERT`）。因此 `--format sql` 要求 `--query` 为单表查询，解析阶段即拒绝 JOIN、隐式多表（`FROM a, b`）、派生表（`FROM (SELECT …) t`）与 `WITH` CTE，报错并提示改用 `--format del` / `--format parquet`（二者只写出结果集，不依赖表结构）。校验在输出文件创建之前完成，不会留下半成品文件。不带 `FROM` 的 `SELECT 1` 按 MySQL 惯例解析为隐式 `DUAL` 表，工具同样按单表处理（服务端因无 `DUAL` 表结构而报错属预期行为）。
 
 #### 2.1.7 使用示例
 
@@ -300,6 +302,8 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 1. **位置映射**：`--columns "name,age,email"` - 文件列按位置映射到表列
 2. **名称映射**：`--columns "user_name=name,user_age=age"` - 显式指定文件列到表列的映射
 
+**位置映射的数量校验：** 位置映射按索引配对，因此 `--columns` 的条目数必须等于文件的列数（列名行给出的列数），条目本身不得为空。数量不符时工具在写入任何数据前报错，提示改用名称映射导入子集。使用 `--no-col-names`（文件无表头）时列数无从得知，只校验条目非空，列数是否匹配交由服务端报错。
+
 **目标列前置校验（DEL/Parquet 格式）：** 导入开始前，工具通过 `information_schema` 校验目标表存在以及每个目标列名在表中存在（大小写不敏感）。DEL/Parquet 文件的列头取自导出查询的结果集列名，若 `--query` 含未起别名的表达式列（如 `SELECT 1, COUNT(*)`），列头（`1`、`COUNT(*)`）在目标表中不存在，工具会在写入任何数据前立即报错并提示修复方式（为表达式列起别名，或使用 `--columns` 按位置指定目标列），替代原先晦涩的服务端错误 1054（`Unknown column ... in 'field list'`）。校验位于模式处理之前，replace 模式不再出现"先清空表、后报列错误"的数据丢失。SQL 格式不做该校验：create 模式在表建立前执行属正常流程，且其列名来自文件自身的 INSERT 语句。
 
 **失败 SQL 回显（脱敏）：** 导入/导出语句在服务端执行失败时，错误信息、日志与消息文件会附带失败 SQL 的结构回显（表名、列名、占位符完整保留）。数据值默认**不**内联：仅以 `/* args: str(14), num, NULL, bytes(256) */` 形式的类型/长度标签呈现（可定位"哪一列、什么类型、是否超长"，但不泄露密码、个人信息等真实数据）。回显在 2048 字节处截断且保持引号配平。需要内联真实值时显式开启 `--echo-sql-values` 或 `GOMYDUMP_ECHO_SQL_VALUES=1`（警告：真实数据将写入 stderr、日志与消息文件）。`--query` SELECT 与 CREATE TABLE 语句不含行数据，失败时原文回显。
@@ -323,10 +327,10 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | `--col-del` | 列分隔符（分隔同一行中的列） | `,` | 单字符、多字节、十六进制（0x） |
 | `--row-del` | 行分隔符（标记一行结束） | `\n` | 单字符、多字节、十六进制（0x） |
 | `--escape` | 转义符（用于转义定界符） | `"`（双写转义） | 单字符、多字节、十六进制（0x） |
-| `--no-escape` | 不使用转义（数据中包含定界符时报错） | `false` | - |
+| `--no-escape` | 不使用转义（读取时不解析转义序列；定界符出现在数据中会破坏记录边界） | `false` | - |
 | `--timestamp-fmt` | 时间戳格式（按目标列类型回转换 DATETIME/TIMESTAMP 列） | `yyyy-MM-dd HH:mm:ss` | - |
 | `--date-fmt` | 日期格式（按目标列类型回转换 DATE 列） | `yyyy-MM-dd` | - |
-| `--skip-count` | 跳过前 n 行（≥0） | `0` | - |
+| `--skip-count` | 跳过前 n 行**数据**（≥0）；列名行由解析器单独读取，不计入 n。与 `--no-col-names` 同用时首行即为数据行，计入 n | `0` | - |
 | `--row-count` | 最多导入 n 行（≥0） | `0`（无限制） | - |
 | `--commit-count` | 每 n 行提交一次事务（≥1） | `1000` | - |
 | `--no-char-del` | 不使用字符串定界符 | `false` | - |
@@ -337,6 +341,8 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 - **单字符**：`--col-del ","`、`--col-del "\t"`
 - **多字节**：`--col-del "||"`、`--row-del "\r\n"`、`--col-del ":::"`
 - **十六进制**：`--col-del 0x09`（制表符）、`--row-del 0x0D0A`（\r\n）、`--col-del 0x7C0x7C`（||）
+
+**`--skip-count` 语义：** 计数的对象是**数据行**。带表头的输入文件，列名行由解析器单独读取并用于列映射，不占用 `--skip-count` 额度；`--no-col-names`（文件无表头）时首行即数据行，才计入跳过额度。这一点与 DB2 `MODIFIED BY SKIPCOUNT <n>`（作用于文件物理首行，含列名行）不同：从 DB2 迁移脚本时，`SKIPCOUNT 1` 对应本工具的默认 `--skip-count 0`。
 
 #### 2.2.6 SQL 格式导入说明
 
@@ -405,7 +411,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
   -i /backup/users.del \
   -t users -c "user_id=id,user_name=name,user_email=email"
 
-# 跳过前 1 行（列名行），导入 1000 行
+# 跳过前 1 行数据（列名行由解析器自动读取，不占用 skip-count），导入 1000 行
 gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
   -i /backup/users.del \
   --skip-count 1 --row-count 1000 --commit-count 100 \
@@ -444,6 +450,18 @@ SQL3110N  The utility has completed processing.  "5000" rows were exported.
 # Duration: 312 seconds
 # Rate: 16.03 rows/sec
 ```
+
+**记录类型：**
+
+| 代码 | 含义 | 出现时机 |
+|------|------|----------|
+| `SQL3104N` | 导出开始（含表名） | `--messages` 且导出任务启动时；导出失败信息也沿用该前缀 |
+| `SQL3109N` | 导入开始（含目标表名） | `--messages` 且导入模式处理完成、写入开始前 |
+| `SQL3105N` | 行进度 | 每累计 1000 行一条 |
+| `SQL3107N` | 告警 | 每条告警原文一行；结束时若存在告警，追加一条 `At least one warning message was encountered.` 汇总 |
+| `SQL3110N` | 处理完成（行数统计） | 任务正常结束 |
+
+当前写入告警文件的告警来源：导出侧 `--no-hex-blob` 与非 utf8mb4 字符集组合、单行 INSERT 超过 `--statement-size`；导入侧无法读取 `max_allowed_packet`（按保守值分批）、`--batch-size` 因 65535 占位符上限被下调。
 
 ---
 
@@ -1162,6 +1180,10 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 巨型 INSERT 导入 | 导入含超长 INSERT 语句的 SQL 文件 → 验证 `recordReader` 无上限读取 |
 | 导出/导入转义往返 | 含 `\n`/`\r`/`\t`/`'`/`\`/`\0`/`\x1a` 的数据 → 导出 SQL → 导入 → 数据一致 |
 | 占位符上限 | 宽表（columns > 100）导入 → 验证 `batch-size` 自动下调且不报错 |
+| 消息文件告警 | 触发 `--no-hex-blob`/超长语句/`max_allowed_packet` 读取失败 → 验证 `SQL3107N` 明细与汇总、`SQL3104N`/`SQL3109N` 开始记录 |
+| `--no-escape` 冲突数据 | `--no-escape` 导出含定界符的数据 → 验证写入前报错且不产生半行残留 |
+| SQL 格式多表查询 | `--format sql` + JOIN/派生表/CTE → 验证解析阶段报错并提示改用 del/parquet |
+| 位置映射列数 | `--columns` 条目数与文件列数不符 → 验证写入前报错并提示名称映射 |
 
 ---
 
@@ -1211,3 +1233,8 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 10 | 回放缓冲增加字节上限 | `import/session.go` 除 `--commit-count` 外再按 64 MiB 字节预算提前提交，宽 BLOB/TEXT 行不会把重放缓冲撑大，同时也缩短断线重放窗口 |
 | 11 | 真实 MySQL 集成测试 | 新增 `test/integration/live_mysql_test.go`（`GOMYDUMP_TEST_DSN` 门控，未设置时跳过）：DEL/SQL/Parquet 往返、insert/insert_update/replace/create、列映射、并行导出/导入、消息文件；`make test-live` 一键执行 |
 | 12 | 文档收敛 | 明确并行导出按分片序号拼接、不保证全局行序，各分片快照时刻独立；修正 TLS 说明（当前版本不提供 TLS 配置，需在工具外终结加密链路），并同步 Dockerfile 注释 |
+| 13 | 消息文件补齐开始/告警记录 | 导出写 `SQL3104N`（含表名）、导入写 `SQL3109N`（含目标表名）；`MessageWriter` 新增 `WriteBegin`/`WriteWarning`，运行时告警（`--no-hex-blob` 与非 utf8mb4 组合、单行 INSERT 超 `--statement-size`、读不到 `max_allowed_packet`、`--batch-size` 被占位符上限下调）逐条写 `SQL3107N`，结束时在 `SQL3110N` 前追加一条告警汇总 |
+| 14 | `--no-escape` 写出前校验 | 此前 `--no-escape` 直接把原值写出，数据含定界符时产出无法回读的歧义文件（文档声明"报错"未实现）。现于写入前校验：使用字符定界符时值中不得出现该定界符，`--no-char-del`/空字符定界符时不得出现列分隔符与行分隔符；`--hex-blob` 二进制列为十六进制字面量不受影响。命中时报 `--no-escape: column N value contains the ... delimiter` 并中止，校验在任何字节写出之前完成，不留半行 |
+| 15 | `--skip-count` 文档对齐 | 实现一直是对跳过**数据行**计数（列名行由解析器单独读取，`--no-col-names` 时首行才计入）。修正需求文档、README 的标志说明与示例注释中"跳过前 1 行（列名行）"的错误表述，并补充与 DB2 `SKIPCOUNT` 的差异说明 |
+| 16 | SQL 格式拒绝多表查询 | 新增 `SQLParser.SimpleTableName`：JOIN、隐式多表、派生表、`WITH` CTE 一律在解析阶段报错，提示改用 `--format del`/`--format parquet`。此前这类查询会以 FROM 首表生成 `CREATE TABLE a` + 列数不匹配的 `INSERT INTO a`，产出一个无法执行的 SQL 文件 |
+| 17 | 位置 `--columns` 数量校验 | 位置映射按索引配对，此前条目数与文件列数不符时一路带到服务端报列数不匹配（且 replace 模式已先清表）。现在写入前校验条目非空且数量与文件列数一致（`--no-col-names` 无表头时只校验非空），并提示改用 `file_col=table_col` 名称映射导入子集 |

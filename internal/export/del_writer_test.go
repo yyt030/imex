@@ -5,6 +5,7 @@ import (
 	"database/sql"
 
 	"github.com/gomydump/internal/common"
+	"strings"
 	"testing"
 	"time"
 
@@ -634,4 +635,107 @@ func TestHexBlobEffectiveValue(t *testing.T) {
 				tc.hexBlob, tc.noHexBlob, tc.charset, hex, tc.want)
 		}
 	}
+}
+
+func TestDelWriter_NoEscapeRejectsDelimiters(t *testing.T) {
+	base := func() *config.DelModifier {
+		return &config.DelModifier{
+			CharDel:  `"`,
+			ColDel:   ",",
+			RowDel:   "\n",
+			Escape:   `"`,
+			NoEscape: true,
+		}
+	}
+
+	t.Run("character delimiter in value", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, base(), false, nil)
+		err := w.WriteRow([]interface{}{"ok", `bad "quote"`})
+		if err == nil {
+			t.Fatal("WriteRow() succeeded, want error")
+		}
+		if !strings.Contains(err.Error(), "column 2") || !strings.Contains(err.Error(), "character delimiter") {
+			t.Errorf("error = %v, want column 2 / character delimiter", err)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("output was buffered despite the error: %q", buf.String())
+		}
+	})
+
+	t.Run("no char delimiter, column delimiter in value", func(t *testing.T) {
+		mod := base()
+		mod.NoCharDel = true
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, mod, false, nil)
+		err := w.WriteRow([]interface{}{"a,b"})
+		if err == nil || !strings.Contains(err.Error(), "column delimiter") {
+			t.Fatalf("WriteRow() error = %v, want column delimiter error", err)
+		}
+	})
+
+	t.Run("empty char delimiter, row delimiter in value", func(t *testing.T) {
+		mod := base()
+		mod.CharDel = ""
+		mod.NoCharDel = true
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, mod, false, nil)
+		err := w.WriteRow([]interface{}{"line1\nline2"})
+		if err == nil || !strings.Contains(err.Error(), "row delimiter") {
+			t.Fatalf("WriteRow() error = %v, want row delimiter error", err)
+		}
+	})
+
+	t.Run("delimiters outside quoted field are allowed", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, base(), false, nil)
+		// With quoting in effect a comma and newline inside the field are safe.
+		if err := w.WriteRow([]interface{}{"a,b\nc"}); err != nil {
+			t.Fatalf("WriteRow() error = %v", err)
+		}
+		w.Flush()
+		if got, want := buf.String(), "\"a,b\nc\"\n"; got != want {
+			t.Errorf("output = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("raw bytes validated", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, base(), false, nil)
+		err := w.WriteRawRow([]sql.RawBytes{[]byte("a"), []byte(`b"c`)})
+		if err == nil || !strings.Contains(err.Error(), "column 2") {
+			t.Fatalf("WriteRawRow() error = %v, want column 2 error", err)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("output was buffered despite the error: %q", buf.String())
+		}
+	})
+
+	t.Run("hex blob binary may contain delimiters", func(t *testing.T) {
+		var buf bytes.Buffer
+		mod := base()
+		w := NewDelWriter(&buf, mod, false, nil)
+		w.SetBinaryFormat([]bool{false, true}, true)
+		if err := w.WriteRawRow([]sql.RawBytes{[]byte("x"), []byte(`y"z`)}); err != nil {
+			t.Fatalf("WriteRawRow() error = %v", err)
+		}
+		w.Flush()
+		if got, want := buf.String(), `"x",0x79227a`+"\n"; got != want {
+			t.Errorf("output = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("escaping enabled keeps the quote", func(t *testing.T) {
+		mod := base()
+		mod.NoEscape = false
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, mod, false, nil)
+		if err := w.WriteRow([]interface{}{`a"b`}); err != nil {
+			t.Fatalf("WriteRow() error = %v", err)
+		}
+		w.Flush()
+		if got, want := buf.String(), "\"a\"\"b\"\n"; got != want {
+			t.Errorf("output = %q, want %q", got, want)
+		}
+	})
 }

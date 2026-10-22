@@ -295,6 +295,49 @@ func (p *SQLParser) ExtractTableName(query string) (string, error) {
 	return "", errors.New("could not extract table name")
 }
 
+// SimpleTableName returns the single concrete table a SELECT reads from. SQL
+// export needs this: the generated file carries CREATE TABLE plus INSERT
+// statements aimed at one real table, so a join, CTE, or derived-table result
+// has no table to describe. Any query that is not a plain single-table SELECT
+// is rejected with an actionable error.
+func (p *SQLParser) SimpleTableName(query string) (string, error) {
+	stmt, err := p.parser.Parse(query)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to parse SQL")
+	}
+
+	selectStmt, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		return "", sqlExportShapeError("the query is not a plain SELECT statement")
+	}
+	if selectStmt.With != nil {
+		return "", sqlExportShapeError("the query uses a WITH (CTE) clause")
+	}
+	if len(selectStmt.From) == 0 {
+		return "", sqlExportShapeError("the query has no FROM clause")
+	}
+	if hasJoin, desc := p.checkJoin(selectStmt.From); hasJoin {
+		return "", sqlExportShapeError(desc)
+	}
+
+	aliased, ok := selectStmt.From[0].(*sqlparser.AliasedTableExpr)
+	if !ok {
+		return "", sqlExportShapeError("FROM is not a plain table name")
+	}
+	switch aliased.Expr.(type) {
+	case sqlparser.TableName:
+		return sqlparser.String(aliased.Expr), nil
+	default:
+		// Subquery / derived table, or a parenthesised join expression.
+		return "", sqlExportShapeError("FROM reads from a subquery instead of a table")
+	}
+}
+
+// sqlExportShapeError explains why a query cannot drive --format sql.
+func sqlExportShapeError(reason string) error {
+	return errors.Errorf("--format sql requires a single-table query (%s): the output file contains CREATE TABLE and INSERT statements for one table. Use --format del or --format parquet, or export a base table with --format sql", reason)
+}
+
 // HasComplexFeatures checks if the query has features that might not work well with sharding
 func (p *SQLParser) HasComplexFeatures(query string) (bool, string) {
 	stmt, err := p.parser.Parse(query)

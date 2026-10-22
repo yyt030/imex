@@ -247,7 +247,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--col-del` | 列分隔符 | `,` |
 | `--row-del` | 行分隔符 | `\n` |
 | `--escape` | 转义符 | `"` |
-| `--no-escape` | 不使用转义 | `false` |
+| `--no-escape` | 不使用转义（写出前校验，数据含冲突定界符时报错） | `false` |
 | `--timestamp-fmt` | 时间戳格式（作用于 DATETIME/TIMESTAMP 列） | `yyyy-MM-dd HH:mm:ss` |
 | `--date-fmt` | 日期格式（作用于 DATE 列） | `yyyy-MM-dd` |
 | `--no-char-del` | 不使用字符串定界符 | `false` |
@@ -271,6 +271,8 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--single-row-insert` | 每行一条 INSERT（等价 mysqldump `--skip-extended-insert`）；开启后 `--statement-size` 不再参与攒批，仅在单行语句超限时告警一次 | `false` |
 | `--no-create` | 不输出 CREATE TABLE 语句 | `false` |
 | `--no-data` | 不输出 INSERT 语句 | `false` |
+
+> SQL 输出文件描述**一张真实表**（`CREATE TABLE` + 指向该表的 `INSERT`），因此 `--format sql` 只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。
 
 ### import - 数据导入
 
@@ -320,10 +322,10 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | `--col-del` | 列分隔符 | `,` |
 | `--row-del` | 行分隔符 | `\n` |
 | `--escape` | 转义符 | `"` |
-| `--no-escape` | 不使用转义 | `false` |
+| `--no-escape` | 不使用转义（读取时不解析转义序列） | `false` |
 | `--timestamp-fmt` | 时间戳格式（导入时按目标列类型回转换） | `yyyy-MM-dd HH:mm:ss` |
 | `--date-fmt` | 日期格式（导入时按目标列类型回转换） | `yyyy-MM-dd` |
-| `--skip-count` | 跳过前 n 行 | `0` |
+| `--skip-count` | 跳过前 n 行数据（列名行单独读取，不计入） | `0` |
 | `--row-count` | 最多导入 n 行 | `0`（无限制） |
 | `--commit-count` | 每 n 行提交一次事务 | `1000` |
 | `--no-char-del` | 不使用字符串定界符 | `false` |
@@ -545,7 +547,7 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 ### 批量导入控制
 
 ```bash
-# 跳过前 1 行（列名），导入 1000 行，每 100 行提交一次
+# 跳过前 1 行数据，导入 1000 行，每 100 行提交一次
 gomydump import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.del \
   --skip-count 1 --row-count 1000 --commit-count 100 \
@@ -565,6 +567,8 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按 `RowsAffected` 拆分 `inserted` / `updated`（`insert_update` 模式下 `updated = affected - rows`，插入相同值时 `updated` 记 0、按新增呈现），批次执行失败的行计入 `failed`。导入、导出均每隔 **5 秒**打印一次进度（已处理条数、总速率 `rate`、区间速率 `interval_rate`、`elapsed`），结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `Import aborted` 汇总（含 `failed`）。
 
 版本横幅（`gomydump starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后才是命令启动与配置参数。加 `--quiet`（或 `GOMYDUMP_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；此时 `--messages` 消息文件仍按 DB2 兼容格式记录行进度（`SQL3105N`）与统计，因为消息文件是显式产物不受静默影响。
+
+消息文件本身按 DB2 LOAD/EXPORT 风格记录全过程：任务开始一行（导出 `SQL3104N`、导入 `SQL3109N`，含表名），每 1000 行一条 `SQL3105N` 进度，运行中的告警逐条写成 `SQL3107N` 并在结束时追加一条 `SQL3107N At least one warning message was encountered.` 汇总，正常结束写 `SQL3110N` 行数统计与 `# Completed/# Duration/# Rate` 注释行。当前会写入 `SQL3107N` 的告警来源：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调。
 
 ### 错误堆栈开关
 

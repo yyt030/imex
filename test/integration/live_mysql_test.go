@@ -290,8 +290,8 @@ func TestLive_RoundTripEveryFormat(t *testing.T) {
 			})
 
 			assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
-			assertMessageFile(t, exportMsg, "# Export Messages", "SQL3110N")
-			assertMessageFile(t, importMsg, "# Import Messages", "SQL3110N")
+			assertMessageFile(t, exportMsg, "# Export Messages", "SQL3104N", "SQL3110N")
+			assertMessageFile(t, importMsg, "# Import Messages", "SQL3109N", "SQL3110N")
 		})
 	}
 }

@@ -2,9 +2,11 @@ package _import
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/gomydump/internal/common"
+	"github.com/pkg/errors"
 )
 
 // maxPlaceholders is the hard ceiling of a MySQL prepared statement: the
@@ -108,16 +110,17 @@ func estimateRowBytes(row []interface{}) int64 {
 // fails with error 1153 ("Packet too large") mid-transaction — so the import
 // side, which builds its own batches from parsed rows, has to respect it even
 // though the source file may contain far larger statements.
-func fetchMaxAllowedPacket(db *sql.DB) int64 {
+func fetchMaxAllowedPacket(db *sql.DB) (int64, error) {
 	var name string
 	var value int64
 	row := db.QueryRow(common.TagSQL("SHOW VARIABLES LIKE 'max_allowed_packet'"))
-	if err := row.Scan(&name, &value); err != nil || value <= 0 {
-		common.Logger.Warn("Could not read max_allowed_packet, assuming conservative batch limit",
-			"assumed_bytes", defaultMaxAllowedPacket, "error", err)
-		return defaultMaxAllowedPacket
+	if err := row.Scan(&name, &value); err != nil {
+		return defaultMaxAllowedPacket, err
 	}
-	return value
+	if value <= 0 {
+		return defaultMaxAllowedPacket, errors.Errorf("server reported max_allowed_packet=%d", value)
+	}
+	return value, nil
 }
 
 // batchByteLimit converts a packet ceiling into the per-batch byte budget.
@@ -137,7 +140,14 @@ func (imp *Importer) batchBudget() int64 {
 			imp.maxBatchBytes = batchByteLimit(defaultMaxAllowedPacket)
 			return
 		}
-		packet := fetchMaxAllowedPacket(imp.db)
+		packet, err := fetchMaxAllowedPacket(imp.db)
+		if err != nil {
+			common.Logger.Warn("Could not read max_allowed_packet, assuming conservative batch limit",
+				"assumed_bytes", defaultMaxAllowedPacket, "error", err)
+			if imp.msg != nil {
+				imp.msg.WriteWarning(fmt.Sprintf("Could not read max_allowed_packet (%v); assuming %d bytes per batch", err, defaultMaxAllowedPacket))
+			}
+		}
 		imp.maxBatchBytes = batchByteLimit(packet)
 		common.Logger.Info("Import batch byte cap resolved",
 			"max_allowed_packet", packet,
@@ -156,6 +166,10 @@ func (imp *Importer) resolveBatchSize(columns int) (int, int64) {
 			"requested", imp.cfg.BatchSize, "effective", batchSize, "columns", columns,
 			"limit", maxPlaceholders,
 		)
+		if imp.msg != nil {
+			imp.msg.WriteWarning(fmt.Sprintf("Lowering --batch-size from %d to %d: %d columns would exceed the %d-placeholder statement limit",
+				imp.cfg.BatchSize, batchSize, columns, maxPlaceholders))
+		}
 	}
 	return batchSize, imp.batchBudget()
 }

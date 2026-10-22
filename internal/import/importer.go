@@ -196,6 +196,9 @@ func (imp *Importer) Import(ctx context.Context) error {
 			for i, col := range targetColumns {
 				targetColumns[i] = strings.TrimSpace(col)
 			}
+			if err := validatePositionalColumns(targetColumns, fileColumns); err != nil {
+				return err
+			}
 		}
 	} else {
 		targetColumns = fileColumns
@@ -275,6 +278,12 @@ func (imp *Importer) Import(ctx context.Context) error {
 		}
 	}
 
+	// The create-mode table name is only known after the CREATE statements have
+	// been inspected, so the begin record is emitted once the mode has run.
+	if imp.msg != nil {
+		imp.msg.WriteBegin(imp.cfg.Table)
+	}
+
 	// For DEL import, teach the reader the target column kinds so the text
 	// modifiers (--dec-pt/--date-fmt/--timestamp-fmt) reverse-transform only
 	// numeric/temporal fields; string fields are never rewritten. The binary
@@ -311,6 +320,22 @@ func (imp *Importer) Import(ctx context.Context) error {
 		)
 	}
 	return importErr
+}
+
+// validatePositionalColumns checks the positional --columns form ("a,b,c"):
+// mapping happens by position, so the list must have one non-empty name per
+// file column. With --no-col-names the file header is unknown, so only the
+// names themselves are checked.
+func validatePositionalColumns(targetColumns, fileColumns []string) error {
+	for i, col := range targetColumns {
+		if col == "" {
+			return errors.Errorf("--columns entry %d is empty: positional mapping needs one target column name per file column", i+1)
+		}
+	}
+	if len(fileColumns) > 0 && len(targetColumns) != len(fileColumns) {
+		return errors.Errorf("--columns lists %d target columns but the input file has %d columns: positional mapping pairs them by index, so the counts must match (use --columns \"file_col=table_col\" to import a subset)", len(targetColumns), len(fileColumns))
+	}
+	return nil
 }
 
 // validateTargetColumns checks that every target column exists on the table,

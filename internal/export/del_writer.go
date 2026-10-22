@@ -77,16 +77,25 @@ func (d *DelWriter) WriteHeader(columns []string) error {
 	for i, col := range columns {
 		values[i] = col
 	}
+	if err := d.validateNoEscapeRow(values); err != nil {
+		return err
+	}
 	return d.writeRow(values)
 }
 
 // WriteRow writes a single data row
 func (d *DelWriter) WriteRow(values []interface{}) error {
+	if err := d.validateNoEscapeRow(values); err != nil {
+		return err
+	}
 	return d.writeRow(values)
 }
 
 // WriteRawRow writes a row directly from sql.RawBytes to avoid allocation
 func (d *DelWriter) WriteRawRow(values []sql.RawBytes) error {
+	if err := d.validateNoEscapeRaw(values); err != nil {
+		return err
+	}
 	for i, val := range values {
 		if i > 0 {
 			d.bw.WriteString(d.colDel)
@@ -150,6 +159,83 @@ func (d *DelWriter) kind(i int) common.ColumnKind {
 		return common.KindUnknown
 	}
 	return d.kinds[i]
+}
+
+// validateNoEscapeRow rejects values that --no-escape cannot represent
+// unambiguously. Validation runs before anything is written so a rejected row
+// never leaves a half-written, corrupt record in the output.
+func (d *DelWriter) validateNoEscapeRow(values []interface{}) error {
+	if !d.noEscape {
+		return nil
+	}
+	for i, val := range values {
+		if d.hexBlob && i < len(d.binaryFlags) && d.binaryFlags[i] {
+			// Hex-encoded binary fields cannot contain a raw delimiter.
+			continue
+		}
+		var text string
+		switch v := val.(type) {
+		case nil:
+			continue
+		case string:
+			text = v
+		case []byte:
+			text = string(v)
+		case time.Time:
+			text = v.Format(d.timeFormat)
+		default:
+			// Numbers and booleans format to digits/signs and cannot match a
+			// configured delimiter.
+			continue
+		}
+		if err := d.checkNoEscapeText(text, i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateNoEscapeRaw is validateNoEscapeRow for the RawBytes fast path.
+func (d *DelWriter) validateNoEscapeRaw(values []sql.RawBytes) error {
+	if !d.noEscape {
+		return nil
+	}
+	for i, val := range values {
+		if d.hexBlob && i < len(d.binaryFlags) && d.binaryFlags[i] {
+			continue
+		}
+		if err := d.checkNoEscapeText(bytesToString(val), i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkNoEscapeText reports whether s can be written verbatim. A quoted field
+// (character delimiter in use) can contain the column and row delimiters, but
+// not the quote itself. An unquoted field has to avoid both structural
+// separators.
+func (d *DelWriter) checkNoEscapeText(s string, idx int) error {
+	if s == "" {
+		return nil
+	}
+	if !d.noCharDel && d.charDel != "" {
+		if strings.Contains(s, d.charDel) {
+			return d.noEscapeError(idx, "character delimiter", d.charDel)
+		}
+		return nil
+	}
+	if d.colDel != "" && strings.Contains(s, d.colDel) {
+		return d.noEscapeError(idx, "column delimiter", d.colDel)
+	}
+	if d.mod.RowDel != "" && strings.Contains(s, d.mod.RowDel) {
+		return d.noEscapeError(idx, "row delimiter", d.mod.RowDel)
+	}
+	return nil
+}
+
+func (d *DelWriter) noEscapeError(idx int, kind, delim string) error {
+	return fmt.Errorf("--no-escape: column %d value contains the %s %q, which would corrupt the DEL record; remove --no-escape or choose a different delimiter", idx+1, kind, delim)
 }
 
 func (d *DelWriter) formatValue(val interface{}, idx int) {
