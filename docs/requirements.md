@@ -87,8 +87,8 @@ gomydump export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQ
 | `--no-replace` | | 拒绝覆盖已存在的输出文件（默认行为为覆盖，即 `os.Create` 截断） | `false` | 否 |
 | `--batch-size` | | 读→写管道每批行数（仅作用于**单线程导出**与**导入**；并行导出为分片内同步 scan→write，不受影响） | `1000` | 否 |
 | `--pipeline-buffer` | | 读→写管道队列深度（批数为单位，0 表示同步交接） | `10` | 否 |
-| `--hex-blob` | | 将二进制列编码为 `0x` 十六进制字面量（非 utf8mb4 字符集时自动启用） | `false` | 否 |
-| `--no-hex-blob` | | 强制原始二进制透传，即使在非 utf8mb4 字符集下（可能导致二进制数据损坏）；与 `--hex-blob` 互斥 | `false` | 否 |
+| `--hex-blob` | | 将二进制列编码为 `0x` 十六进制字面量（非 utf8mb4 字符集时自动启用）；作用于 DEL/SQL 文本格式，`--format parquet` 下显式传入报退出码 2 | `false` | 否 |
+| `--no-hex-blob` | | 强制原始二进制透传，即使在非 utf8mb4 字符集下（可能导致二进制数据损坏）；与 `--hex-blob` 互斥；`--format parquet` 下显式传入报退出码 2 | `false` | 否 |
 | `--threads` | | 并行导出线程数（1=不并行，范围 1–256） | `1` | 否 |
 | `--shard-key` | | 分片键列名（空=自动检测主键/唯一键） | 空 | 否 |
 | `--log-level` | | 日志级别（debug/info/warn/error） | `info` | 否 |
@@ -121,6 +121,8 @@ gomydump export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQ
 | `--date-fmt` | 日期格式（作用于 DATE 列） | `yyyy-MM-dd` | - |
 | `--no-char-del` | 不使用字符串定界符（裸字段不转义：数据含列/行分隔符时导出报错） | `false` | - |
 | `--no-col-names` | 不输出列名到第一行 | `false` | - |
+
+**格式适用性：** 上表中的定界符/转义/时间格式/列名行选项只描述 DEL 文件的布局与编码，SQL 与 Parquet 写端不使用它们；显式传入且 `--format` 不是 `del` 时报用法错误并退出 2（与 `--no-create` 等 SQL 专属选项的行为对称），不会被静默忽略。
 
 **分隔符格式说明：**
 
@@ -335,6 +337,8 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | `--commit-count` | 每 n 行提交一次事务（≥1） | `1000` | - |
 | `--no-char-del` | 不使用字符串定界符（裸字段不转义：数据含列/行分隔符时导出报错） | `false` | - |
 | `--no-col-names` | 输入文件第一行不是列名 | `false` | - |
+
+**格式适用性与行选择：** `--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 只描述 DEL 文件的解析方式，`--format sql`/`parquet` 下显式传入会报用法错误并退出 2；`--skip-count`/`--row-count`/`--commit-count` 与格式无关，三种格式都生效。
 
 **分隔符格式说明：**
 
@@ -1249,6 +1253,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 26 | `--no-char-del` 写出前校验 | 读端只在**引号内**处理转义，因此 `--no-char-del`（或空字符定界符）时每个字段都是裸文本，含列分隔符/行分隔符的数据会产出无法解析的文件（实测 `sql: expected N arguments` 或整行错位）。现与 `--no-escape` 共用写出前校验，报 `--no-char-del: column N value contains the ... delimiter` 并中止 |
 | 27 | Parquet 导出限制行组大小 | parquet-go 的行组上限默认是 `math.MaxInt64`，写端会把**整个结果集**缓存在内存：1M 行 10 列表实测峰值 RSS 271 MB 且随行数线性增长。现固定每行组 100 000 行，同一导出 RSS 降到 ~73 MB 且与行数无关，文件体积仅增 0.02% |
 | 28 | `make test` / `make test-live` 可用 | 两个目标都带 `-race`，而 `-race` 需要 cgo；此前沿用发布构建的 `CGO_ENABLED=0`，导致 `make test` 在任何环境都直接失败（`-race requires cgo`）。测试目标固定 `CGO_ENABLED=1`，发布构建不变 |
+| 29 | DEL 专属选项改为显式报错 | 此前 `-f sql --col-del '@' --no-char-del --date-fmt ...` 与 `-f parquet --col-del '|' --hex-blob` 都退出 0 并静默忽略这些标志，而 SQL 专属选项（`--no-create`/`--statement-size` 等）早已有强制校验，两类格式专属标志的不对称会误导用户以为文件按指定布局写出。新增 `validateDELOnlyOptions`：`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 在导出与导入的 `--format sql`/`parquet` 下一律报 `can only be used with --format del` 并退出 2（默认值不算显式传入，故不影响既有命令）；同时新增 `validateParquetBinaryOptions`，`--hex-blob`/`--no-hex-blob` 与 `--format parquet` 组合退出 2——Parquet 二进制列已是原生 `binary`，开关无意义，而 SQL/DEL 仍正常使用它们 |
 
 ### 本轮测试确认的既有行为（未改动）
 

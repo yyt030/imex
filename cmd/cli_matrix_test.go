@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/gomydump/internal/common"
 	"github.com/gomydump/internal/config"
 )
 
@@ -185,6 +186,143 @@ func TestCLIMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// validateOnly parses args on the export/import command and runs just the
+// validation layer. Going through rootCmd.Execute() would open a database
+// connection (and retry it) for every combination that validation accepts.
+func validateOnly(t *testing.T, sub string, args []string) error {
+	t.Helper()
+	*exportCfg = *newExportConfigForTest()
+	*importCfg = *newImportConfigForTest()
+	resetChangedFlags(exportCmd, importCmd, rootCmd)
+
+	if sub == "export" {
+		if err := exportCmd.Flags().Parse(args); err != nil {
+			return err
+		}
+		return validateExportConfig(exportCmd, exportCfg)
+	}
+	if err := importCmd.Flags().Parse(args); err != nil {
+		return err
+	}
+	return validateImportConfig(importCmd, importCfg)
+}
+
+// TestCLIDELFlagFormatValidation pins the symmetry with the SQL-only options:
+// every DEL modifier must be accepted for --format del and rejected as a usage
+// error for the other two formats, on both subcommands. Silently ignoring them
+// is what let a user believe the file was laid out differently than it is.
+func TestCLIDELFlagFormatValidation(t *testing.T) {
+	// One sample value per DEL modifier; bool flags take no value.
+	delFlags := []struct {
+		name  string
+		value string
+	}{
+		{"--char-del", "'"},
+		{"--col-del", "@"},
+		{"--row-del", `\r\n`},
+		{"--escape", "\\"},
+		{"--no-escape", ""},
+		{"--timestamp-fmt", "yyyy-MM-dd HH:mm"},
+		{"--date-fmt", "dd/MM/yyyy"},
+		{"--no-char-del", ""},
+		{"--no-col-names", ""},
+	}
+
+	bases := map[string][]string{
+		"export": {"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.dat", "-q", "SELECT 1"},
+		"import": {"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-i", "/tmp/in.dat", "-t", "users"},
+	}
+
+	for _, sub := range []string{"export", "import"} {
+		for _, f := range delFlags {
+			for _, format := range []string{"del", "sql", "parquet"} {
+				args := append([]string{}, bases[sub]...)
+				args = append(args, "-f", format)
+				if f.value == "" {
+					args = append(args, f.name)
+				} else {
+					args = append(args, f.name, f.value)
+				}
+
+				t.Run(sub+" "+f.name+" with --format "+format, func(t *testing.T) {
+					err := validateOnly(t, sub, args)
+					if format == "del" {
+						if err != nil {
+							t.Fatalf("legal combination rejected: %v", err)
+						}
+						return
+					}
+					want := f.name + " can only be used with --format del"
+					if err == nil {
+						t.Fatalf("expected usage error %q, got nil", want)
+					}
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("expected error containing %q, got %q", want, err.Error())
+					}
+					if !common.IsUsageError(err) {
+						t.Errorf("error %q must be a usage error (exit code 2)", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestCLIParquetHexBlobRejected covers --format parquet's other silent no-op:
+// parquet stores binary columns natively, so the hex-blob switches cannot
+// change the output and must not be accepted quietly.
+func TestCLIParquetHexBlobRejected(t *testing.T) {
+	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.dat", "-q", "SELECT 1"}
+
+	for _, format := range []string{"del", "sql", "parquet"} {
+		for _, flag := range []string{"--hex-blob", "--no-hex-blob"} {
+			args := append([]string{}, base...)
+			args = append(args, "-f", format, flag)
+
+			t.Run("export "+flag+" with --format "+format, func(t *testing.T) {
+				err := validateOnly(t, "export", args)
+				if format != "parquet" {
+					if err != nil {
+						t.Fatalf("legal combination rejected: %v", err)
+					}
+					return
+				}
+				want := flag + " cannot be used with --format parquet"
+				if err == nil {
+					t.Fatalf("expected usage error %q, got nil", want)
+				}
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("expected error containing %q, got %q", want, err.Error())
+				}
+				if !common.IsUsageError(err) {
+					t.Errorf("error %q must be a usage error (exit code 2)", err)
+				}
+			})
+		}
+	}
+}
+
+// TestCLIDELFlagRejectedExitCode drives the rejection through the real command
+// tree so the exit-2 contract is covered end to end, not just the validator.
+func TestCLIDELFlagRejectedExitCode(t *testing.T) {
+	*exportCfg = *newExportConfigForTest()
+	*importCfg = *newImportConfigForTest()
+	resetChangedFlags(exportCmd, importCmd, rootCmd)
+
+	rootCmd.SetArgs([]string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb",
+		"-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql", "--col-del", "@"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected usage error, got nil")
+	}
+	if !strings.Contains(err.Error(), "--col-del can only be used with --format del") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !common.IsUsageError(err) {
+		t.Errorf("error %q must be a usage error (exit code 2)", err)
 	}
 }
 

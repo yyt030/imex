@@ -234,12 +234,12 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--batch-size` | | 读→写交接每批的行数（仅单线程导出流水线） | `1000` |
 | `--pipeline-buffer` | | 读→写交接队列深度（批数；0=同步交接，仅单线程导出） | `10` |
 | `--default-charset` | | 连接与输出文件字符集（见上方说明；utf8mb4/utf8/latin1/ascii/gbk/gb18030） | `utf8mb4` |
-| `--hex-blob` | | 二进制列强制写为 `0x` 十六进制字面量（非 utf8mb4 时自动开启） | `false` |
-| `--no-hex-blob` | | 强制二进制列原样透传（非 utf8mb4 下可能损坏，会打印告警）；与 `--hex-blob` 互斥 | `false` |
+| `--hex-blob` | | 二进制列强制写为 `0x` 十六进制字面量（非 utf8mb4 时自动开启）；仅 DEL/SQL 文本格式，`--format parquet` 下传入报错 | `false` |
+| `--no-hex-blob` | | 强制二进制列原样透传（非 utf8mb4 下可能损坏，会打印告警）；与 `--hex-blob` 互斥；`--format parquet` 下传入报错 | `false` |
 
 > 提示：DEL/Parquet 文件的列头取自查询结果集的列名。若 `--query` 含未起别名的表达式列（如 `SELECT 1, COUNT(*)`），导入时该列头（`1`、`COUNT(*)`）在目标表中不存在会报错，请为表达式列起别名（`SELECT 1 AS flag`）或导入时用 `--columns` 按位置指定目标列。
 
-**DEL 格式修饰选项：**
+**DEL 格式修饰选项（仅 `--format del` 生效，与 `--format sql`/`parquet` 组合时显式报错，退出码 2）：**
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
@@ -314,7 +314,7 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | `replace` | 删除表所有数据后插入 |
 | `create` | 创建表并导入数据（仅 SQL 格式） |
 
-**DEL 格式修饰选项：**
+**DEL 格式修饰选项（仅 `--format del` 生效，与 `--format sql`/`parquet` 组合时显式报错，退出码 2）：**
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
@@ -515,8 +515,10 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 | `--format` / `--mode` | 各自枚举白名单 | 退出码 2 |
 | `--default-charset` | 字符集白名单；非 `utf8mb4` 不可用于 `parquet`；`gbk`/`gb18030` 不可用于 `sql`（按字节转义不安全） | `invalid --default-charset` / 格式冲突，退出码 2 |
 | `--hex-blob` + `--no-hex-blob` | 二者互斥 | `mutually exclusive`，退出码 2 |
+| `--char-del` `--col-del` `--row-del` `--escape` `--no-escape` `--timestamp-fmt` `--date-fmt` `--no-char-del` `--no-col-names` | 仅 `--format del` 生效（SQL/Parquet 写端不使用这些修饰） | `--xxx can only be used with --format del`，退出码 2 |
+| `--hex-blob` / `--no-hex-blob` + `--format parquet` | Parquet 二进制列原生按 `binary` 存储，两个开关都不改变输出 | `--hex-blob cannot be used with --format parquet`，退出码 2 |
 
-关联校验：`--no-create`/`--no-data`/`--statement-size`/`--single-row-insert` 仅对 `--format sql` 生效，显式传入且格式不符时报错而非静默忽略；`--mode create` 仅支持 `--format sql`。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
+关联校验：`--no-create`/`--no-data`/`--statement-size`/`--single-row-insert` 仅对 `--format sql` 生效，`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
 
 ### OceanBase 租户连接
 

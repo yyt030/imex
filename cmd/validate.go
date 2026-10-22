@@ -170,6 +170,47 @@ func validateSQLOnlyOptions(cmd *cobra.Command, format string) error {
 	return nil
 }
 
+// delOnlyFlags are the DEL format modifiers. They describe how a .del file is
+// laid out or encoded, so the sql and parquet writers have no use for them and
+// silently ignoring them would let the user believe a file was written another
+// way. Passing any of them with --format sql|parquet is a usage error.
+var delOnlyFlags = []string{
+	"char-del", "col-del", "row-del", "escape", "no-escape",
+	"timestamp-fmt", "date-fmt", "no-char-del", "no-col-names",
+}
+
+// validateDELOnlyOptions checks that DEL-only options are not used with non-DEL
+// formats. It mirrors validateSQLOnlyOptions so that every format-scoped option
+// behaves the same way: accepted for its own format, exit 2 for the others.
+func validateDELOnlyOptions(cmd *cobra.Command, format string) error {
+	if format == "del" {
+		return nil
+	}
+	for _, name := range delOnlyFlags {
+		if cmd.Flags().Changed(name) {
+			return common.Usagef("--%s can only be used with --format del", name)
+		}
+	}
+	return nil
+}
+
+// validateParquetBinaryOptions checks the binary-encoding flags that the parquet
+// writer cannot honour. Parquet stores binary columns with their own type, so
+// neither --hex-blob nor --no-hex-blob changes the output; the SQL writer does
+// use them, so they stay legal there.
+func validateParquetBinaryOptions(cmd *cobra.Command, format string) error {
+	if format != "parquet" {
+		return nil
+	}
+	if cmd.Flags().Changed("hex-blob") {
+		return common.Usagef("--hex-blob cannot be used with --format parquet: binary columns are already stored as binary")
+	}
+	if cmd.Flags().Changed("no-hex-blob") {
+		return common.Usagef("--no-hex-blob cannot be used with --format parquet: binary columns are already stored as binary")
+	}
+	return nil
+}
+
 // validateFormat checks that the format is one of del/sql/parquet.
 func validateFormat(format string) error {
 	switch format {
@@ -252,6 +293,12 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 	if err := validateSQLOnlyOptions(cmd, cfg.Format); err != nil {
 		return err
 	}
+	if err := validateDELOnlyOptions(cmd, cfg.Format); err != nil {
+		return err
+	}
+	if err := validateParquetBinaryOptions(cmd, cfg.Format); err != nil {
+		return err
+	}
 	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel, cfg.DelModifier.Escape)
 }
 
@@ -298,6 +345,9 @@ func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
 		return err
 	}
 	if err := validateRowCount(cfg.RowCount); err != nil {
+		return err
+	}
+	if err := validateDELOnlyOptions(cmd, cfg.Format); err != nil {
 		return err
 	}
 	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel, cfg.DelModifier.Escape)
