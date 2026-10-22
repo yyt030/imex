@@ -105,18 +105,25 @@ const (
 	LogFormatText = "text"
 )
 
-// validLogFormat is the set --log-format accepts; cmd/validate.go checks
-// membership so a typo fails with exit code 2 instead of silently falling back.
+// validLogFormat is the set --log-format accepts; cmd/validate.go's
+// validateLogFormat is called from the root command's PersistentPreRunE so a
+// typo fails with exit code 2 instead of silently falling back.
 func ValidLogFormat(s string) bool {
 	return s == LogFormatJava || s == LogFormatText
 }
 
 // currentLevel reads the level back out of the active handler so ApplyLogFormat
-// can restyle without resetting it.
+// can restyle without resetting it. The probes must walk down from Debug, one
+// step at a time: skipping Info made an info handler look like "warn" (Info is
+// enabled, so Enabled(Warn) is trivially true as well), and every restyle then
+// raised the level one more step until only ERROR survived — which silently
+// dropped the version banner and any pre-InitLogger INFO record.
 func currentLevel() config.LogLevel {
 	switch {
 	case Logger.Enabled(context.Background(), slog.LevelDebug):
 		return config.LogLevelDebug
+	case Logger.Enabled(context.Background(), slog.LevelInfo):
+		return config.LogLevelInfo
 	case Logger.Enabled(context.Background(), slog.LevelWarn):
 		return config.LogLevelWarn
 	case Logger.Enabled(context.Background(), slog.LevelError):
@@ -196,16 +203,35 @@ func writeAttr(buf *bytes.Buffer, a slog.Attr) {
 	buf.WriteString(a.Key)
 	buf.WriteByte('=')
 	v := a.Value.Any()
-	s := fmt.Sprint(v)
-	// Quote values containing spaces so key=value pairs stay individually
-	// tokenisable, mirroring what slog's handlers do.
-	if strings.ContainsAny(s, " \t\n") {
-		buf.WriteByte('"')
-		buf.WriteString(strings.ReplaceAll(s, `"`, `\"`))
-		buf.WriteByte('"')
-	} else {
-		buf.WriteString(s)
+	s, ok := v.(string)
+	if !ok {
+		s = fmt.Sprint(v)
 	}
+	// A record must occupy exactly one physical line: delimiters and quote
+	// characters are legitimate values here (char_del=" row_del="\n"), and an
+	// unescaped newline splits the record so grep/tail lose everything after it.
+	// Quote like slog's own text handler does, so both layouts render the same
+	// value as the same token.
+	if needsQuoting(s) {
+		buf.WriteString(strconv.Quote(s))
+		return
+	}
+	buf.WriteString(s)
+}
+
+// needsQuoting reports whether a value has to be quoted to stay one token on
+// one line: empty, or containing whitespace, a control character, a double
+// quote, a backslash, or '=' (which would otherwise read as a new key).
+func needsQuoting(s string) bool {
+	if s == "" {
+		return true
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c <= ' ' || c == 0x7f || c == '"' || c == '\\' || c == '=' {
+			return true
+		}
+	}
+	return false
 }
 
 var bufferPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}

@@ -154,6 +154,12 @@ func TestCLIMatrix(t *testing.T) {
 			wantErr:   true,
 			errSubstr: "--mode create can only be used with --format sql",
 		},
+		{
+			name:      "global log-format bogus rejected",
+			args:      []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.del", "-q", "SELECT 1", "--log-format", "bogus"},
+			wantErr:   true,
+			errSubstr: "invalid --log-format",
+		},
 	}
 
 	for _, tt := range tests {
@@ -161,6 +167,10 @@ func TestCLIMatrix(t *testing.T) {
 			// Reset global config to defaults
 			*exportCfg = *newExportConfigForTest()
 			*importCfg = *newImportConfigForTest()
+			// logFormat is a package-level flag target: pflag only writes it when
+			// the flag is given, so a case passing --log-format bogus would leave
+			// that value in place for every following case.
+			logFormat = "java"
 			// cobra.Cmd.Flags().Changed() is per-Flag state and the command tree
 			// is package-level, so a case that sets --statement-size would
 			// otherwise still look "changed" to the next case.
@@ -196,6 +206,7 @@ func validateOnly(t *testing.T, sub string, args []string) error {
 	t.Helper()
 	*exportCfg = *newExportConfigForTest()
 	*importCfg = *newImportConfigForTest()
+	logFormat = "java"
 	resetChangedFlags(exportCmd, importCmd, rootCmd)
 
 	if sub == "export" {
@@ -319,6 +330,30 @@ func TestCLIDELFlagRejectedExitCode(t *testing.T) {
 		t.Fatal("expected usage error, got nil")
 	}
 	if !strings.Contains(err.Error(), "--col-del can only be used with --format del") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !common.IsUsageError(err) {
+		t.Errorf("error %q must be a usage error (exit code 2)", err)
+	}
+}
+
+// TestCLILogFormatEnvOverrideRejected covers the GOMYDUMP_LOG_FORMAT path: the
+// env value goes through the same membership check as the flag, so a typo
+// cannot silently fall back to the java layout.
+func TestCLILogFormatEnvOverrideRejected(t *testing.T) {
+	t.Setenv("GOMYDUMP_LOG_FORMAT", "javaness")
+	*exportCfg = *newExportConfigForTest()
+	*importCfg = *newImportConfigForTest()
+	logFormat = "java"
+	resetChangedFlags(exportCmd, importCmd, rootCmd)
+
+	rootCmd.SetArgs([]string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb",
+		"-o", "/tmp/out.del", "-q", "SELECT 1"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected usage error for GOMYDUMP_LOG_FORMAT=javaness, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid --log-format") {
 		t.Errorf("unexpected error: %v", err)
 	}
 	if !common.IsUsageError(err) {

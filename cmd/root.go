@@ -102,6 +102,12 @@ func init() {
 		if v := os.Getenv("GOMYDUMP_LOG_FORMAT"); strings.TrimSpace(v) != "" {
 			logFormat = strings.TrimSpace(v)
 		}
+		// A typo here would otherwise silently fall back to the java layout,
+		// while every other parameter mismatch is a usage error. Check it before
+		// applying, so the failure itself is still reported in a valid layout.
+		if err := validateLogFormat(logFormat); err != nil {
+			return err
+		}
 		common.LogFormat = logFormat
 
 		// Apply log format BEFORE any validation so errors use chosen style.
