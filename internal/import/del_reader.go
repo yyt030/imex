@@ -32,12 +32,29 @@ type DelReader struct {
 	// Nil until the importer supplies it; without kinds no text modifier is
 	// applied (raw file values pass through), which is safe for string data.
 	kinds []common.ColumnKind
+	// binaryCols marks file-column positions whose target column is a raw
+	// binary type. The exporter writes those as unquoted 0x literals when
+	// hex encoding is on, so the reader has to decode them back to bytes; for
+	// any other column a 0x token is ordinary text.
+	binaryCols []bool
 }
 
 // SetColumnKinds supplies per-file-column target kinds so --dec-pt/--date-fmt/
 // --timestamp-fmt reverse transforms only touch numeric/temporal columns.
 func (d *DelReader) SetColumnKinds(kinds []common.ColumnKind) {
 	d.kinds = kinds
+}
+
+// SetBinaryColumns marks which file columns hold raw binary data. Combined with
+// an unquoted 0x… token this is what distinguishes a hex-encoded BLOB from a
+// text value that merely starts with "0x".
+func (d *DelReader) SetBinaryColumns(flags []bool) {
+	d.binaryCols = flags
+}
+
+// isBinaryColumn reports whether the field at idx targets a binary column.
+func (d *DelReader) isBinaryColumn(idx int) bool {
+	return idx < len(d.binaryCols) && d.binaryCols[idx]
 }
 
 // NewDelReader creates a new DEL format reader
@@ -166,9 +183,18 @@ func (d *DelReader) ReadRow() ([]interface{}, error) {
 	for i, f := range fields {
 		if f == "" && !quoted[i] {
 			values[i] = nil
-		} else {
-			values[i] = d.applyModifiers(f, i)
+			continue
 		}
+		// A hex-encoded binary column arrives unquoted as 0x…, so only an
+		// unquoted token in a binary column is decoded; quoted values are text,
+		// and non-binary columns keep "0x…" verbatim.
+		if !quoted[i] && d.isBinaryColumn(i) {
+			if b, ok := decodeHexField(f); ok {
+				values[i] = b
+				continue
+			}
+		}
+		values[i] = d.applyModifiers(f, i)
 	}
 
 	return values, nil

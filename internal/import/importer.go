@@ -276,14 +276,17 @@ func (imp *Importer) Import(ctx context.Context) error {
 
 	// For DEL import, teach the reader the target column kinds so the text
 	// modifiers (--dec-pt/--date-fmt/--timestamp-fmt) reverse-transform only
-	// numeric/temporal fields; string fields are never rewritten.
+	// numeric/temporal fields; string fields are never rewritten. The binary
+	// flags let it decode the 0x hex literals the exporter writes for
+	// binary columns.
 	if imp.cfg.Format == "del" {
 		if delReader, ok := reader.(*DelReader); ok {
-			kinds, err := imp.columnKindsFor(ctx, targetColumns)
+			kinds, binaries, err := imp.columnInfoFor(ctx, targetColumns)
 			if err != nil {
 				common.Logger.Warn("Failed to resolve target column types; DEL text modifiers disabled", "error", err)
 			} else {
 				delReader.SetColumnKinds(kinds)
+				delReader.SetBinaryColumns(binaries)
 			}
 		}
 	}
@@ -373,12 +376,13 @@ func (imp *Importer) validateTargetColumns(ctx context.Context, cols []string) e
 	return nil
 }
 
-// columnKindsFor resolves the ColumnKind of each target column (by name) from
-// information_schema, returning a slice aligned to cols order. Unknown or
-// missing columns map to common.KindUnknown.
-func (imp *Importer) columnKindsFor(ctx context.Context, cols []string) ([]common.ColumnKind, error) {
+// columnInfoFor resolves the ColumnKind of each target column (by name) from
+// information_schema, returning slices aligned to cols order, together with a
+// "this column is raw binary" flag per column. Unknown or missing columns map to
+// common.KindUnknown and false.
+func (imp *Importer) columnInfoFor(ctx context.Context, cols []string) ([]common.ColumnKind, []bool, error) {
 	if len(cols) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	placeholders := strings.Repeat("?,", len(cols))
 	placeholders = placeholders[:len(placeholders)-1]
@@ -393,7 +397,7 @@ func (imp *Importer) columnKindsFor(ctx context.Context, cols []string) ([]commo
 	}
 	rows, err := imp.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to query column types")
+		return nil, nil, errors.Wrap(err, "failed to query column types")
 	}
 	defer rows.Close()
 
@@ -401,23 +405,25 @@ func (imp *Importer) columnKindsFor(ctx context.Context, cols []string) ([]commo
 	for rows.Next() {
 		var name, dataType string
 		if err := rows.Scan(&name, &dataType); err != nil {
-			return nil, errors.Wrap(err, "failed to scan column type")
+			return nil, nil, errors.Wrap(err, "failed to scan column type")
 		}
 		byName[strings.ToLower(name)] = dataType
 	}
 	if err := rows.Err(); err != nil {
-		return nil, errors.Wrap(err, "column type iteration error")
+		return nil, nil, errors.Wrap(err, "column type iteration error")
 	}
 
 	kinds := make([]common.ColumnKind, len(cols))
+	binaries := make([]bool, len(cols))
 	for i, c := range cols {
 		if dt, ok := byName[strings.ToLower(strings.TrimSpace(c))]; ok {
 			kinds[i] = common.ClassifyColumnKind(dt)
+			binaries[i] = common.IsBinaryTypeName(dt)
 		} else {
 			kinds[i] = common.KindUnknown
 		}
 	}
-	return kinds, nil
+	return kinds, binaries, nil
 }
 
 // addBatchResult records insert/update counters for one successfully applied

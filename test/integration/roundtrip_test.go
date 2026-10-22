@@ -333,38 +333,104 @@ func TestDelRoundTrip_BackslashEscapeMode(t *testing.T) {
 	}
 }
 
-// TestDelRoundTrip_HexBlobIsNotDecoded documents a known asymmetry rather than
-// asserting it as desired behaviour: the exporter writes 0x... literals for
-// binary columns in DEL format too, but the DEL reader has no schema knowledge
-// and returns the literal text. Importing such a file needs --format sql, or a
-// target column whose bytes match the hex text. If DEL decoding is implemented,
-// this test must be rewritten to require the decoded bytes.
-func TestDelRoundTrip_HexBlobIsNotDecoded(t *testing.T) {
+// TestDelRoundTrip_HexBlobIsDecoded closes the asymmetry between the two text
+// formats: the exporter writes 0x… literals for binary columns in DEL too, and
+// the importer now decodes them back to bytes because it knows the target
+// column is binary (information_schema), the field is unquoted, and the token is
+// a valid even-length hex literal.
+func TestDelRoundTrip_HexBlobIsDecoded(t *testing.T) {
 	mod := &config.DelModifier{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`}
-	payload := []byte{0xde, 0xad}
+	rows := [][]interface{}{
+		{int64(1), nil},
+		{int64(2), []byte{}},
+		{int64(3), []byte{0xde, 0xad}},
+		{int64(4), []byte{0x00, 0x27, '"', '\\', '\n', 0x1a}},
+	}
 
 	var buf bytes.Buffer
 	w := export.NewDelWriter(&buf, mod, false, nil)
 	w.SetBinaryFormat([]bool{false, true}, true)
-	if err := w.WriteRow([]interface{}{int64(1), payload}); err != nil {
-		t.Fatalf("WriteRow: %v", err)
+	for _, row := range rows {
+		if err := w.WriteRow(row); err != nil {
+			t.Fatalf("WriteRow: %v", err)
+		}
 	}
 	if err := w.WriteFooter(); err != nil {
 		t.Fatalf("WriteFooter: %v", err)
 	}
 
 	text := buf.String()
-	if !strings.Contains(text, "0xdead") {
+	if !strings.Contains(text, ",0xdead") {
 		t.Fatalf("exporter did not write a hex literal: %q", text)
 	}
 
 	r := _import.NewDelReader(bufio.NewReader(bytes.NewReader(buf.Bytes())), mod, false)
+	r.SetBinaryColumns([]bool{false, true})
+
+	got := make([][]interface{}, 0, len(rows))
+	for range rows {
+		row, err := r.ReadRow()
+		if err != nil {
+			t.Fatalf("ReadRow: %v", err)
+		}
+		got = append(got, row)
+	}
+
+	if got[0][1] != nil {
+		t.Errorf("NULL blob came back as %#v (file=%q)", got[0][1], text)
+	}
+	empty, ok := got[1][1].([]byte)
+	if !ok || len(empty) != 0 {
+		t.Fatalf("empty blob came back as %#v, want []byte{} (file=%q)", got[1][1], text)
+	}
+	for i := 2; i < len(rows); i++ {
+		payload, ok := got[i][1].([]byte)
+		if !ok {
+			t.Fatalf("row %d came back as %#v, want []byte (file=%q)", i, got[i][1], text)
+		}
+		if want := rows[i][1].([]byte); !bytes.Equal(payload, want) {
+			t.Fatalf("row %d: got %x, want %x", i, payload, want)
+		}
+	}
+}
+
+// TestDelRoundTrip_HexLooksLikeTextIsPreserved is the flip side: the same 0x…
+// shape must stay text when the target column is not binary, and when the reader
+// has no schema at all.
+func TestDelRoundTrip_HexLooksLikeTextIsPreserved(t *testing.T) {
+	mod := &config.DelModifier{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`}
+	text := `1,"0xdead"` + "\n"
+
+	for _, tc := range []struct {
+		name       string
+		binaryCols []bool
+	}{
+		{"text column", []bool{false, false}},
+		{"unknown schema", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := _import.NewDelReader(bufio.NewReader(strings.NewReader(text)), mod, false)
+			r.SetBinaryColumns(tc.binaryCols)
+			row, err := r.ReadRow()
+			if err != nil {
+				t.Fatalf("ReadRow: %v", err)
+			}
+			if got := stringOf(t, row[1]); got != "0xdead" {
+				t.Fatalf("quoted 0x value was decoded: %#v", row[1])
+			}
+		})
+	}
+
+	// A bare (unquoted) token in a binary column that is not valid hex also
+	// stays text rather than being mangled.
+	r := _import.NewDelReader(bufio.NewReader(strings.NewReader("1,0xnotahex\n")), mod, false)
+	r.SetBinaryColumns([]bool{false, true})
 	row, err := r.ReadRow()
 	if err != nil {
 		t.Fatalf("ReadRow: %v", err)
 	}
-	if got := stringOf(t, row[1]); got != "0xdead" {
-		t.Fatalf("DEL reader returned %q; the gap has been closed — update this test to require %x", got, payload)
+	if got := stringOf(t, row[1]); got != "0xnotahex" {
+		t.Fatalf("malformed hex was mangled: %#v", row[1])
 	}
 }
 

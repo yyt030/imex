@@ -161,3 +161,39 @@ func TestSQLReader_CreateStatements(t *testing.T) {
 		t.Fatalf("unexpected CREATE stmt: %s", stmts[0])
 	}
 }
+
+func TestDecodeHexField(t *testing.T) {
+	cases := []struct {
+		token  string
+		want   []byte
+		wantOK bool
+	}{
+		{"0xdead", []byte{0xde, 0xad}, true},
+		{"0XDEAD", []byte{0xde, 0xad}, true},
+		{"0x", []byte{}, true},
+		{"0x0a0b", []byte{0x0a, 0x0b}, true},
+		// Rejected: callers must leave these as text instead of mangling them.
+		{"0xabc", nil, false},    // odd length
+		{"0xzz", nil, false},     // not hex
+		{"dead", nil, false},     // no 0x prefix
+		{"0", nil, false},        // prefix incomplete
+		{`"0xdead"`, nil, false}, // quotes are not part of a literal
+	}
+	for _, c := range cases {
+		got, ok := decodeHexField(c.token)
+		if ok != c.wantOK {
+			t.Errorf("decodeHexField(%q) ok = %v, want %v", c.token, ok, c.wantOK)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if got == nil {
+			t.Errorf("decodeHexField(%q) returned nil slice, want non-nil", c.token)
+			continue
+		}
+		if string(got) != string(c.want) {
+			t.Errorf("decodeHexField(%q) = %x, want %x", c.token, got, c.want)
+		}
+	}
+}

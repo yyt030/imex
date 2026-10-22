@@ -369,6 +369,30 @@ func decodeHexLiteral(token string) []byte {
 	return b
 }
 
+// decodeHexField decodes a 0x hex literal in a context where the token could
+// also be ordinary text, and reports whether it really was a hex literal. It is
+// stricter than decodeHexLiteral: odd-length or non-hex bodies are rejected
+// instead of being passed through, so the caller can leave such a field as text.
+// An isolated "0x" decodes to an empty (non-nil) byte slice, matching the SQL
+// reader and the DEL exporter, which write an empty blob as 0x.
+func decodeHexField(token string) ([]byte, bool) {
+	if !isHexLiteral(token) {
+		return nil, false
+	}
+	body := token[2:]
+	if body == "" {
+		return []byte{}, true
+	}
+	if len(body)%2 != 0 {
+		return nil, false
+	}
+	b, err := hex.DecodeString(body)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
+
 func unescapeSQLString(s string) string {
 	if !strings.ContainsAny(s, "\\") {
 		return s
