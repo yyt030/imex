@@ -1,0 +1,189 @@
+# CLI surface extracted from shipped binary commit 4934dd2
+# Frozen baseline, kept verbatim as a regression reference. Two intentional
+# deltas vs the current tree: --statement-size now defaults to 8388608 (8 MiB)
+# and export gained --single-row-insert. Diff `gomydump <cmd> --help` against
+# this file and expect only those lines.
+## export
+Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
+SQL, or Parquet format file.
+
+Examples:
+  # Basic export to DEL format
+  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+    -o /backup/users.del -q "SELECT * FROM users"
+
+  # Export to SQL format
+  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+    -o /backup/users.sql -f sql -q "SELECT * FROM users"
+
+  # Export to Parquet format
+  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+    -o /backup/users.parquet -f parquet -q "SELECT * FROM users"
+
+  # Parallel export with 4 threads
+  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+    -o /backup/users.del --threads 4 -q "SELECT * FROM users"
+
+  # Custom delimiters
+  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+    -o /backup/users.del --char-del '!' --col-del '@' \
+    -q "SELECT * FROM users"
+
+Usage:
+  gomydump export [flags]
+
+Aliases:
+  export, exp
+
+Flags:
+      --batch-size int                  Rows per reader->writer hand-off batch (single-threaded export) (default 1000)
+      --char-del string                 String delimiter (default "\"")
+      --col-del string                  Column delimiter (default ",")
+      --connect-timeout duration        TCP connect timeout (maps to JDBC connectTimeout) (default 5s)
+  -D, --database string                 Database name
+      --date-fmt string                 Date format (default "yyyy-MM-dd")
+      --default-charset string          Connection & output-file charset (utf8mb4 default; also utf8, latin1, ascii, gbk, gb18030)
+      --escape string                   Escape character (default "\"")
+  -f, --format string                   Output file format (del/sql/parquet) (default "del")
+  -?, --help                            help for export
+      --hex-blob                        Encode binary columns as 0x hexadecimal literals (auto-on for non-utf8mb4 charset)
+  -h, --host string                     Database host address (default "127.0.0.1")
+      --log-level string                Log level (debug/info/warn/error) (default "info")
+  -m, --messages string                 Message file path
+      --no-char-del                     Do not use string delimiter
+      --no-col-names                    Do not output column names
+      --no-create                       Do not output CREATE TABLE statement
+      --no-data                         Do not output INSERT statements
+      --no-escape                       Disable escaping
+      --no-hex-blob                     Force raw binary passthrough even for non-utf8mb4 charset (may corrupt binary data)
+      --no-replace                      Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Output file path (required)
+  -p, --password string                 Database password
+      --pipeline-buffer int             Hand-off queue depth, in batches (single-threaded export) (default 10)
+  -P, --port int                        TCP/IP port (default 3306)
+  -q, --query string                    SQL SELECT statement (required)
+      --row-del string                  Row delimiter (default "\n")
+      --session-var stringArray         Set a MySQL/OceanBase session variable before export (repeatable), e.g. --session-var "sql_mode=STRICT_TRANS_TABLES" --session-var foreign_key_checks=0
+      --shard-key string                Column name for sharding (auto-detect primary key if empty)
+  -S, --socket string                   UNIX domain socket path
+      --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)
+      --statement-size int              Max bytes per INSERT statement (default 16777216)
+      --threads int                     Number of parallel export tasks (1 = no parallelism) (default 1)
+      --timestamp-fmt string            Timestamp format (default "yyyy-MM-dd HH:mm:ss")
+  -u, --user string                     Database username (default "root")
+
+Global Flags:
+      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
+      --error-stack         Print full error call stack on failure (also enabled via GOMYDUMP_ERROR_STACK=1)
+      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via GOMYDUMP_LOG_FORMAT (default "java")
+      --no-sql-tag          Do not prepend the /* gomydump:<commit> */ attribution comment to statements gomydump executes (also via GOMYDUMP_NO_SQL_TAG=1)
+      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via GOMYDUMP_QUIET=1)
+## import
+Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
+MySQL or OceanBase database.
+
+Examples:
+  # Basic import from DEL format
+  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+    -i /backup/users.del -t users
+
+  # Import from Parquet format
+  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+    -i /backup/users.parquet -f parquet -t users
+
+  # Import with insert_update mode
+  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+    -i /backup/users.del --mode insert_update -t users
+
+  # Create table from SQL file
+  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+    -i /backup/users.sql -f sql --mode create
+
+Usage:
+  gomydump import [flags]
+
+Aliases:
+  import, imp
+
+Flags:
+      --batch-size int                  Rows per reader->writer hand-off batch (default 1000)
+      --char-del string                 String delimiter (default "\"")
+      --col-del string                  Column delimiter (default ",")
+  -c, --columns string                  Target column list (comma-separated) or mapping (file_col=table_col,...)
+      --commit-count int                Commit every n rows (default 1000)
+      --connect-timeout duration        TCP connect timeout (maps to JDBC connectTimeout) (default 5s)
+  -D, --database string                 Database name
+      --date-fmt string                 Date format (default "yyyy-MM-dd")
+      --default-charset string          Connection & input-file charset (utf8mb4 default; also utf8, latin1, ascii, gbk, gb18030)
+      --escape string                   Escape character (default "\"")
+  -f, --format string                   Input file format (del/sql/parquet) (default "del")
+  -?, --help                            help for import
+  -h, --host string                     Database host address (default "127.0.0.1")
+  -i, --input string                    Input file path (required)
+      --log-level string                Log level (debug/info/warn/error) (default "info")
+  -m, --messages string                 Message file path
+  -M, --mode string                     Import mode (insert/insert_update/replace/create) (default "insert")
+      --no-char-del                     Do not use string delimiter
+      --no-col-names                    First line is not column names
+      --no-escape                       Disable escaping
+  -p, --password string                 Database password
+      --pipeline-buffer int             Hand-off queue depth, in batches (default 10)
+  -P, --port int                        TCP/IP port (default 3306)
+      --row-count int                   Import at most n rows (0=unlimited)
+      --row-del string                  Row delimiter (default "\n")
+      --session-var stringArray         Set a MySQL/OceanBase session variable before import (repeatable), e.g. --session-var "sql_mode=STRICT_TRANS_TABLES" --session-var foreign_key_checks=0
+      --skip-count int                  Skip first n rows
+  -S, --socket string                   UNIX domain socket path
+      --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)
+  -t, --table string                    Target table name
+      --threads int                     Number of parallel import tasks (1 = no parallelism) (default 1)
+      --timestamp-fmt string            Timestamp format (default "yyyy-MM-dd HH:mm:ss")
+  -u, --user string                     Database username (default "root")
+
+Global Flags:
+      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
+      --error-stack         Print full error call stack on failure (also enabled via GOMYDUMP_ERROR_STACK=1)
+      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via GOMYDUMP_LOG_FORMAT (default "java")
+      --no-sql-tag          Do not prepend the /* gomydump:<commit> */ attribution comment to statements gomydump executes (also via GOMYDUMP_NO_SQL_TAG=1)
+      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via GOMYDUMP_QUIET=1)
+## root
+gomydump is a table-level MySQL logical backup and restore tool.
+It supports both MySQL and OceanBase MySQL mode.
+
+Features:
+  - Export data to DEL (delimited ASCII), SQL or Parquet format
+  - Import data from DEL, SQL or Parquet format
+  - Customizable delimiters and format options
+  - Secure password encryption (AES-256-GCM)
+  - Message file logging
+  - Multiple import modes (insert, insert_update, replace, create)
+  - Parallel export/import with pipeline optimization
+  - Column mapping for flexible data import
+  - Smart JOIN detection for parallel export
+
+Usage:
+  gomydump [command]
+
+Available Commands:
+  encrypt     Encrypt password for secure automation
+  export      Export data from MySQL/OceanBase
+  help        Help about any command
+  import      Import data into MySQL/OceanBase
+  version     Print version information
+
+Flags:
+      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
+      --error-stack         Print full error call stack on failure (also enabled via GOMYDUMP_ERROR_STACK=1)
+  -h, --help                help for gomydump
+      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via GOMYDUMP_LOG_FORMAT (default "java")
+      --no-sql-tag          Do not prepend the /* gomydump:<commit> */ attribution comment to statements gomydump executes (also via GOMYDUMP_NO_SQL_TAG=1)
+      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via GOMYDUMP_QUIET=1)
+
+Use "gomydump [command] --help" for more information about a command.
+## version
+gomydump version 0.1.0
+Git commit: 4934dd2
+Build time: 2026-10-22_04:30:38
+Go version: go1.26.9

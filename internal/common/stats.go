@@ -1,0 +1,89 @@
+package common
+
+import (
+	"context"
+	"sync/atomic"
+	"time"
+)
+
+// StatsSnapshot is a point-in-time view of shared run counters.
+type StatsSnapshot struct {
+	Processed int64         // rows written (export) / rows read from file (import)
+	Inserted  int64         // import only: rows the server reported as new inserts
+	Updated   int64         // import only: rows the server reported as updates (insert_update / replace of existing)
+	Failed    int64         // import only: rows in batches that failed to apply
+	Elapsed   time.Duration // wall clock since the run started
+}
+
+// Stats is a set of atomic counters shared by worker goroutines and the
+// periodic monitor. Increments are lock-free so parallel import/export
+// threads can update concurrently.
+type Stats struct {
+	processed int64
+	inserted  int64
+	updated   int64
+	failed    int64
+	start     time.Time
+}
+
+func NewStats() *Stats { return &Stats{start: time.Now()} }
+
+func (s *Stats) AddProcessed(n int64) { atomic.AddInt64(&s.processed, n) }
+func (s *Stats) AddInserted(n int64)  { atomic.AddInt64(&s.inserted, n) }
+func (s *Stats) AddUpdated(n int64)   { atomic.AddInt64(&s.updated, n) }
+func (s *Stats) AddFailed(n int64)    { atomic.AddInt64(&s.failed, n) }
+
+// Snapshot reads all counters. Individual counters are atomic; the tuple may
+// be slightly torn across concurrent updates, which is acceptable for a
+// progress ticker.
+func (s *Stats) Snapshot() StatsSnapshot {
+	return StatsSnapshot{
+		Processed: atomic.LoadInt64(&s.processed),
+		Inserted:  atomic.LoadInt64(&s.inserted),
+		Updated:   atomic.LoadInt64(&s.updated),
+		Failed:    atomic.LoadInt64(&s.failed),
+		Elapsed:   time.Since(s.start),
+	}
+}
+
+// RatePerSec is processed/elapsed; 0 when elapsed <= 0.
+func (snap StatsSnapshot) RatePerSec() float64 {
+	sec := snap.Elapsed.Seconds()
+	if sec <= 0 {
+		return 0
+	}
+	return float64(snap.Processed) / sec
+}
+
+// IntervalRate is (curr.Processed - prev.Processed) / (curr.Elapsed - prev.Elapsed).
+func (curr StatsSnapshot) IntervalRate(prev StatsSnapshot) float64 {
+	dt := (curr.Elapsed - prev.Elapsed).Seconds()
+	if dt <= 0 {
+		return 0
+	}
+	return float64(curr.Processed-prev.Processed) / dt
+}
+
+// StartMonitor spawns a goroutine that invokes report every `interval` with
+// the previous and current snapshots, until ctx is canceled or the returned
+// stop func is called. The first tick fires after `interval`; a final
+// report-on-complete is the caller's responsibility (via its completion log).
+func StartMonitor(ctx context.Context, interval time.Duration, stats *Stats, report func(prev, curr StatsSnapshot)) (stop func()) {
+	monCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		prev := stats.Snapshot()
+		for {
+			select {
+			case <-monCtx.Done():
+				return
+			case <-ticker.C:
+				curr := stats.Snapshot()
+				report(prev, curr)
+				prev = curr
+			}
+		}
+	}()
+	return cancel
+}
