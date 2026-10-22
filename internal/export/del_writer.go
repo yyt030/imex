@@ -321,20 +321,32 @@ func (d *DelWriter) writeEscapedDouble(s string, charDel string) {
 	d.bw.WriteString(s[last:])
 }
 
-// writeEscapedBackslash writes s with backslash-style escaping directly to buffer
+// writeEscapedBackslash writes s with backslash-style escaping directly to buffer.
+// It matches whole delimiters (multi-byte and hex forms are supported), not just
+// their first byte: escaping only `len(charDel) == 1` would leave a multi-byte
+// delimiter inside the value and let the reader split the field apart.
 func (d *DelWriter) writeEscapedBackslash(s string, charDel string, escape string) {
+	if escape == "" {
+		d.bw.WriteString(s)
+		return
+	}
 	last := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == escape[0] {
+	for i := 0; i < len(s); {
+		switch {
+		case strings.HasPrefix(s[i:], escape):
 			d.bw.WriteString(s[last:i])
 			d.bw.WriteString(escape)
 			d.bw.WriteString(escape)
-			last = i + 1
-		} else if len(charDel) == 1 && s[i] == charDel[0] {
+			i += len(escape)
+			last = i
+		case strings.HasPrefix(s[i:], charDel):
 			d.bw.WriteString(s[last:i])
 			d.bw.WriteString(escape)
 			d.bw.WriteString(charDel)
-			last = i + 1
+			i += len(charDel)
+			last = i
+		default:
+			i++
 		}
 	}
 	d.bw.WriteString(s[last:])

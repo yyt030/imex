@@ -19,10 +19,11 @@ const (
 	DefaultConnMaxIdleTime = time.Minute
 )
 
-// ApplyPoolHardening configures database/sql's connection ageing. It is applied
-// to every pool the tool opens (export main, export shards, import main, import
-// workers). Limit values are left to the caller: the import worker and the
-// export main connection set SetMaxOpenConns separately.
+// ApplyPoolHardening configures database/sql's connection ageing. It is meant
+// for the import pools (main and per-worker). Export pools must NOT use it: they
+// open a consistent snapshot with a raw START TRANSACTION, so the snapshot
+// connection returns to the idle pool between statements and ageing it would
+// silently roll the snapshot back (exporter.go sets both limits to 0).
 func ApplyPoolHardening(db *sql.DB) {
 	db.SetConnMaxLifetime(DefaultConnMaxLifetime)
 	db.SetConnMaxIdleTime(DefaultConnMaxIdleTime)

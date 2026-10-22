@@ -254,6 +254,14 @@ func (p *SQLParser) valueToExpr(val interface{}) sqlparser.Expr {
 		return sqlparser.NewIntLiteral(fmt.Sprintf("%d", v))
 	case float64:
 		return sqlparser.NewFloatLiteral(fmt.Sprintf("%f", v))
+	case shardBoundary:
+		// Exact text boundary: integers stay integers so the optimizer can use
+		// the index range; decimals become an unquoted numeric literal.
+		s := string(v)
+		if strings.Contains(s, ".") {
+			return sqlparser.NewFloatLiteral(s)
+		}
+		return sqlparser.NewIntLiteral(s)
 	case string:
 		return sqlparser.NewStrLiteral(v)
 	case []byte:

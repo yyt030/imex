@@ -72,11 +72,14 @@ type DelModifier struct {
 
 // Config holds all connection and common options.
 //
-// SSL/TLS and the OceanBase --tenant option are intentionally absent: the
-// driver's TLS and the OB tenant are expressed through the connection string
-// and the `user@tenant#cluster` username respectively. Numeric formatting
-// always follows the MySQL wire text (decimal point '.', no leading-zero
-// stripping), so those DB2-era modifiers are gone as well.
+// SSL/TLS and the OceanBase --tenant option are intentionally absent: the CLI
+// exposes only host/port/socket, so there is no DSN to carry driver TLS
+// settings, and --session-var rejects the driver's TLS parameters. Encrypted
+// transport must be terminated outside the tool (for example a local TLS
+// proxy). The OB tenant is still expressible through the
+// `user@tenant#cluster` username. Numeric formatting always follows the MySQL
+// wire text (decimal point '.', no leading-zero stripping), so those DB2-era
+// modifiers are gone as well.
 type Config struct {
 	Host     string
 	Port     int

@@ -173,6 +173,30 @@ func TestDelReader_ReadRow(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:  "multi-byte char delimiter escaped with backslash",
+			input: "||a\\||b||\n",
+			mod: &config.DelModifier{
+				CharDel: "||",
+				ColDel:  ",",
+				RowDel:  "\n",
+				Escape:  `\`,
+			},
+			expected:    []interface{}{"a||b"},
+			expectError: false,
+		},
+		{
+			name:  "multi-byte escape sequence",
+			input: "||a!!||b||\n",
+			mod: &config.DelModifier{
+				CharDel: "||",
+				ColDel:  ",",
+				RowDel:  "\n",
+				Escape:  "!!",
+			},
+			expected:    []interface{}{"a||b"},
+			expectError: false,
+		},
+		{
 			name:  "empty input",
 			input: "",
 			mod: &config.DelModifier{

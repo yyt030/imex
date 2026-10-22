@@ -34,7 +34,7 @@ elif [ "$(COMPRESS)" = "1" ] && [ -z "$(UPX_BIN)" ]; then \
 	echo "COMPRESS=1 but upx not found; skipped"; \
 fi
 
-.PHONY: all build build-all linux darwin windows clean docker vet test compress
+.PHONY: all build build-all linux darwin windows clean docker vet test test-live compress
 
 all: build
 
@@ -80,6 +80,15 @@ vet:
 
 test:
 	CGO_ENABLED=$(CGO_ENABLED) go test -race ./...
+
+# 真实 MySQL 端到端测试。需要一个已存在的库：
+#   GOMYDUMP_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/gomydump_it' make test-live
+test-live:
+	@if [ -z "$$GOMYDUMP_TEST_DSN" ]; then \
+		echo "GOMYDUMP_TEST_DSN is not set (e.g. 'root:secret@tcp(127.0.0.1:3306)/gomydump_it')"; \
+		exit 2; \
+	fi
+	CGO_ENABLED=$(CGO_ENABLED) go test -race ./test/integration -run Live -v
 
 clean:
 	rm -rf $(BUILD_DIR)

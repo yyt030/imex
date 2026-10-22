@@ -3,8 +3,11 @@ package export
 import (
 	"database/sql"
 	"fmt"
-	"github.com/pkg/errors"
+	"math/big"
+	"strconv"
 	"strings"
+
+	"github.com/pkg/errors"
 
 	"github.com/gomydump/internal/common"
 )
@@ -190,50 +193,114 @@ func getShardInfo(db *sql.DB, tableName string, columnNames []string) (*ShardInf
 	return info, nil
 }
 
-// GenerateShardRanges generates shard ranges for parallel export
-// For composite keys, we primarily shard on the first column,
-// but use row constructor comparison for precise range boundaries
+// shardBoundary is an exact numeric boundary rendered as a SQL numeric literal.
+// Keeping it as text avoids routing BIGINT/DECIMAL keys through float64, which
+// loses integer precision above 2^53: rounding the last shard's MAX down would
+// silently drop the highest rows of the table.
+type shardBoundary string
+
+// numericRat parses a MIN()/MAX() value exactly. Values arrive as []byte from
+// the text protocol; the remaining cases keep the helper usable from tests.
+func numericRat(v interface{}) (*big.Rat, bool) {
+	var s string
+	switch x := v.(type) {
+	case []byte:
+		s = string(x)
+	case string:
+		s = x
+	case int:
+		s = strconv.Itoa(x)
+	case int32:
+		s = strconv.FormatInt(int64(x), 10)
+	case int64:
+		s = strconv.FormatInt(x, 10)
+	case uint32:
+		s = strconv.FormatUint(uint64(x), 10)
+	case uint64:
+		s = strconv.FormatUint(x, 10)
+	case float32:
+		s = strconv.FormatFloat(float64(x), 'g', -1, 64)
+	case float64:
+		s = strconv.FormatFloat(x, 'g', -1, 64)
+	default:
+		return nil, false
+	}
+	r, ok := new(big.Rat).SetString(strings.TrimSpace(s))
+	if !ok {
+		return nil, false
+	}
+	return r, true
+}
+
+// formatShardBoundary renders an exact boundary. Integers print without a
+// decimal point; other values print with 30 fractional digits (MySQL DECIMAL's
+// maximum scale). Adjacent shards reuse the same rendered string, so rounding
+// can shift rows between shards but can never open a gap.
+func formatShardBoundary(r *big.Rat) shardBoundary {
+	if r.IsInt() {
+		return shardBoundary(r.Num().String())
+	}
+	f := new(big.Float).SetPrec(256).SetRat(r)
+	s := strings.TrimRight(f.Text('f', 30), "0")
+	s = strings.TrimSuffix(s, ".")
+	return shardBoundary(s)
+}
+
+// exactValue converts a numeric MIN/MAX value to an exact boundary; non-numeric
+// columns are passed through untouched.
+func exactValue(v interface{}, numeric bool) interface{} {
+	if !numeric {
+		return v
+	}
+	r, ok := numericRat(v)
+	if !ok {
+		return v
+	}
+	return formatShardBoundary(r)
+}
+
+// GenerateShardRanges generates shard ranges for parallel export.
+// For composite keys, we primarily shard on the first column, but the remaining
+// columns keep their full range so every tuple is covered exactly once.
 func GenerateShardRanges(info *ShardInfo, numShards int) []ShardRange {
 	if numShards <= 1 {
 		return []ShardRange{{Mins: info.Mins, Maxs: info.Maxs}}
 	}
 
-	// For composite keys, we shard primarily on the first column
-	// This works well with B-tree indexes (leftmost prefix principle)
-	firstColMin := toFloat64(info.Mins[0])
-	firstColMax := toFloat64(info.Maxs[0])
-
-	// Check if first column is numeric
+	// For non-numeric first columns (e.g. UUID keys) numeric boundaries cannot
+	// be computed, so fall back to a single shard.
 	if !info.IsNumeric[0] {
-		// For non-numeric first column, fall back to single shard
 		return []ShardRange{{Mins: info.Mins, Maxs: info.Maxs}}
 	}
 
-	rangeSize := (firstColMax - firstColMin) / float64(numShards)
+	min, okMin := numericRat(info.Mins[0])
+	max, okMax := numericRat(info.Maxs[0])
+	if !okMin || !okMax || max.Cmp(min) <= 0 {
+		return []ShardRange{{Mins: info.Mins, Maxs: info.Maxs}}
+	}
+
+	// Precompute the numShards+1 boundaries once. The last one is the exact
+	// MAX(), so the final shard is inclusive up to the real maximum.
+	bounds := make([]*big.Rat, numShards+1)
+	bounds[0] = new(big.Rat).Set(min)
+	bounds[numShards] = new(big.Rat).Set(max)
+	step := new(big.Rat).Quo(new(big.Rat).Sub(max, min), new(big.Rat).SetInt64(int64(numShards)))
+	for i := 1; i < numShards; i++ {
+		bounds[i] = new(big.Rat).Add(min, new(big.Rat).Mul(step, new(big.Rat).SetInt64(int64(i))))
+	}
+
 	ranges := make([]ShardRange, 0, numShards)
-
 	for i := 0; i < numShards; i++ {
-		rangeMin := firstColMin + float64(i)*rangeSize
-		rangeMax := firstColMin + float64(i+1)*rangeSize
-
-		// Build min/max arrays for this shard
 		mins := make([]interface{}, len(info.Columns))
 		maxs := make([]interface{}, len(info.Columns))
-
-		// First column uses calculated range
-		mins[0] = rangeMin
-		if i == numShards-1 {
-			maxs[0] = firstColMax // Last shard uses actual max
-		} else {
-			maxs[0] = rangeMax
+		for j := range info.Columns {
+			mins[j] = exactValue(info.Mins[j], info.IsNumeric[j])
+			maxs[j] = exactValue(info.Maxs[j], info.IsNumeric[j])
 		}
 
-		// For subsequent columns, use actual min/max
-		// This ensures we cover all combinations within the first column's range
-		for j := 1; j < len(info.Columns); j++ {
-			mins[j] = info.Mins[j]
-			maxs[j] = info.Maxs[j]
-		}
+		// The first column carries the varying boundary.
+		mins[0] = formatShardBoundary(bounds[i])
+		maxs[0] = formatShardBoundary(bounds[i+1])
 
 		ranges = append(ranges, ShardRange{
 			Mins:   mins,
@@ -250,43 +317,6 @@ type ShardRange struct {
 	Mins   []interface{} // minimum values for each column
 	Maxs   []interface{} // maximum values for each column
 	IsLast bool          // whether this is the last shard (inclusive max)
-}
-
-// toFloat64 converts interface{} to float64
-func toFloat64(v interface{}) float64 {
-	switch val := v.(type) {
-	case int:
-		return float64(val)
-	case int8:
-		return float64(val)
-	case int16:
-		return float64(val)
-	case int32:
-		return float64(val)
-	case int64:
-		return float64(val)
-	case uint:
-		return float64(val)
-	case uint8:
-		return float64(val)
-	case uint16:
-		return float64(val)
-	case uint32:
-		return float64(val)
-	case uint64:
-		return float64(val)
-	case float32:
-		return float64(val)
-	case float64:
-		return val
-	case []byte:
-		// Try to parse as number
-		var f float64
-		fmt.Sscanf(string(val), "%f", &f)
-		return f
-	default:
-		return 0
-	}
 }
 
 // formatValue formats a value for SQL query

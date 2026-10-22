@@ -93,3 +93,47 @@ func TestBuildShardedQuery_PreservesInlineHint(t *testing.T) {
 		t.Errorf("inline hint dropped: %q", out)
 	}
 }
+
+// Exact BIGINT boundaries must be emitted as integer literals, not float
+// approximations: `%f` formatting would turn 9007199254740999 into
+// 9007199254740998.000000 and silently narrow the shard.
+func TestBuildShardedQuery_ExactBigIntBoundary(t *testing.T) {
+	p := NewSQLParser()
+	shard := &ShardInfo{Columns: []string{"id"}}
+	rng := ShardRange{
+		Mins:   []interface{}{shardBoundary("9007199254740993")},
+		Maxs:   []interface{}{shardBoundary("9007199254740999")},
+		IsLast: true,
+	}
+
+	out, err := p.BuildShardedQuery("SELECT * FROM t", shard, rng)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "9007199254740993") || !strings.Contains(out, "9007199254740999") {
+		t.Fatalf("boundaries were not preserved exactly: %q", out)
+	}
+	if strings.Contains(out, "e+") || strings.Contains(out, ".000000") {
+		t.Fatalf("boundary rendered as a float: %q", out)
+	}
+}
+
+func TestBuildShardedQuery_DecimalBoundaryStaysNumeric(t *testing.T) {
+	p := NewSQLParser()
+	shard := &ShardInfo{Columns: []string{"price"}}
+	rng := ShardRange{
+		Mins: []interface{}{shardBoundary("0.1")},
+		Maxs: []interface{}{shardBoundary("0.366666666666666666666666666667")},
+	}
+
+	out, err := p.BuildShardedQuery("SELECT * FROM t", shard, rng)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "0.366666666666666666666666666667") {
+		t.Fatalf("decimal boundary missing: %q", out)
+	}
+	if strings.Contains(out, "'0.366") {
+		t.Fatalf("decimal boundary was quoted as a string: %q", out)
+	}
+}

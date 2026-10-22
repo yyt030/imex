@@ -15,6 +15,13 @@ import (
 // uncommitted window and makes a lost connection replay far fewer rows.
 const DefaultIdleCommitTimeout = 30 * time.Second
 
+// DefaultMaxPendingBytes caps the memory retained for transaction replay.
+// --commit-count bounds the number of uncommitted rows, but rows can carry
+// wide BLOB/TEXT payloads, so a batch count alone does not bound memory. When
+// the retained batches reach this many bytes the transaction is committed
+// early, shrinking the replay window as well.
+const DefaultMaxPendingBytes = 64 << 20
+
 // pendingBatch is one INSERT that has been applied inside the current
 // transaction but not yet committed. MySQL rolls the whole transaction back
 // when the connection dies, so after a reconnect the writer replays these
@@ -22,11 +29,30 @@ const DefaultIdleCommitTimeout = 30 * time.Second
 // batches of the same transaction would be silently lost.
 //
 // Values are retained only for the current commit window (--commit-count rows,
-// 1000 by default). Readers return fresh strings/byte slices per row, so the
-// retained values are not aliased by the input buffer.
+// 1000 by default, or DefaultMaxPendingBytes of payload, whichever comes
+// first). Readers return fresh strings/byte slices per row, so the retained
+// values are not aliased by the input buffer.
 type pendingBatch struct {
 	sql    string
 	values []interface{}
+}
+
+// batchSize estimates the memory a batch retains for replay. Only string and
+// byte payloads dominate; other values contribute a small constant so that
+// many tiny rows still advance the counter.
+func batchSize(query string, values []interface{}) int {
+	n := len(query)
+	for _, v := range values {
+		switch x := v.(type) {
+		case string:
+			n += len(x)
+		case []byte:
+			n += len(x)
+		default:
+			n += 16
+		}
+	}
+	return n
 }
 
 // writeSession owns the transaction, the retry/replay bookkeeping and the
@@ -35,25 +61,28 @@ type pendingBatch struct {
 // every --commit-count rows, on idle, and replay the open transaction after a
 // transient connection loss.
 type writeSession struct {
-	imp         *Importer
-	db          *sql.DB
-	ctx         context.Context
-	tx          *sql.Tx
-	commitCount int64
-	rowsInTx    int64
-	pending     []pendingBatch
-	label       string // log context: "thread 3" or "single-threaded"
-	policy      common.RetryPolicy
+	imp             *Importer
+	db              *sql.DB
+	ctx             context.Context
+	tx              *sql.Tx
+	commitCount     int64
+	rowsInTx        int64
+	pending         []pendingBatch
+	pendingBytes    int
+	maxPendingBytes int
+	label           string // log context: "thread 3" or "single-threaded"
+	policy          common.RetryPolicy
 }
 
 func newWriteSession(imp *Importer, db *sql.DB, ctx context.Context, commitCount int64, label string) *writeSession {
 	return &writeSession{
-		imp:         imp,
-		db:          db,
-		ctx:         ctx,
-		commitCount: commitCount,
-		label:       label,
-		policy:      common.DefaultRetryPolicy(),
+		imp:             imp,
+		db:              db,
+		ctx:             ctx,
+		commitCount:     commitCount,
+		maxPendingBytes: DefaultMaxPendingBytes,
+		label:           label,
+		policy:          common.DefaultRetryPolicy(),
 	}
 }
 
@@ -98,6 +127,7 @@ func (s *writeSession) write(insertSQL string, values []interface{}, rows int) e
 	s.imp.addBatchResult(int64(rows), res)
 	s.rowsInTx += int64(rows)
 	s.pending = append(s.pending, pendingBatch{sql: insertSQL, values: values})
+	s.pendingBytes += batchSize(insertSQL, values)
 	return nil
 }
 
@@ -132,17 +162,27 @@ func (s *writeSession) commit() error {
 	}
 	s.rowsInTx = 0
 	s.pending = nil
+	s.pendingBytes = 0
 	return nil
 }
 
-// maybeCommit commits once the transaction holds at least --commit-count rows,
-// then opens the next transaction.
+// maybeCommit commits once the transaction reaches the row limit or the replay
+// buffer reaches its byte budget, then opens the next transaction.
 func (s *writeSession) maybeCommit() error {
-	if s.commitCount <= 0 || s.rowsInTx < s.commitCount {
+	if s.rowsInTx == 0 {
+		return nil
+	}
+	rowLimit := s.commitCount > 0 && s.rowsInTx >= s.commitCount
+	byteLimit := s.maxPendingBytes > 0 && s.pendingBytes >= s.maxPendingBytes
+	if !rowLimit && !byteLimit {
 		return nil
 	}
 	if err := s.commit(); err != nil {
 		return err
+	}
+	if byteLimit && !rowLimit {
+		common.Logger.Debug("Committing transaction at replay buffer limit",
+			"session", s.label, "bytes", DefaultMaxPendingBytes)
 	}
 	return s.begin()
 }

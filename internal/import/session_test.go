@@ -209,6 +209,48 @@ func TestWriteSessionMaybeCommitAccumulatesRows(t *testing.T) {
 	}
 }
 
+func TestWriteSessionCommitsAtPendingByteBudget(t *testing.T) {
+	sess, drv := newTestSession(t, 1000)
+	sess.maxPendingBytes = 64
+
+	payload := strings.Repeat("x", 100)
+	if err := sess.write("INSERT", []interface{}{payload}, 1); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := sess.maybeCommit(); err != nil {
+		t.Fatalf("maybeCommit: %v", err)
+	}
+
+	if drv.commits != 1 {
+		t.Fatalf("commits = %d, want 1 when the byte budget is crossed", drv.commits)
+	}
+	if sess.rowsInTx != 0 || len(sess.pending) != 0 || sess.pendingBytes != 0 {
+		t.Fatalf("rowsInTx = %d, pending = %d, bytes = %d, want 0/0/0",
+			sess.rowsInTx, len(sess.pending), sess.pendingBytes)
+	}
+	if drv.begins != 2 {
+		t.Fatalf("begins = %d, want 2 (initial + after commit)", drv.begins)
+	}
+}
+
+func TestWriteSessionByteBudgetDoesNotCommitEarly(t *testing.T) {
+	sess, drv := newTestSession(t, 1000)
+	sess.maxPendingBytes = 4096
+
+	if err := sess.write("INSERT", []interface{}{"small"}, 1); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := sess.maybeCommit(); err != nil {
+		t.Fatalf("maybeCommit: %v", err)
+	}
+	if drv.commits != 0 {
+		t.Fatalf("commits = %d, want 0 below both limits", drv.commits)
+	}
+	if sess.pendingBytes <= 0 {
+		t.Fatalf("pendingBytes = %d, want the retained batch accounted for", sess.pendingBytes)
+	}
+}
+
 func TestWriteSessionIdleCommitOnlyWhenRowsPending(t *testing.T) {
 	sess, drv := newTestSession(t, 1000)
 

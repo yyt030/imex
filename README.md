@@ -42,6 +42,22 @@ make build COMPRESS=1  # 编译后自动 upx 快速压缩（-1，需安装 upx�
 make compress       # 单独对 bin/ 现有产物运行 upx -1
 ```
 
+### 测试
+
+```bash
+make test           # 离线单元/往返测试（不需要数据库）
+```
+
+真实数据库端到端测试默认跳过，需要提供已存在库的 DSN（表会按测试名唯一创建并在结束时删除）：
+
+```bash
+docker run -d --name gomydump-mysql -e MYSQL_ROOT_PASSWORD=secret \
+  -e MYSQL_DATABASE=gomydump_it -p 3306:3306 mysql:8.0
+GOMYDUMP_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/gomydump_it' make test-live
+```
+
+覆盖 DEL/SQL/Parquet 往返、insert/insert_update/replace/create 模式、列映射、并行导出与并行导入、消息文件。
+
 ### 交叉编译
 
 工具为纯 Go 实现、无 CGO 依赖，构建时强制 `CGO_ENABLED=0`，产物为静态链接二进制，可在任意 Linux 发行版直接运行，无需目标平台 C 工具链：
@@ -380,6 +396,8 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 ```
 
 > Parquet 格式不支持并行导出（分片文件无法拼接），`--threads>1` 时会自动降级为单线程。
+>
+> 并行导出按分片序号顺序拼接结果，**不保证**与 `--query` 的全局行序一致；需要稳定全局顺序时使用单线程导出。分片边界使用精确整数/十进制运算，`BIGINT`/`DECIMAL` 超过 2^53 也不会丢行；每个分片有各自的一致性快照，分片之间不是同一时间点。
 
 ### 流水线与内存控制
 
@@ -471,11 +489,11 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 在云上（LB/NAT 网关、SNAT 空闲超时等），长时间没有网络往返的 TCP 连接可能被中间设备静默回收，工具在读写时会得到 `broken pipe` / `connection reset` / `invalid connection` / `gone away` 等瞬断错误。三个层面同时加固：
 
 - **驱动层 socket 超时**（对应 JDBC `connectTimeout`/`socketTimeout`）：`--connect-timeout`（默认 5s）、`--socket-read-timeout`/`--socket-write-timeout`（默认 300s）。这三个参数以 DSN 字段（`timeout` / `readTimeout` / `writeTimeout`）形式传入 go-sql-driver，作用于**每次 socket 读/写**；由于是 DSN 级参数，`--session-var` 无法覆盖（同名会被拒绝）。
-- **连接池 TTL**：所有连接池（导出主连接与分片、导入主连接与并行 worker）统一设置 `SetConnMaxIdleTime(1m)` + `SetConnMaxLifetime(5m)`，让连接在 LB 空闲阈值前主动老化重建，而不是被中间设备切断；并行 worker 另设 `SetMaxOpenConns(1)`。正在使用中的连接（例如持有一致性快照事务的那条）不受 TTL 影响，只有归还到空闲池后才会被回收。
-- **事务空闲提交**：导入的写入端（单线程管线与每个并行 worker）在 30s 内没有收到新批次时，主动 `COMMIT` 当前已写入的部分事务并开启下一个，缩短未提交窗口和重放集合；`--commit-count` 到期时同样提交。
-- **瞬断自动重试**：对 `driver.ErrBadConn` / `invalid connection` / `io.EOF` / 网络超时 / `broken pipe` / `connection reset` / `server has gone away`(2006) / `lost connection`(2013) 等连接级错误，默认最多 3 次尝试，指数退避约 1s→2s（上限 4s，带 20% 向下抖动，避免多个 worker 同时重连）。重连后**先回放当前事务内所有已执行但未提交的批次，再重试失败批次**——连接断开时 MySQL 已回滚整个事务，只重试单批会静默丢掉同事务中先前的行。`COMMIT` 本身不重试（响应丢失时无法判断是否已生效，重放可能重复写入），直接报错。`context.Canceled`、语法/约束类错误以及 `1213` 死锁 / `1205` 锁等待超时不重试。
+- **连接池 TTL**：导入连接池（主连接与每个并行 worker）设置 `SetConnMaxIdleTime(1m)` + `SetConnMaxLifetime(5m)`，让连接在 LB 空闲阈值前主动老化重建；并行 worker 另设 `SetMaxOpenConns(1)`。导出连接池**不**做老化（`ConnMaxIdleTime=0`、`ConnMaxLifetime=0`）：它用裸 `START TRANSACTION ... WITH CONSISTENT SNAPSHOT` 建立快照，连接在语句之间会归还空闲池，一旦被当作空闲连接关闭，快照就被静默回滚、后续读取失去一致性。
+- **事务空闲提交**：导入的写入端（单线程管线与每个并行 worker）在 30s 内没有收到新批次时，主动 `COMMIT` 当前已写入的部分事务并开启下一个，缩短未提交窗口和重放集合；`--commit-count` 到期或重放缓冲达到 64 MiB 字节预算时同样提交。
+- **瞬断自动重试**：对 `driver.ErrBadConn` / `invalid connection` / `io.EOF` / 网络超时 / `broken pipe` / `connection reset` / `server has gone away`(2006) / `lost connection`(2013) 等连接级错误，默认最多 3 次尝试，指数退避约 1s→2s（上限 4s，带 20% 向下抖动，避免多个 worker 同时重连）。重连后**先回放当前事务内所有已执行但未提交的批次，再重试失败批次**——连接断开时 MySQL 已回滚整个事务，只重试单批会静默丢掉同事务中先前的行。回放缓冲同时受 `--commit-count`（1000 行）与 64 MiB 字节预算约束，任一触顶即提交，避免宽 BLOB/TEXT 行撑爆内存。`COMMIT` 本身不重试（响应丢失时无法判断是否已生效，重放可能重复写入），直接报错。`context.Canceled`、语法/约束类错误以及 `1213` 死锁 / `1205` 锁等待超时不重试。
 
-对导出而言，主连接仍保留 `SetConnMaxLifetime(0)`（不因 TTL 关闭，保证一致性快照期间连接稳定），但空闲超时照常生效；并行分片连接使用完整 TTL 池。读写超时对每条连接独立生效，长时间零字节的响应（如大 result set 起始阶段）会命中 `socket-read-timeout`，请按需调大。
+对导出而言，主连接与分片连接都保留 `SetConnMaxLifetime(0)` 且 `SetConnMaxIdleTime(0)`（不因 TTL 关闭，保证一致性快照期间连接稳定）；读写超时对每条连接独立生效，长时间零字节的响应（如大 result set 起始阶段）会命中 `socket-read-timeout`，请按需调大。
 
 ### 参数边界校验
 
@@ -761,8 +779,9 @@ mysql-backup-tool/
 │       ├── sql_reader.go        # SQL 格式读取器
 │       └── parquet_reader.go    # Parquet 格式读取器
 ├── test/
-│   └── integration/             # 离线往返测试（不连库，随 go test ./... 执行）
-│       └── roundtrip_test.go    # 导出写入器→导入读取器：转义/换行/0x/NULL 与空串/单行 INSERT/DEL 修饰符
+│   └── integration/             # 集成测试
+│       ├── roundtrip_test.go    # 离线往返（导出写入器→导入读取器：转义/换行/0x/NULL 与空串/单行 INSERT/DEL 修饰符）
+│       └── live_mysql_test.go   # 真实 MySQL 端到端（默认跳过，需 GOMYDUMP_TEST_DSN）
 ├── docs/
 │   ├── requirements.md          # 需求文档
 │   └── cli-oracle.txt           # 已发布二进制的 --help 契约快照（回归基线）

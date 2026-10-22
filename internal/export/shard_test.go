@@ -1,40 +1,50 @@
 package export
 
 import (
+	"fmt"
+	"math/big"
 	"testing"
 )
+
+// boundaryText renders a range boundary for assertions.
+func boundaryText(v interface{}) string {
+	if b, ok := v.(shardBoundary); ok {
+		return string(b)
+	}
+	return fmt.Sprint(v)
+}
 
 func TestGenerateShardRanges_SingleColumn(t *testing.T) {
 	info := &ShardInfo{
 		Columns:     []string{"id"},
 		ColumnTypes: []string{"int"},
-		Mins:        []interface{}{int64(1)},
-		Maxs:        []interface{}{int64(1000)},
+		Mins:        []interface{}{[]byte("1")},
+		Maxs:        []interface{}{[]byte("1000")},
 		IsNumeric:   []bool{true},
 	}
 
 	ranges := GenerateShardRanges(info, 4)
 
 	if len(ranges) != 4 {
-		t.Errorf("Expected 4 ranges, got %d", len(ranges))
+		t.Fatalf("Expected 4 ranges, got %d", len(ranges))
 	}
-
-	// Check first range
-	if toFloat64(ranges[0].Mins[0]) != 1.0 {
-		t.Errorf("Expected first min to be 1, got %v", ranges[0].Mins[0])
+	if got := boundaryText(ranges[0].Mins[0]); got != "1" {
+		t.Errorf("first min = %s, want 1", got)
 	}
-	// Range size = (1000-1)/4 = 249.75, so first max = 1 + 249.75 = 250.75
-	expectedMax := 1.0 + (1000.0-1.0)/4.0
-	if toFloat64(ranges[0].Maxs[0]) != expectedMax {
-		t.Errorf("Expected first max to be %v, got %v", expectedMax, ranges[0].Maxs[0])
+	// (1000-1)/4 = 249.75, so the first boundary is 250.75.
+	if got := boundaryText(ranges[0].Maxs[0]); got != "250.75" {
+		t.Errorf("first max = %s, want 250.75", got)
 	}
-
-	// Check last range
 	if !ranges[3].IsLast {
-		t.Errorf("Expected last range to have IsLast=true")
+		t.Error("Expected last range to have IsLast=true")
 	}
-	if toFloat64(ranges[3].Maxs[0]) != 1000.0 {
-		t.Errorf("Expected last max to be 1000, got %v", ranges[3].Maxs[0])
+	if got := boundaryText(ranges[3].Maxs[0]); got != "1000" {
+		t.Errorf("last max = %s, want the exact maximum 1000", got)
+	}
+	for i := 0; i+1 < len(ranges); i++ {
+		if a, b := boundaryText(ranges[i].Maxs[0]), boundaryText(ranges[i+1].Mins[0]); a != b {
+			t.Fatalf("range %d max %s != range %d min %s", i, a, i+1, b)
+		}
 	}
 }
 
@@ -42,42 +52,99 @@ func TestGenerateShardRanges_CompositeKey(t *testing.T) {
 	info := &ShardInfo{
 		Columns:     []string{"tenant_id", "user_id"},
 		ColumnTypes: []string{"int", "int"},
-		Mins:        []interface{}{int64(1), int64(100)},
-		Maxs:        []interface{}{int64(10), int64(1000)},
+		Mins:        []interface{}{[]byte("1"), []byte("100")},
+		Maxs:        []interface{}{[]byte("10"), []byte("1000")},
 		IsNumeric:   []bool{true, true},
 	}
 
 	ranges := GenerateShardRanges(info, 4)
-
 	if len(ranges) != 4 {
-		t.Errorf("Expected 4 ranges, got %d", len(ranges))
+		t.Fatalf("Expected 4 ranges, got %d", len(ranges))
 	}
-
-	// All ranges should have 2 columns
 	for i, r := range ranges {
-		if len(r.Mins) != 2 {
-			t.Errorf("Range %d: expected 2 min values, got %d", i, len(r.Mins))
+		if len(r.Mins) != 2 || len(r.Maxs) != 2 {
+			t.Fatalf("Range %d: expected 2 columns, got %d/%d", i, len(r.Mins), len(r.Maxs))
 		}
-		if len(r.Maxs) != 2 {
-			t.Errorf("Range %d: expected 2 max values, got %d", i, len(r.Maxs))
+		if got := boundaryText(r.Mins[1]); got != "100" {
+			t.Errorf("Range %d: second column min = %s, want 100", i, got)
+		}
+		if got := boundaryText(r.Maxs[1]); got != "1000" {
+			t.Errorf("Range %d: second column max = %s, want 1000", i, got)
 		}
 	}
+	if got := boundaryText(ranges[0].Mins[0]); got != "1" {
+		t.Errorf("first boundary = %s, want 1", got)
+	}
+}
 
-	// First column should be divided into ranges
-	// tenant_id: [1, 10] divided into 4 parts
-	// Each part should be approximately 2.25 wide
-	if toFloat64(ranges[0].Mins[0]) != 1.0 {
-		t.Errorf("Expected first tenant_id min to be 1, got %v", ranges[0].Mins[0])
+// A BIGINT key above 2^53 used to be rounded through float64, which moved the
+// final MAX down and silently dropped the highest rows from every shard.
+func TestGenerateShardRanges_PreservesBigIntPrecision(t *testing.T) {
+	info := &ShardInfo{
+		Columns:     []string{"id"},
+		ColumnTypes: []string{"bigint"},
+		Mins:        []interface{}{[]byte("9007199254740993")},
+		Maxs:        []interface{}{[]byte("9007199254740999")},
+		IsNumeric:   []bool{true},
 	}
 
-	// Second column should use full range for all shards
-	for i, r := range ranges {
-		if toFloat64(r.Mins[1]) != 100.0 {
-			t.Errorf("Range %d: expected user_id min to be 100, got %v", i, r.Mins[1])
+	ranges := GenerateShardRanges(info, 2)
+	if len(ranges) != 2 {
+		t.Fatalf("Expected 2 ranges, got %d", len(ranges))
+	}
+	if got := boundaryText(ranges[0].Mins[0]); got != "9007199254740993" {
+		t.Errorf("first min = %s, want 9007199254740993", got)
+	}
+	if got := boundaryText(ranges[0].Maxs[0]); got != "9007199254740996" {
+		t.Errorf("middle boundary = %s, want 9007199254740996", got)
+	}
+	if got := boundaryText(ranges[1].Maxs[0]); got != "9007199254740999" {
+		t.Errorf("last max = %s, want the exact maximum 9007199254740999", got)
+	}
+	if ranges[1].Maxs[0] == ranges[0].Maxs[0] {
+		t.Fatal("final shard collapsed onto the middle boundary")
+	}
+}
+
+func TestGenerateShardRanges_DecimalBoundariesStayContiguous(t *testing.T) {
+	info := &ShardInfo{
+		Columns:     []string{"price"},
+		ColumnTypes: []string{"decimal"},
+		Mins:        []interface{}{[]byte("0.1")},
+		Maxs:        []interface{}{[]byte("0.9")},
+		IsNumeric:   []bool{true},
+	}
+
+	ranges := GenerateShardRanges(info, 3)
+	if len(ranges) != 3 {
+		t.Fatalf("Expected 3 ranges, got %d", len(ranges))
+	}
+	for i := 0; i+1 < len(ranges); i++ {
+		a, b := boundaryText(ranges[i].Maxs[0]), boundaryText(ranges[i+1].Mins[0])
+		if a != b {
+			t.Fatalf("range %d max %s != range %d min %s", i, a, i+1, b)
 		}
-		if toFloat64(r.Maxs[1]) != 1000.0 {
-			t.Errorf("Range %d: expected user_id max to be 1000, got %v", i, r.Maxs[1])
+		if _, ok := new(big.Rat).SetString(a); !ok {
+			t.Fatalf("boundary %q is not a valid numeric literal", a)
 		}
+	}
+	if got := boundaryText(ranges[2].Maxs[0]); got != "0.9" {
+		t.Errorf("last max = %s, want 0.9", got)
+	}
+}
+
+func TestGenerateShardRanges_NonNumericFallsBack(t *testing.T) {
+	info := &ShardInfo{
+		Columns:     []string{"uuid"},
+		ColumnTypes: []string{"varchar"},
+		Mins:        []interface{}{"a"},
+		Maxs:        []interface{}{"z"},
+		IsNumeric:   []bool{false},
+	}
+
+	ranges := GenerateShardRanges(info, 4)
+	if len(ranges) != 1 {
+		t.Fatalf("Expected a single fallback range, got %d", len(ranges))
 	}
 }
 
@@ -129,40 +196,6 @@ func TestFormatValue(t *testing.T) {
 			result := formatValue(tt.input)
 			if result != tt.expected {
 				t.Errorf("formatValue(%v) = %s, want %s", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestToFloat64(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    interface{}
-		expected float64
-	}{
-		{"int", 42, 42.0},
-		{"int8", int8(8), 8.0},
-		{"int16", int16(16), 16.0},
-		{"int32", int32(32), 32.0},
-		{"int64", int64(64), 64.0},
-		{"uint", uint(10), 10.0},
-		{"uint8", uint8(8), 8.0},
-		{"uint16", uint16(16), 16.0},
-		{"uint32", uint32(32), 32.0},
-		{"uint64", uint64(64), 64.0},
-		{"float32", float32(3.14), 3.14},
-		{"float64", 3.14159, 3.14159},
-		{"byte slice", []byte("123"), 123.0},
-		{"invalid string", []byte("abc"), 0.0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := toFloat64(tt.input)
-			// Use epsilon comparison for floating point numbers
-			epsilon := 0.0001
-			if result < tt.expected-epsilon || result > tt.expected+epsilon {
-				t.Errorf("toFloat64(%v) = %f, want %f", tt.input, result, tt.expected)
 			}
 		})
 	}

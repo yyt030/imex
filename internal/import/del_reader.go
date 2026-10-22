@@ -105,17 +105,25 @@ func (d *DelReader) scanRows(data []byte, atEOF bool) (advance int, token []byte
 				pos += len(charDel)
 				continue
 			}
-			// Backslash-style escape (escape distinct from charDel): skip escape + next char
+			// Backslash-style escape (escape distinct from charDel): skip the
+			// whole escape sequence. A multi-byte escape may be followed by a
+			// multi-byte delimiter, so consuming a single byte would leave the
+			// splitter inside the delimiter and corrupt the quote state.
 			if !noEscape && len(escape) > 0 && !bytes.Equal(escape, charDel) &&
 				bytes.HasPrefix(data[pos:], escape) {
 				next := pos + len(escape)
-				if next < len(data) {
-					// Need one more byte to consume the escaped character
+				switch {
+				case len(charDel) > 0 && bytes.HasPrefix(data[next:], charDel):
+					pos = next + len(charDel)
+				case bytes.HasPrefix(data[next:], escape):
+					pos = next + len(escape)
+				case next < len(data):
 					pos = next + 1
-				} else if atEOF {
+				case atEOF:
 					pos = next
-				} else {
-					return 0, nil, nil // wait for the escaped byte
+				default:
+					// The escaped byte has not arrived yet.
+					return 0, nil, nil
 				}
 				continue
 			}

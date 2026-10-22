@@ -37,10 +37,12 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	// Configure connection pool for optimal performance
 	db.SetMaxOpenConns(1) // Single-threaded export uses one connection
 	db.SetMaxIdleConns(1)
-	// Age idle connections so a paused export does not keep a dead socket, but
-	// leave the lifetime unlimited: this pool carries the consistent snapshot
-	// transaction and must not be recycled under it.
-	common.ApplyPoolHardening(db)
+	// The consistent snapshot is started with a raw START TRANSACTION, so the
+	// connection carrying it goes back to the idle pool between statements.
+	// Ageing it would let database/sql close it as "idle", which silently rolls
+	// the snapshot back and continues reading without consistency. Export pools
+	// are therefore not aged; only import pools are (see common.ApplyPoolHardening).
+	db.SetConnMaxIdleTime(0)
 	db.SetConnMaxLifetime(0)
 
 	// Test connection with retry
@@ -666,7 +668,10 @@ func (e *Exporter) createShardConnection() (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	common.ApplyPoolHardening(db)
+	// Same reason as the main export pool: this connection carries a consistent
+	// snapshot opened with a raw START TRANSACTION, so it must not be aged.
+	db.SetConnMaxIdleTime(0)
+	db.SetConnMaxLifetime(0)
 
 	// Test connection
 	if err := db.Ping(); err != nil {

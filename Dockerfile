@@ -28,7 +28,8 @@ FROM alpine:3.20
 
 WORKDIR /app
 
-# Install ca-certificates for SSL/TLS support
+# Base image trust store. gomydump itself does not configure TLS; this only
+# keeps the image's general-purpose CA bundle available.
 RUN apk add --no-cache ca-certificates
 
 # Copy binary from builder

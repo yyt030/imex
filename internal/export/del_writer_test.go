@@ -338,6 +338,28 @@ func TestDelWriter_MultiByteDelimiters(t *testing.T) {
 			},
 			expected: "<<<Alice<<<:::<<<Bob<<<>>>END>>>\n",
 		},
+		{
+			name:   "multi-byte char delimiter escaped with backslash",
+			values: []interface{}{"a||b", `c\d`},
+			mod: &config.DelModifier{
+				CharDel: "||",
+				ColDel:  ",",
+				RowDel:  "\n",
+				Escape:  `\`,
+			},
+			expected: "||a\\||b||,||c\\\\d||\n",
+		},
+		{
+			name:   "multi-byte escape sequence escapes itself",
+			values: []interface{}{"a||b", "c!!d"},
+			mod: &config.DelModifier{
+				CharDel: "||",
+				ColDel:  ",",
+				RowDel:  "\n",
+				Escape:  "!!",
+			},
+			expected: "||a!!||b||,||c!!!!d||\n",
+		},
 	}
 
 	for _, tt := range tests {
