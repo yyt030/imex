@@ -181,7 +181,7 @@ func (s *writeSession) maybeCommit() error {
 		return err
 	}
 	if byteLimit && !rowLimit {
-		common.Logger.Debug("Committing transaction at replay buffer limit",
+		common.Logger.Debug("committing transaction at replay buffer limit",
 			"session", s.label, "bytes", DefaultMaxPendingBytes)
 	}
 	return s.begin()
@@ -197,7 +197,7 @@ func (s *writeSession) idleCommit() error {
 	if err := s.commit(); err != nil {
 		return err
 	}
-	common.Logger.Debug("Committing idle transaction",
+	common.Logger.Debug("committing idle transaction",
 		"session", s.label, "rows", rows, "timeout", DefaultIdleCommitTimeout)
 	return s.begin()
 }

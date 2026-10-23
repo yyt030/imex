@@ -97,10 +97,10 @@ Examples:
 		}
 		exportCfg.Vars = vars
 		if len(vars) > 0 {
-			common.Logger.Info("Session variables will be set on every connection", "vars", exportCfg.SessionVars)
+			common.Logger.Info("session variables will be set on every connection", "vars", exportCfg.SessionVars)
 		}
 
-		common.Logger.Info("export command started",
+		common.Logger.Info("export started",
 			"output", exportCfg.Output,
 			"format", exportCfg.Format,
 			"host", exportCfg.Host,

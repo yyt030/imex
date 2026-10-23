@@ -92,10 +92,10 @@ Examples:
 		}
 		importCfg.Vars = vars
 		if len(vars) > 0 {
-			common.Logger.Info("Session variables will be set on every connection", "vars", importCfg.SessionVars)
+			common.Logger.Info("session variables will be set on every connection", "vars", importCfg.SessionVars)
 		}
 
-		common.Logger.Info("import command started",
+		common.Logger.Info("import started",
 			"input", importCfg.Input,
 			"format", importCfg.Format,
 			"mode", importCfg.Mode,

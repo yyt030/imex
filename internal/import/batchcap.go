@@ -142,14 +142,14 @@ func (imp *Importer) batchBudget() int64 {
 		}
 		packet, err := fetchMaxAllowedPacket(imp.db)
 		if err != nil {
-			common.Logger.Warn("Could not read max_allowed_packet, assuming conservative batch limit",
+			common.Logger.Warn("could not read max_allowed_packet, assuming conservative batch limit",
 				"assumed_bytes", defaultMaxAllowedPacket, "error", err)
 			if imp.msg != nil {
 				imp.msg.WriteWarning(fmt.Sprintf("Could not read max_allowed_packet (%v); assuming %d bytes per batch", err, defaultMaxAllowedPacket))
 			}
 		}
 		imp.maxBatchBytes = batchByteLimit(packet)
-		common.Logger.Info("Import batch byte cap resolved",
+		common.Logger.Info("import batch byte cap resolved",
 			"max_allowed_packet", packet,
 			"batch_bytes", imp.maxBatchBytes,
 		)
@@ -162,7 +162,7 @@ func (imp *Importer) batchBudget() int64 {
 func (imp *Importer) resolveBatchSize(columns int) (int, int64) {
 	batchSize := effectiveBatchSize(imp.cfg.BatchSize, columns)
 	if batchSize != imp.cfg.BatchSize {
-		common.Logger.Warn("Lowering --batch-size to stay under the MySQL placeholder limit",
+		common.Logger.Warn("lowering --batch-size to stay under the MySQL placeholder limit",
 			"requested", imp.cfg.BatchSize, "effective", batchSize, "columns", columns,
 			"limit", maxPlaceholders,
 		)

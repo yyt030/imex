@@ -270,7 +270,7 @@ func (s *SQLWriter) warnOversizedStatement(size int) {
 	}
 	s.oversizeWarned = true
 	msg := fmt.Sprintf("Single-row INSERT of %d bytes exceeds --statement-size %d and is written whole", size, s.statementSize)
-	common.Logger.Warn("Single-row INSERT exceeds --statement-size and is written whole",
+	common.Logger.Warn("single-row INSERT exceeds --statement-size and is written whole",
 		"statement_bytes", size, "statement_size", s.statementSize)
 	if s.onWarning != nil {
 		s.onWarning(msg)

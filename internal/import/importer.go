@@ -49,7 +49,7 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 		if pingErr = db.Ping(); pingErr == nil {
 			break
 		}
-		common.Logger.Warn("Database ping failed, retrying", "attempt", i+1, "error", pingErr)
+		common.Logger.Warn("database ping failed, retrying", "attempt", i+1, "error", pingErr)
 		time.Sleep(time.Duration(i+1) * time.Second)
 	}
 	if pingErr != nil {
@@ -93,7 +93,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 		// --quiet suppresses the periodic progress log line but keeps the
 		// --messages file progress records (an explicit artifact).
 		if !common.Quiet {
-			common.Logger.Info("Import progress",
+			common.Logger.Info("import progress",
 				"read", curr.Processed,
 				"inserted", curr.Inserted,
 				"updated", curr.Updated,
@@ -110,12 +110,13 @@ func (imp *Importer) Import(ctx context.Context) error {
 	defer stopMon()
 
 	// 输出配置参数
-	common.Logger.Info("import configuration",
+	common.Logger.Info("import config",
 		"host", imp.cfg.Host,
 		"port", imp.cfg.Port,
 		"user", imp.cfg.User,
 		"database", imp.cfg.Database,
 		"input", imp.cfg.Input,
+		"bytes", common.FileSize(imp.cfg.Input),
 		"table", imp.cfg.Table,
 		"format", imp.cfg.Format,
 		"mode", imp.cfg.Mode,
@@ -139,8 +140,6 @@ func (imp *Importer) Import(ctx context.Context) error {
 	if imp.msg != nil {
 		imp.msg.WriteHeader(fmt.Sprintf("import -i %s -t %s", imp.cfg.Input, imp.cfg.Table))
 	}
-
-	common.Logger.Info("Starting import", "input", imp.cfg.Input, "bytes", common.FileSize(imp.cfg.Input), "table", imp.cfg.Table, "format", imp.cfg.Format, "mode", imp.cfg.Mode, "threads", imp.cfg.ImportThreads)
 
 	// Open input file
 	file, err := os.Open(imp.cfg.Input)
@@ -241,7 +240,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// before any data is written.
 	if imp.cfg.Mode == config.ImportModeInsertUpdate {
 		if n, err := imp.countUniqueKeys(ctx); err != nil {
-			common.Logger.Warn("Failed to verify unique keys for insert_update mode", "error", err)
+			common.Logger.Warn("failed to verify unique keys for insert_update mode", "error", err)
 		} else if n == 0 {
 			msg := fmt.Sprintf("table %q has no PRIMARY or UNIQUE key: insert_update mode degenerates to plain INSERT and repeated imports will duplicate rows", imp.cfg.Table)
 			common.Logger.Warn(msg)
@@ -256,11 +255,11 @@ func (imp *Importer) Import(ctx context.Context) error {
 	case config.ImportModeReplace:
 		// Disable foreign key checks for replace mode
 		if _, err := imp.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
-			common.Logger.Warn("Failed to disable foreign key checks", "error", err)
+			common.Logger.Warn("failed to disable foreign key checks", "error", err)
 		}
 		defer func() {
 			if _, err := imp.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
-				common.Logger.Warn("Failed to re-enable foreign key checks", "error", err)
+				common.Logger.Warn("failed to re-enable foreign key checks", "error", err)
 			}
 		}()
 
@@ -290,15 +289,15 @@ func (imp *Importer) Import(ctx context.Context) error {
 					return errors.New("failed to derive table name from CREATE statement; specify --table")
 				}
 				imp.cfg.Table = name
-				common.Logger.Info("Create mode: table name derived from SQL file", "table", name)
+				common.Logger.Info("table name derived from SQL file", "table", name)
 			}
 			for _, stmt := range createStmts {
 				stmt = rewriteCreateTableTarget(stmt, imp.cfg.Table)
 				taggedStmt := common.TagSQL(stmt)
-				common.Logger.Info("Executing CREATE TABLE statement")
+				common.Logger.Info("create table executing")
 				if _, err := imp.db.ExecContext(ctx, taggedStmt); err != nil {
 					preview := common.SQLPreview(taggedStmt, nil)
-					common.Logger.Error("CREATE TABLE failed", "error", err, "sql", preview)
+					common.Logger.Error("create table failed", "error", err, "sql", preview)
 					if imp.msg != nil {
 						imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to execute CREATE TABLE: %v; SQL: %s", err, preview))
 					}
@@ -316,7 +315,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 
 	if structureOnly {
 		total := imp.stats.Snapshot()
-		common.Logger.Info("Import completed",
+		common.Logger.Info("import completed",
 			"read", total.Processed,
 			"inserted", total.Inserted,
 			"updated", total.Updated,
@@ -341,7 +340,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 		if delReader, ok := reader.(*DelReader); ok {
 			kinds, binaries, err := imp.columnInfoFor(ctx, targetColumns)
 			if err != nil {
-				common.Logger.Warn("Failed to resolve target column types; DEL text modifiers disabled", "error", err)
+				common.Logger.Warn("failed to resolve target column types; DEL text modifiers disabled", "error", err)
 			} else {
 				delReader.SetColumnKinds(kinds)
 				delReader.SetBinaryColumns(binaries)
@@ -359,7 +358,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 	if importErr != nil {
 		// Aborted run: still surface what was accomplished before failing.
 		total := imp.stats.Snapshot()
-		common.Logger.Info("Import aborted",
+		common.Logger.Info("import aborted",
 			"read", total.Processed,
 			"inserted", total.Inserted,
 			"updated", total.Updated,
@@ -711,7 +710,7 @@ loop:
 		if err := session.write(insertSQL, batchValues, len(batch.data)); err != nil {
 			preview := common.FailingSQL(insertSQL, batchValues)
 			imp.stats.AddFailed(int64(len(batch.data)))
-			common.Logger.Error("Insert batch failed", "error", err, "sql", preview)
+			common.Logger.Error("insert batch failed", "error", err, "sql", preview)
 			if imp.msg != nil {
 				imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to insert batch at row %d: %v; SQL: %s", rowCount+1, err, preview))
 			}
@@ -750,7 +749,7 @@ loop:
 	duration := time.Since(startTime)
 
 	total := imp.stats.Snapshot()
-	common.Logger.Info("Import completed",
+	common.Logger.Info("import completed",
 		"read", total.Processed,
 		"inserted", total.Inserted,
 		"updated", total.Updated,
@@ -931,7 +930,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 				if err := session.write(insertSQL, flat, len(batch.data)); err != nil {
 					preview := common.FailingSQL(insertSQL, flat)
 					imp.stats.AddFailed(int64(len(batch.data)))
-					common.Logger.Error("Insert batch failed", "thread", threadID, "error", err, "sql", preview)
+					common.Logger.Error("insert batch failed", "thread", threadID, "error", err, "sql", preview)
 					errCh <- errors.Wrapf(err, "thread %d: failed to insert batch (SQL: %s)", threadID, preview)
 					cancel()
 					return
@@ -952,7 +951,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 				return
 			}
 
-			common.Logger.Info("Thread completed", "thread", threadID)
+			common.Logger.Info("worker completed", "thread", threadID)
 		}(i)
 	}
 
@@ -966,7 +965,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 	duration := time.Since(startTime)
 
 	total := imp.stats.Snapshot()
-	common.Logger.Info("Parallel import completed",
+	common.Logger.Info("parallel import completed",
 		"read", total.Processed,
 		"inserted", total.Inserted,
 		"updated", total.Updated,
@@ -1029,7 +1028,7 @@ func (imp *Importer) applyColumnMapping(fileColumns []string) (*ColumnMapping, e
 		targetColumns[i] = tableCol
 	}
 
-	common.Logger.Info("Column mapping applied",
+	common.Logger.Info("column mapping applied",
 		"file_columns", fileColumns,
 		"target_columns", targetColumns,
 		"mapping", imp.cfg.Columns)

@@ -77,7 +77,7 @@ func Retry(ctx context.Context, p RetryPolicy, fn func(attempt int) error) error
 		}
 
 		delay := p.Delay(attempt + 1)
-		Logger.Warn("Transient database error, retrying",
+		Logger.Warn("transient database error, retrying",
 			"attempt", attempt,
 			"max_attempts", p.MaxAttempts,
 			"delay", delay,

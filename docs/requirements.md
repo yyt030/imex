@@ -550,6 +550,23 @@ GOMYDUMP_LOG_FORMAT=text gomydump import -h 127.0.0.1 -u root -p pass -D mydb -i
 
 **布局切换不改级别：** `ApplyLogFormat()` 只重设布局，`--log-level` 选择的阈值保持不变，版本横幅与随后所有 INFO 记录照常输出。
 
+**消息命名：** 所有经全局 logger 输出的记录统一为小写、单行的 `<对象> <事件>` 短语，事件词固定为 `started` / `config` / `progress` / `completed` / `aborted` / `failed`，因此大小写敏感的 grep 一条 pattern 就能覆盖全链路。主要记录：
+
+| 记录 | 触发时机 |
+|------|----------|
+| `gomydump starting` | 每次运行的首行（version/build_time/git_commit/go_version/command） |
+| `export started` / `import started` | 子命令入口，含 output/input、format、连接目标 |
+| `export config` / `import config` | 完整生效参数快照（含 DEL 定界符、字符集、批/管道参数） |
+| `session variables will be set on every connection` | 传入了 `--session-var` |
+| `export progress` / `import progress` | 每 5 秒定时进度（`--quiet` 抑制） |
+| `parallel export detected` / `shard export completed` / `parallel export completed` | 并行导出：分片计划、每个分片、汇总 |
+| `worker completed` / `parallel import completed` | 并行导入：每个工作线程、汇总 |
+| `export completed` / `import completed` / `import aborted` | 结束统计（中止时仍给出已达进度与 `failed`） |
+| `query failed` / `insert batch failed` / `create table failed` / `shard query failed` / `shard export failed` | 语句级失败，附 `sql` 预览（默认脱敏） |
+| `command failed` | 最终失败汇总，`--error-stack` 附带调用栈 |
+
+同一事件只输出一行：原先紧随 `export config`/`import config` 的 `Starting export`/`Starting import` 属于重复记录，已删除（字段全部被 config 记录覆盖，输入文件字节数改由 `import config` 的 `bytes` 承载）。该约定由 `main_test.go` 的 `TestLogMessageStyle` 静态守护：解析全部源文件，检查每个 `logger.Debug/Info/Warn/Error` 的字面量消息首字母小写且不含换行。
+
 ### 3.3.3 SQL 归因注释（`--no-sql-tag`）
 
 默认情况下，工具执行的每条 SQL 语句前会添加归因注释 `/* gomydump:<commit7> */`（`<commit7>` 为构建时通过 ldflags 注入的 Git commit 前 7 位十六进制短哈希），便于在 `general_log`、`slow_query_log` 和审计流中识别工具来源。
@@ -1260,6 +1277,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 29 | DEL 专属选项改为显式报错 | 此前 `-f sql --col-del '@' --no-char-del --date-fmt ...` 与 `-f parquet --col-del '|' --hex-blob` 都退出 0 并静默忽略这些标志，而 SQL 专属选项（`--no-create`/`--statement-size` 等）早已有强制校验，两类格式专属标志的不对称会误导用户以为文件按指定布局写出。新增 `validateDELOnlyOptions`：`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 在导出与导入的 `--format sql`/`parquet` 下一律报 `can only be used with --format del` 并退出 2（默认值不算显式传入，故不影响既有命令）；同时新增 `validateParquetBinaryOptions`，`--hex-blob`/`--no-hex-blob` 与 `--format parquet` 组合退出 2——Parquet 二进制列已是原生 `binary`，开关无意义，而 SQL/DEL 仍正常使用它们 |
 | 30 | 日志一条记录一行、切布局不改级别 | 两处不一致。① `java` 布局只给含空格/制表/换行的值加引号，且不转义换行本身：配置行打印 DEL 定界符时 `row_del=` 后面是真实换行，一条记录被拆成两行，`char_del="` 与 `escape="` 又是裸双引号，后续 token 无法切分。现统一按 slog 规则转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），一条记录恒为一个物理行，`java`/`text` 对同一值渲染出同一 token。② `currentLevel()` 只探测 debug/warn/error，`ApplyLogFormat()` 在 `PersistentPreRunE` 里重设布局时把 info 误判为更高级别，抬高阈值后文档承诺的版本横幅 `gomydump starting` 以及任何早于子命令 `InitLogger` 的 INFO 记录被静默丢弃（实测 export/import/version 三种运行均无首行横幅）。补 `LevelInfo` 探测，横幅恢复为运行首行；新增 `internal/common/log_test.go` 固化单行、转义、级别保持、横幅四项行为 |
 | 31 | `--log-format` 非法取值改为用法错误 | `internal/common.ValidLogFormat` 与 `cmd/validate.go` 的 `validateLogFormat` 此前无调用方，`--log-format bogus` 与 `GOMYDUMP_LOG_FORMAT=javaness` 都退出 0 并静默回落 java 布局，与其它参数不一致（`log.go` 的注释还声称会退出 2）。现把它接进 root 的 `PersistentPreRunE`（在应用布局之前校验），非法取值报 `invalid --log-format %q: must be one of java/text` 并退出 2；`cmd/cli_matrix_test.go` 补标志与环境变量两条用例，并修正测试夹具：`logFormat` 是包级标志变量，pflag 只在显式传入时写入，必须逐例复位，否则一条非法取值会污染后续所有用例 |
+| 32 | 日志消息统一为小写 `<对象> <事件>` | 原先同一份日志混着三种写法：`Export completed`/`Query failed` 大写开头、`export configuration`/`gomydump starting` 小写、`Starting export`/`Executing CREATE TABLE statement` 用动名词或 SQL 关键字，大小写敏感的 grep 会漏掉一半记录；而且 `Starting export`/`Starting import` 与紧随其后的配置行字段完全重复。现将全部 56 处 logger 调用（50 个不同消息）统一为小写单行短语，事件词固定为 started/config/progress/completed/aborted/failed（`export command started`→`export started`，`export configuration`→`export config`，`Thread completed`→`worker completed`，`Executing CREATE TABLE statement`→`create table executing`，余同），删除重复的 `Starting export`/`Starting import`（导入的 `bytes` 字段并入 `import config`）；`gomydump starting` 与 `command failed` 保持原样以免破坏既有文档与告警脚本。新增 `main_test.go` 用 go/ast 静态检查所有 logger 调用的消息首字母小写且单行，防回归 |
 
 ### 本轮测试确认的既有行为（未改动）
 

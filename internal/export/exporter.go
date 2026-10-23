@@ -51,7 +51,7 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 		if pingErr = db.Ping(); pingErr == nil {
 			break
 		}
-		common.Logger.Warn("Database ping failed, retrying", "attempt", i+1, "error", pingErr)
+		common.Logger.Warn("database ping failed, retrying", "attempt", i+1, "error", pingErr)
 		time.Sleep(time.Duration(i+1) * time.Second)
 	}
 	if pingErr != nil {
@@ -61,10 +61,10 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 
 	// Enable consistent snapshot for transactional consistency
 	if _, err := db.Exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		common.Logger.Warn("Failed to set isolation level", "error", err)
+		common.Logger.Warn("failed to set isolation level", "error", err)
 	}
 	if _, err := db.Exec("START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
-		common.Logger.Warn("Failed to start consistent snapshot", "error", err)
+		common.Logger.Warn("failed to start consistent snapshot", "error", err)
 	}
 
 	// Initialize message writer if configured
@@ -104,7 +104,7 @@ func (e *Exporter) Export(ctx context.Context) error {
 		// --quiet suppresses the periodic progress log line but keeps the
 		// --messages file progress records (an explicit artifact).
 		if !common.Quiet {
-			common.Logger.Info("Export progress",
+			common.Logger.Info("export progress",
 				"rows", curr.Processed,
 				"rate", fmt.Sprintf("%.2f rows/sec", curr.RatePerSec()),
 				"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
@@ -118,7 +118,7 @@ func (e *Exporter) Export(ctx context.Context) error {
 	defer stopMon()
 
 	// 输出配置参数
-	common.Logger.Info("export configuration",
+	common.Logger.Info("export config",
 		"host", e.config.Host,
 		"port", e.config.Port,
 		"user", e.config.User,
@@ -158,8 +158,6 @@ func (e *Exporter) Export(ctx context.Context) error {
 		e.msg.WriteHeader(fmt.Sprintf("export -o %s -q \"%s\"", e.config.Output, e.config.Query))
 		e.msg.WriteBegin(e.messageTableName())
 	}
-
-	common.Logger.Info("Starting export", "query", e.config.Query, "format", e.config.Format, "threads", e.config.Threads)
 
 	// Check if output file exists and --no-replace is set
 	if e.config.NoReplace {
@@ -224,7 +222,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) error 
 	rows, err := e.db.QueryContext(ctx, taggedQuery)
 	if err != nil {
 		preview := common.SQLPreview(e.config.Query, nil)
-		common.Logger.Error("Query failed", "error", err, "sql", preview)
+		common.Logger.Error("query failed", "error", err, "sql", preview)
 		if e.msg != nil {
 			e.msg.WriteMessage(fmt.Sprintf("SQL3104N  Query failed: %v; SQL: %s", err, preview))
 		}
@@ -442,7 +440,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) error 
 
 	duration := time.Since(startTime)
 
-	common.Logger.Info("Export completed", "rows", rowCount, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", float64(rowCount)/duration.Seconds()))
+	common.Logger.Info("export completed", "rows", rowCount, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", float64(rowCount)/duration.Seconds()))
 
 	if e.msg != nil {
 		e.msg.WriteFooter(rowCount)
@@ -456,36 +454,36 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	// Parquet shard files cannot be concatenated, so parallel export would
 	// require re-encoding every row. Fall back to single-threaded export.
 	if e.config.Format == "parquet" {
-		common.Logger.Info("Parallel export is not supported for parquet format, using single-threaded export")
+		common.Logger.Info("parallel export is not supported for parquet format, using single-threaded export")
 		return e.exportSingle(ctx, startTime)
 	}
 
 	// Check if query has complex features that don't work well with sharding
 	if hasComplex, feature := e.sqlParser.HasComplexFeatures(e.config.Query); hasComplex {
-		common.Logger.Warn("Query has complex features, falling back to single-threaded export", "feature", feature)
+		common.Logger.Warn("query has complex features, falling back to single-threaded export", "feature", feature)
 		return e.exportSingle(ctx, startTime)
 	}
 
 	// Extract table name from query using SQL parser
 	tableName, err := e.sqlParser.ExtractTableName(e.config.Query)
 	if err != nil {
-		common.Logger.Warn("Failed to extract table name, falling back to single-threaded export", "error", err)
+		common.Logger.Warn("failed to extract table name, falling back to single-threaded export", "error", err)
 		return e.exportSingle(ctx, startTime)
 	}
 
 	// Detect shard key
 	shardInfo, err := DetectShardKey(e.db, tableName, e.config.ShardKey)
 	if err != nil {
-		common.Logger.Warn("Failed to detect shard key, falling back to single-threaded export", "error", err)
+		common.Logger.Warn("failed to detect shard key, falling back to single-threaded export", "error", err)
 		return e.exportSingle(ctx, startTime)
 	}
 
-	common.Logger.Info("Parallel export detected", "table", tableName, "shard_key", shardInfo.Columns, "threads", e.config.Threads)
+	common.Logger.Info("parallel export detected", "table", tableName, "shard_key", shardInfo.Columns, "threads", e.config.Threads)
 
 	// Generate shard ranges
 	shardRanges := GenerateShardRanges(shardInfo, e.config.Threads)
 	if len(shardRanges) <= 1 {
-		common.Logger.Warn("Only 1 shard range, falling back to single-threaded export")
+		common.Logger.Warn("only 1 shard range, falling back to single-threaded export")
 		return e.exportSingle(ctx, startTime)
 	}
 
@@ -534,13 +532,13 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	for i := 0; i < len(shardRanges); i++ {
 		result := <-resultCh
 		if result.err != nil {
-			common.Logger.Error("Shard export failed", "shard", result.shardIdx, "error", result.err)
+			common.Logger.Error("shard export failed", "shard", result.shardIdx, "error", result.err)
 			if exportErr == nil {
 				exportErr = result.err
 			}
 		} else {
 			totalRows += result.rowCount
-			common.Logger.Info("Shard export completed", "shard", result.shardIdx)
+			common.Logger.Info("shard export completed", "shard", result.shardIdx)
 		}
 	}
 
@@ -565,7 +563,7 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	duration := time.Since(startTime)
 
 	total := e.stats.Snapshot()
-	common.Logger.Info("Parallel export completed", "rows", total.Processed, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "shards", len(shardRanges), "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", total.RatePerSec()))
+	common.Logger.Info("parallel export completed", "rows", total.Processed, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "shards", len(shardRanges), "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", total.RatePerSec()))
 
 	if e.msg != nil {
 		e.msg.WriteFooter(totalRows)
@@ -594,7 +592,7 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 	rows, err := db.QueryContext(ctx, taggedShardQuery)
 	if err != nil {
 		preview := common.SQLPreview(shardQuery, nil)
-		common.Logger.Error("Shard query failed", "shard", shardIdx, "error", err, "sql", preview)
+		common.Logger.Error("shard query failed", "shard", shardIdx, "error", err, "sql", preview)
 		return 0, errors.Wrapf(err, "failed to execute shard query (SQL: %s)", preview)
 	}
 	defer rows.Close()
@@ -714,10 +712,10 @@ func (e *Exporter) createShardConnection() (*sql.DB, error) {
 
 	// Set isolation level for consistent snapshot
 	if _, err := db.Exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		common.Logger.Warn("Failed to set isolation level for shard", "error", err)
+		common.Logger.Warn("failed to set isolation level for shard", "error", err)
 	}
 	if _, err := db.Exec("START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
-		common.Logger.Warn("Failed to start consistent snapshot for shard", "error", err)
+		common.Logger.Warn("failed to start consistent snapshot for shard", "error", err)
 	}
 
 	return db, nil

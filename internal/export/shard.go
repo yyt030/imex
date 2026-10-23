@@ -33,14 +33,14 @@ func DetectShardKey(db *sql.DB, tableName string, preferKey string) (*ShardInfo,
 	// Try to find PRIMARY KEY (may be composite)
 	pkCols, err := findPrimaryKey(db, tableName)
 	if err == nil && len(pkCols) > 0 {
-		common.Logger.Debug("Using primary key for sharding", "columns", pkCols)
+		common.Logger.Debug("using primary key for sharding", "columns", pkCols)
 		return getShardInfo(db, tableName, pkCols)
 	}
 
 	// Try to find any UNIQUE KEY (may be composite)
 	ukCols, err := findUniqueKey(db, tableName)
 	if err == nil && len(ukCols) > 0 {
-		common.Logger.Debug("Using unique key for sharding", "columns", ukCols)
+		common.Logger.Debug("using unique key for sharding", "columns", ukCols)
 		return getShardInfo(db, tableName, ukCols)
 	}
 
