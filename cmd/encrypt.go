@@ -27,7 +27,7 @@ Examples:
 
   # Use encrypted password in export
   gomydump export -h 127.0.0.1 -u root -p "ENC:base64..." -D mydb -o backup.sql`,
-	Args: cobra.ExactArgs(1),
+	Args: exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		password := args[0]
 

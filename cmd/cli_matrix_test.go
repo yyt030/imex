@@ -361,6 +361,54 @@ func TestCLILogFormatEnvOverrideRejected(t *testing.T) {
 	}
 }
 
+// TestCLIEncryptArgsCountIsUsageError pins the positional-argument check of the
+// encrypt subcommand to the exit-code contract: a wrong argument count is a
+// usage problem (exit code 2), the same as every rejected option. cobra's own
+// ExactArgs returns a plain error, which main.go would map to exit code 1.
+func TestCLIEncryptArgsCountIsUsageError(t *testing.T) {
+	*exportCfg = *newExportConfigForTest()
+	*importCfg = *newImportConfigForTest()
+	logFormat = "java"
+	resetChangedFlags(exportCmd, importCmd, rootCmd)
+	defer resetChangedFlags(exportCmd, importCmd, rootCmd)
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"missing password", []string{"encrypt"}, "encrypt accepts 1 argument(s), received 0"},
+		{"extra password", []string{"encrypt", "a", "b"}, "encrypt accepts 1 argument(s), received 2"},
+	} {
+		rootCmd.SetArgs(tc.args)
+		err := rootCmd.Execute()
+		if err == nil {
+			t.Fatalf("%s: expected usage error, got nil", tc.name)
+		}
+		if !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+		}
+		if !common.IsUsageError(err) {
+			t.Errorf("%s: error %q must be a usage error (exit code 2)", tc.name, err)
+		}
+	}
+
+	// A correct call must still pass the args check and reach RunE; with no key
+	// set it fails as a runtime error, not as a usage error.
+	t.Setenv("GOMYDUMP_KEY", "")
+	rootCmd.SetArgs([]string{"encrypt", "secret"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("encrypt with empty GOMYDUMP_KEY should fail")
+	}
+	if common.IsUsageError(err) {
+		t.Errorf("missing key is a runtime failure, not a usage error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "GOMYDUMP_KEY") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 // newExportConfigForTest creates a fresh ExportConfig with defaults.
 func newExportConfigForTest() *config.ExportConfig {
 	return config.NewExportConfig()

@@ -100,6 +100,19 @@ func validateLogFormat(format string) error {
 	return nil
 }
 
+// exactArgs validates the number of positional arguments and, unlike cobra's
+// own ExactArgs, reports a mismatch as a UsageError. main.go only escalates
+// usage-classified errors to exit code 2, so a plain error from the args check
+// would look like a runtime failure to scripts and to the exit-code contract.
+func exactArgs(n int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) != n {
+			return common.Usagef("%s accepts %d argument(s), received %d", cmd.CommandPath(), n, len(args))
+		}
+		return nil
+	}
+}
+
 // normalizeCharset lowers/trims a charset string for comparison.
 func normalizeCharset(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
