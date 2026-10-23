@@ -9,8 +9,9 @@ import (
 // StatsSnapshot is a point-in-time view of shared run counters.
 type StatsSnapshot struct {
 	Processed int64         // rows written (export) / rows read from file (import)
-	Inserted  int64         // import only: rows the server reported as new inserts
-	Updated   int64         // import only: rows the server reported as updates (insert_update / replace of existing)
+	Inserted  int64         // import only: rows the server took as new inserts
+	Updated   int64         // import only: rows an existing row was changed by (insert_update)
+	Unchanged int64         // import only: rows written but identical to what was already stored
 	Failed    int64         // import only: rows in batches that failed to apply
 	Elapsed   time.Duration // wall clock since the run started
 }
@@ -22,6 +23,7 @@ type Stats struct {
 	processed int64
 	inserted  int64
 	updated   int64
+	unchanged int64
 	failed    int64
 	start     time.Time
 }
@@ -31,6 +33,7 @@ func NewStats() *Stats { return &Stats{start: time.Now()} }
 func (s *Stats) AddProcessed(n int64) { atomic.AddInt64(&s.processed, n) }
 func (s *Stats) AddInserted(n int64)  { atomic.AddInt64(&s.inserted, n) }
 func (s *Stats) AddUpdated(n int64)   { atomic.AddInt64(&s.updated, n) }
+func (s *Stats) AddUnchanged(n int64) { atomic.AddInt64(&s.unchanged, n) }
 func (s *Stats) AddFailed(n int64)    { atomic.AddInt64(&s.failed, n) }
 
 // Snapshot reads all counters. Individual counters are atomic; the tuple may
@@ -41,6 +44,7 @@ func (s *Stats) Snapshot() StatsSnapshot {
 		Processed: atomic.LoadInt64(&s.processed),
 		Inserted:  atomic.LoadInt64(&s.inserted),
 		Updated:   atomic.LoadInt64(&s.updated),
+		Unchanged: atomic.LoadInt64(&s.unchanged),
 		Failed:    atomic.LoadInt64(&s.failed),
 		Elapsed:   time.Since(s.start),
 	}

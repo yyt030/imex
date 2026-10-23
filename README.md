@@ -582,7 +582,7 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
   -q "SELECT * FROM users"
 ```
 
-导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按 `RowsAffected` 拆分 `inserted` / `updated`（`insert_update` 模式下 `updated = affected - rows`，插入相同值时 `updated` 记 0、按新增呈现），批次执行失败的行计入 `failed`。导入、导出均每隔 **5 秒**打印一次进度（已处理条数、总速率 `rate`、区间速率 `interval_rate`、`elapsed`），结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `Import aborted` 汇总（含 `failed`）。
+导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`create`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 **5 秒**打印一次进度（已处理条数、总速率 `rate`、区间速率 `interval_rate`、`elapsed`），结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。
 
 版本横幅（`gomydump starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后才是命令启动与配置参数。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `started`/`config`/`progress`/`completed`/`aborted`/`failed`（如 `export started`、`export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `java` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `GOMYDUMP_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；此时 `--messages` 消息文件仍按 DB2 兼容格式记录行进度（`SQL3105N`）与统计，因为消息文件是显式产物不受静默影响。
 
@@ -760,6 +760,7 @@ INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (2,'Bob','bob@exam
 | DEL/Parquet 导入未校验目标列，表达式列头（如 `SELECT 1` 产生的 `"1"`）报 `Unknown column '1' in 'field list'`；replace 模式还会先清空表再失败 | 导入前用 `information_schema` 校验目标列存在性（大小写不敏感），缺失时立即给出含修复建议的错误（起别名或用 `--columns`），表不存在同样明确报错；校验在 mode 处理之前执行，replace 模式不再发生"先清表后报错"的数据丢失 |
 | 语句执行失败时错误信息不含 SQL，难以定位 | 失败 SQL 随错误回显到 stderr/日志/消息文件；默认脱敏（占位符保留，值以 `str(14)/num/NULL/bytes(256)` 类型标签呈现），2048 字节截断并保持引号配平；`--echo-sql-values` / `GOMYDUMP_ECHO_SQL_VALUES=1` 可显式内联真实值 |
 | 失败时以裸 `Error:` 行输出、与其它日志格式不一致；版本信息不在首行；进度日志无法关闭 | 命令失败统一走 `level=ERROR msg="command failed"` 日志记录（`--error-stack` 追加调用栈）；版本横幅 `gomydump starting` 提前为运行首行；新增 `--quiet` / `GOMYDUMP_QUIET=1` 禁止定时进度日志（消息文件进度不受影响） |
+| 导入行数统计把"写入相同值的行"当成新增（`insert_update` 重复导入同一文件时报 `inserted=N updated=0`）| 每批按服务端 affected 拆成互斥的 `inserted`/`updated`/`unchanged`，三者之和恒等于批行数；`replace` 模式（先清空目标表）仍全部计新增。实测：相同内容重导 → `inserted=0 updated=0 unchanged=4`，全部改动 → `updated=4`，删 2 行后重导 → `inserted=2 unchanged=2` |
 
 ## 项目结构
 

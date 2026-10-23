@@ -97,6 +97,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 				"read", curr.Processed,
 				"inserted", curr.Inserted,
 				"updated", curr.Updated,
+				"unchanged", curr.Unchanged,
 				"failed", curr.Failed,
 				"rate", fmt.Sprintf("%.2f rows/sec", curr.RatePerSec()),
 				"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
@@ -319,6 +320,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 			"read", total.Processed,
 			"inserted", total.Inserted,
 			"updated", total.Updated,
+			"unchanged", total.Unchanged,
 			"failed", total.Failed,
 			"bytes", common.FileSize(imp.cfg.Input),
 			"input", imp.cfg.Input,
@@ -362,6 +364,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 			"read", total.Processed,
 			"inserted", total.Inserted,
 			"updated", total.Updated,
+			"unchanged", total.Unchanged,
 			"failed", total.Failed,
 			"elapsed", total.Elapsed.Truncate(time.Second),
 		)
@@ -525,35 +528,60 @@ func (imp *Importer) columnInfoFor(ctx context.Context, cols []string) ([]common
 	return kinds, binaries, nil
 }
 
-// addBatchResult records insert/update counters for one successfully applied
-// batch, derived from MySQL's RowsAffected semantics:
-//   - plain multi-row INSERT (insert / replace / create modes): 1 per row.
-//   - INSERT ... ON DUPLICATE KEY UPDATE (insert_update mode): 1 per new row,
-//     2 per changed existing row, 0 per existing row set to identical values.
+// addBatchResult splits one successfully applied batch into inserted / updated
+// / unchanged counters using MySQL's affected-rows semantics. Measured against
+// MariaDB with the go driver (no CLIENT_FOUND_ROWS), for a batch of `rows` rows:
 //
-// The "set to identical" case is indistinguishable from a failed count, so we
-// assume it never happens: updated = affected - rows (clamped), inserted =
-// rows - updated. Unchanged re-imports therefore surface as updated=0,
-// which slightly undercounts true updates when identical rows exist.
+//   - plain INSERT (insert / create modes) and REPLACE (this tool empties the
+//     table first, so every row is a genuine insert): affected == rows.
+//   - INSERT ... ON DUPLICATE KEY UPDATE (insert_update mode): 1 per new row,
+//     2 per existing row whose stored values actually changed, 0 per existing
+//     row set to identical values. So affected = inserted + 2*updated and
+//     rows = inserted + updated + unchanged, which gives updated - unchanged
+//     == affected - rows: one degree of freedom stays unresolved inside a
+//     batch, so the split below takes the provable side of it.
+//
+// Attribution rule: a surplus (affected > rows) can only come from changed
+// rows, and a deficit (affected < rows) can only come from identical rows, so
+// each is charged entirely to its own counter and the remainder is the new
+// insert count. The sum of the three counters always equals `rows`. The
+// residual ambiguity is a batch that mixes changed and identical rows
+// (affected lands exactly on `rows`); that is reported as inserts, matching
+// the far more common "loading a fresh dump" case.
 func (imp *Importer) addBatchResult(rows int64, res sql.Result) {
 	affected, err := res.RowsAffected()
 	if err != nil || affected < 0 {
 		affected = rows
 	}
-	if imp.cfg.Mode == config.ImportModeInsertUpdate {
-		updated := affected - rows
-		if updated < 0 {
-			updated = 0
-		}
-		inserted := rows - updated
-		if inserted < 0 {
-			inserted = 0
-		}
-		imp.stats.AddInserted(inserted)
-		imp.stats.AddUpdated(updated)
-		return
+	updated := affected - rows
+	if updated < 0 {
+		updated = 0
 	}
-	imp.stats.AddInserted(affected)
+	if updated > rows {
+		// Unreachable under the semantics above; a server reporting more than 2
+		// affected rows per row would otherwise inflate the counters past `rows`.
+		updated = rows
+	}
+	unchanged := rows - affected
+	if unchanged < 0 {
+		unchanged = 0
+	}
+	inserted := rows - updated - unchanged
+	if inserted < 0 {
+		inserted = 0
+	}
+	imp.stats.AddInserted(inserted)
+	imp.stats.AddUpdated(updated)
+	imp.stats.AddUnchanged(unchanged)
+}
+
+// Stats exposes the run counters so integration tests can assert the
+// inserted/updated/unchanged split against a real server.
+func (imp *Importer) Stats() common.StatsSnapshot {
+	if imp.stats == nil {
+		return common.StatsSnapshot{}
+	}
+	return imp.stats.Snapshot()
 }
 
 // importSingle performs single-threaded import with pipeline optimization
@@ -753,6 +781,7 @@ loop:
 		"read", total.Processed,
 		"inserted", total.Inserted,
 		"updated", total.Updated,
+		"unchanged", total.Unchanged,
 		"failed", total.Failed,
 		"bytes", common.FileSize(imp.cfg.Input),
 		"input", imp.cfg.Input,
@@ -969,6 +998,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 		"read", total.Processed,
 		"inserted", total.Inserted,
 		"updated", total.Updated,
+		"unchanged", total.Unchanged,
 		"failed", total.Failed,
 		"bytes", common.FileSize(imp.cfg.Input),
 		"input", imp.cfg.Input,

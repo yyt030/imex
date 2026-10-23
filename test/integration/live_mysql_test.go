@@ -135,6 +135,13 @@ type exportOptions struct {
 
 func (e *liveEnv) importFile(t *testing.T, opts importOptions) {
 	t.Helper()
+	e.importFileStats(t, opts)
+}
+
+// importFileStats runs an import and returns its counter snapshot, so a test
+// can assert the inserted/updated/unchanged split instead of only the rows.
+func (e *liveEnv) importFileStats(t *testing.T, opts importOptions) common.StatsSnapshot {
+	t.Helper()
 
 	cfg := config.NewImportConfig()
 	cfg.Config = e.base
@@ -160,6 +167,7 @@ func (e *liveEnv) importFile(t *testing.T, opts importOptions) {
 	if err := imp.Import(context.Background()); err != nil {
 		t.Fatalf("import %s into %s: %v", opts.input, opts.table, err)
 	}
+	return imp.Stats()
 }
 
 type importOptions struct {
@@ -451,4 +459,60 @@ func assertMessageFile(t *testing.T, path string, wants ...string) {
 			t.Errorf("message file %s missing %q:\n%s", path, want, text)
 		}
 	}
+}
+
+// TestLive_ImportCounters asserts the inserted/updated/unchanged split against
+// a real server. Re-importing identical values used to be reported as
+// inserted=N/updated=0 because the derivation assumed every row contributes at
+// least one affected row, while ON DUPLICATE KEY UPDATE reports 0 for a row set
+// to its current values.
+func TestLive_ImportCounters(t *testing.T) {
+	env := newLiveEnv(t)
+	dir := t.TempDir()
+
+	target := env.liveTable(t, "counters")
+	env.exec(t, "CREATE TABLE `"+target+"` (id INT NOT NULL PRIMARY KEY, v VARCHAR(20)) DEFAULT CHARSET=utf8mb4")
+
+	path := filepath.Join(dir, "counters.del")
+	var b strings.Builder
+	b.WriteString("\"id\",\"v\"\n")
+	for _, r := range [][2]string{{"1", "a"}, {"2", "b"}, {"3", "c"}, {"4", "d"}} {
+		b.WriteString(r[0] + ",\"" + r[1] + "\"\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+
+	type counters struct{ inserted, updated, unchanged int64 }
+	check := func(label string, got common.StatsSnapshot, want counters) {
+		t.Helper()
+		if got.Inserted != want.inserted || got.Updated != want.updated || got.Unchanged != want.unchanged {
+			t.Errorf("%s: inserted=%d updated=%d unchanged=%d, want %d/%d/%d",
+				label, got.Inserted, got.Updated, got.Unchanged, want.inserted, want.updated, want.unchanged)
+		}
+		if got.Processed != 4 {
+			t.Errorf("%s: read=%d, want 4 rows", label, got.Processed)
+		}
+		if sum := got.Inserted + got.Updated + got.Unchanged; sum != got.Processed {
+			t.Errorf("%s: inserted+updated+unchanged=%d, want read=%d", label, sum, got.Processed)
+		}
+	}
+	run := func(mode config.ImportMode) common.StatsSnapshot {
+		return env.importFileStats(t, importOptions{
+			input: path, format: "del", mode: mode, table: target, commitCount: 10,
+		})
+	}
+
+	check("insert into empty table", run(config.ImportModeInsert), counters{4, 0, 0})
+	check("insert_update with identical values", run(config.ImportModeInsertUpdate), counters{0, 0, 4})
+
+	env.exec(t, "UPDATE `"+target+"` SET v='stale'")
+	check("insert_update with every row changed", run(config.ImportModeInsertUpdate), counters{0, 4, 0})
+
+	env.exec(t, "DELETE FROM `"+target+"` WHERE id IN (3, 4)")
+	check("insert_update with 2 new and 2 identical rows", run(config.ImportModeInsertUpdate), counters{2, 0, 2})
+
+	// Replace mode empties the target first, so each row of the file is a new
+	// insert from the server's point of view.
+	check("replace after the table was emptied", run(config.ImportModeReplace), counters{4, 0, 0})
 }
