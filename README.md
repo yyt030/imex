@@ -36,8 +36,8 @@ go build -o gomydump
 
 ```bash
 make build          # 编译当前平台二进制 → bin/gomydump
-make linux          # 交叉编译 Linux（amd64 + arm64）
-make build-all      # 交叉编译发布平台（Linux / Windows；macOS 在本机 make build）
+make linux          # 交叉编译 Linux amd64
+make build-all      # 交叉编译发布平台（Linux amd64 / Windows amd64）
 make build COMPRESS=1  # 编译后自动 upx 快速压缩（-1，需安装 upx；未装则跳过）
 make compress       # 单独对 bin/ 现有产物运行 upx -1
 ```
@@ -65,17 +65,17 @@ GOMYDUMP_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/gomydump_it' make test-live
 ```bash
 # 仅 Linux
 make linux
-# 产物：bin/gomydump-linux-amd64、bin/gomydump-linux-arm64
+# 产物：bin/gomydump-linux-amd64
 
-# 发布矩阵（Linux + Windows）
+# 发布矩阵（Linux amd64 + Windows amd64）
 make build-all
-# 产物：上述两个 Linux 二进制 + bin/gomydump-windows-amd64.exe
+# 产物：bin/gomydump-linux-amd64 + bin/gomydump-windows-amd64.exe
 
-# 指定单平台
+# 指定单平台（发布矩阵之外的架构按需自行产出）
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o gomydump .
 ```
 
-`make build-all` 不再构建 darwin 目标。macOS 同样是纯 Go 可直接编译，在本机执行 `make build` 即得 `bin/gomydump`，只是发布包不再附带预编译产物。
+`make build-all` 只产出 Linux amd64 与 Windows amd64，不再构建 darwin 目标，也不产出 Linux arm64。macOS、ARM 服务器等环境同样是纯 Go 可直接编译：macOS 在本机执行 `make build` 即得 `bin/gomydump`，ARM64 Linux 用上面的单平台命令，只是发布包不再附带这些预编译产物。
 
 版本信息通过 ldflags 注入 `cmd` 包，`gomydump version` 可打印版本、Git commit 与构建时间。
 

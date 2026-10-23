@@ -43,11 +43,10 @@ build:
 	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY) .
 	$(maybe_compress)
 
-# 仅交叉编译 Linux（amd64 + arm64）
+# 交叉编译 Linux（仅 amd64；其他架构显式指定 GOARCH，如 arm64）
 linux:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-linux-amd64 .
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-linux-arm64 .
 	$(maybe_compress)
 
 windows:
@@ -55,7 +54,7 @@ windows:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-windows-amd64.exe .
 	$(maybe_compress)
 
-# 发布平台交叉编译产物（Linux + Windows；macOS 请在本机 make build）
+# 发布平台交叉编译产物（Linux amd64 + Windows amd64；其他平台请在本机 make build 或显式指定 GOARCH）
 build-all: linux windows
 
 # 显式压缩：对现有 bin/ 产物单独运行 upx（`make compress`，无需 COMPRESS=1）

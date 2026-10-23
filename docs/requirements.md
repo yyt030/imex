@@ -1039,7 +1039,7 @@ DEL 与 SQL 导入不再使用 `bufio.Scanner`（有 token 长度上限 10 MB）
 | 项目 | 要求 |
 |------|------|
 | 编译产物 | 单一静态二进制 |
-| 跨平台 | 预编译产物覆盖 Linux / Windows；macOS 代码可编译，在本机 `make build` 产出 |
+| 跨平台 | 预编译产物覆盖 Linux amd64 / Windows amd64；macOS 与 Linux arm64 代码可编译，按 README 的单平台命令自行产出 |
 | 容器化 | 提供 Dockerfile |
 
 ---
@@ -1305,12 +1305,12 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 交付物 | 说明 |
 |--------|------|
 | 源代码 | 完整 Go 项目源码（含 24 个 `_test.go`、`docs/requirements.md`、`docs/cli-oracle.txt`），发布形态为 `gomydump-<version>-<commit>[-dirty]-src.tar.gz`，排除 `.git/`、`bin/`、`dist/`、`vendor/` |
-| 二进制文件 | Linux amd64、Linux arm64、Windows amd64 三个平台；均 `CGO_ENABLED=0` 静态链接、`-s -w` 去符号，由 `make build-all` 产出，版本信息经 ldflags 注入 |
+| 二进制文件 | Linux amd64、Windows amd64 两个平台；均 `CGO_ENABLED=0` 静态链接、`-s -w` 去符号，由 `make build-all` 产出，版本信息经 ldflags 注入。Linux arm64 与 macOS 不在发布矩阵内，按 README 的单平台命令自行编译 |
 | 校验清单 | 每个发布批次附 `*-bin-SHA256SUMS.txt`，逐产物一行 SHA256 |
 | Dockerfile | 容器构建（`make docker`）|
 | README.md | 使用说明；本文件为需求与实现说明 |
 
-自 2026-10-23 起**不提供 macOS 预编译产物**：工具是纯 Go 无 CGO，macOS 用户拉源码后 `make build` 即得本机二进制，只是不随发布包提供（见变更记录 33）。
+自 2026-10-23 起**不提供 macOS 预编译产物**（见变更记录 33），同日进一步**只保留 amd64**：Linux arm64 也不再随包发布（见变更记录 37）。工具是纯 Go 无 CGO，这些平台拉源码后自行编译即可——macOS 执行 `make build`，Linux arm64 用 `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o gomydump .`。
 
 ---
 
@@ -1389,3 +1389,4 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 34 | 需求文档按实现全量核对后修订 | 以 `--help` 输出、`cmd/validate.go`、`internal/*` 常量与 `main.go` 的退出码分派为准逐项核对：全部 49 个选项在本文与 README 均有落点（无遗漏、无废弃选项），数值边界（port 1–65535、threads 1–256、batch-size 1–100000、pipeline-buffer 0–1024、statement-size ≤268435456、commit-count ≥1、skip/row-count ≥0）与 `docs/cli-oracle.txt` 快照一致。据此修订：1.3 技术栈补齐真实版本（`go.mod` 的 `go 1.26.9`、mysql v1.9.3、cobra v1.10.2、vitess v0.24.5、parquet-go v0.26.4、pkg/errors v0.9.1）并说明超时经驱动字段注入；二节开头补子命令别名 `exp`/`imp`、`-?` 帮助短选项与 completion 禁用；新增 2.4 `encrypt`（`ENC:` + AES-256-GCM + `GOMYDUMP_KEY`，含解密调用点与失败退出码实测）；3.3.4 退出码补判定口径（含环境变量失败的分流与位置参数个数的归类）；九节项目结构补 `main.go`、`main_test.go`、`usage.go`、`stats.go`、`test/`、`docs/`、`go.sum`；十一节新增 11.1 测试资产清单（24 文件 / 127 `Test*` / 4 `Fuzz*` / 5 `Benchmark*`）与 11.2 未自动化覆盖场景；十二节交付物改为三平台二进制 + 源码包 + SHA256 清单，并显式声明不再提供 macOS 预编译产物。README 另修两处遗留目录名 `mysql-backup-tool` → `gomydump` |
 | 35 | `encrypt` 位置参数个数错误改为退出 2 | `gomydump encrypt`（缺参数）与 `encrypt a b`（多参数）此前由 cobra `ExactArgs(1)` 拦截，返回普通 error，实测退出 1，违反"用法错误 → 2"的契约（同类的未知选项、未知子命令、缺必填项都是 2）。`cmd/validate.go` 新增 `exactArgs`，用 `common.Usagef` 报 `gomydump encrypt accepts 1 argument(s), received N`，`cmd/encrypt.go` 换用它；新增 `cmd/cli_matrix_test.go:TestCLIEncryptArgsCountIsUsageError`，除两种越界外还断言正确参数下密钥缺失仍是运行时错误 1，避免把两类错误合并。实测：无参/两参 → 2，正常加密 → 0，空 `GOMYDUMP_KEY` → 1 |
 | 36 | 补齐值处理与并行降级两处长年缺失的说明 | 新增 5.4「三种格式共有的值处理」：`YEAR(0000)` 归一化为 `0000`（文本协议回裸 `0`，回导会被两位 YEAR 规则解释为 2000）、NULL 与空字符串在 DEL/SQL/Parquet 下的表示、`--no-char-del` 时二者不可区分且回读一律为 NULL（均已在 MariaDB 上实测确认）。7.2 补「并行导出的降级触发点」表（4 个 warn 触发点 + parquet 的 info 分支，附实际日志文本与代码行号）与复合键/非数值首列语义。同时修正一处过期引用：十四节边界表里 parquet 降级的消息仍写作大写 `Parallel export is not supported for parquet format`，实际已是小写且级别为 `info`。README 对应补：无包裹符模式的 NULL/空串注意、并行导出的降级触发点与复合键说明、格式示例后的「三类格式共有的值处理」小节，并把遗留的 `见 3.6` 引用改为需求文档 3.3.4 |
+| 37 | 发布矩阵收窄为 amd64 | 按要求，预编译产物只保留 Linux amd64 与 Windows amd64。`Makefile` 的 `linux` 目标去掉 `GOARCH=arm64` 那行（`build-all` 由 3 个二进制降为 2 个），注释同步；README 构建说明与本文 §8.5「跨平台」、§12 交付物改为两平台，并给出 Linux arm64 的单平台编译命令。本批次的 `*-bin-SHA256SUMS.txt` 相应只列 2 个二进制 |
