@@ -28,7 +28,7 @@
 
 ```bash
 git clone <repository-url>
-cd mysql-backup-tool
+cd gomydump
 go build -o gomydump
 ```
 
@@ -67,9 +67,15 @@ GOMYDUMP_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/gomydump_it' make test-live
 make linux
 # 产物：bin/gomydump-linux-amd64、bin/gomydump-linux-arm64
 
+# 发布矩阵（Linux + Windows）
+make build-all
+# 产物：上述两个 Linux 二进制 + bin/gomydump-windows-amd64.exe
+
 # 指定单平台
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o gomydump .
 ```
+
+`make build-all` 不再构建 darwin 目标。macOS 同样是纯 Go 可直接编译，在本机执行 `make build` 即得 `bin/gomydump`，只是发布包不再附带预编译产物。
 
 版本信息通过 ldflags 注入 `cmd` 包，`gomydump version` 可打印版本、Git commit 与构建时间。
 
@@ -359,7 +365,7 @@ gomydump encrypt <password>
 - `password`：要加密的明文密码（必填）
 
 **环境变量：**
-- `GOMYDUMP_KEY`：加密密钥（必填，用于 AES-256 加密）
+- `GOMYDUMP_KEY`：加密密钥（必填，经 SHA-256 派生为 AES-256-GCM 密钥）
 
 **示例：**
 
@@ -369,7 +375,11 @@ gomydump encrypt "my-password"
 # 输出: ENC:CiQ0mGHx0IasPOwmBKX99/9ZyjeG+QMl0Ee0uH3tYg+84S3BPOR5RqtS8w==
 ```
 
-**注意：** 解密功能仅在 export/import 命令内部使用，不提供公开的 decrypt 命令，以降低安全风险。
+**注意：**
+- 解密在 export/import 起始处自动完成（`common.ResolvePassword`），不提供公开的 decrypt 命令，以降低安全风险；`-p` 的值不是 `ENC:` 开头时按明文处理。
+- 密文带随机 nonce，同一明文 + 同一密钥每次结果都不同，不要拿密文做等值比较。
+- `GOMYDUMP_KEY` 未设置或与实际密钥不符时，命令失败并退出 1，错误形如 `failed to resolve password: password is encrypted but GOMYDUMP_KEY environment variable is not set` / `failed to decrypt: wrong key or corrupted data`。
+- `GOMYDUMP_KEY` 本身也是凭据，此机制只解决"密码在命令行可见"，不解决密钥托管。
 
 ## 高级用法
 
@@ -398,6 +408,8 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 ```
 
 > Parquet 格式不支持并行导出（分片文件无法拼接），`--threads>1` 时会自动降级为单线程。
+>
+> 降级的全部触发点（命中即记一条 warn，`--quiet` 不抑制）：查询含 JOIN/派生表等复杂特性、无法从语句提取表名、检测不到可用分片键、分片只能切出一段。最后一种包含 `MIN()==MAX()` 与**分片首列非数值**（如 UUID/字符串主键）两种情形——复合主键/唯一键是支持的，但只对首列切区间，其余列保持全范围，因此每个元组仍恰好覆盖一次；键选取过程可用 `--log-level debug` 看到（`using primary key for sharding columns=…`）。
 >
 > 并行导出按分片序号顺序拼接结果，**不保证**与 `--query` 的全局行序一致；需要稳定全局顺序时使用单线程导出。分片边界使用精确整数/十进制运算，`BIGINT`/`DECIMAL` 超过 2^53 也不会丢行；每个分片有各自的一致性快照，分片之间不是同一时间点。
 
@@ -486,6 +498,8 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
   -t users
 ```
 
+> **注意**：无包裹符时空字段没有额外信息可依赖，`NULL` 与空字符串 `''` 会写成同一个空字段，回读一律按 `NULL` 处理（实测：源表里为空串的列，导入后变成 `NULL`）。需要区分二者时必须保留字符串定界符。
+
 ### 云环境连接加固
 
 在云上（LB/NAT 网关、SNAT 空闲超时等），长时间没有网络往返的 TCP 连接可能被中间设备静默回收，工具在读写时会得到 `broken pipe` / `connection reset` / `invalid connection` / `gone away` 等瞬断错误。三个层面同时加固：
@@ -499,7 +513,7 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 
 ### 参数边界校验
 
-所有参数校验前置到真正读写文件/连库之前，越界或冲突一律以用法错误退出（退出码 `2`，见 3.6），不会留下半成品文件或副作用。主要边界：
+所有参数校验前置到真正读写文件/连库之前，越界或冲突一律以用法错误退出（退出码 `2`，判定口径见需求文档 3.3.4），不会留下半成品文件或副作用。主要边界：
 
 | 选项 | 合法范围 | 越界行为 |
 |------|----------|----------|
@@ -518,6 +532,7 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 | `--hex-blob` + `--no-hex-blob` | 二者互斥 | `mutually exclusive`，退出码 2 |
 | `--char-del` `--col-del` `--row-del` `--escape` `--no-escape` `--timestamp-fmt` `--date-fmt` `--no-char-del` `--no-col-names` | 仅 `--format del` 生效（SQL/Parquet 写端不使用这些修饰） | `--xxx can only be used with --format del`，退出码 2 |
 | `--hex-blob` / `--no-hex-blob` + `--format parquet` | Parquet 二进制列原生按 `binary` 存储，两个开关都不改变输出 | `--hex-blob cannot be used with --format parquet`，退出码 2 |
+| `encrypt` 的位置参数 | 恰好 1 个（密码明文） | `gomydump encrypt accepts 1 argument(s), received N`，退出码 2 |
 
 关联校验：`--no-create`/`--no-data`/`--statement-size`/`--single-row-insert` 仅对 `--format sql` 生效，`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
 
@@ -724,6 +739,13 @@ INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (1,'Alice','alice@
 INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (2,'Bob','bob@example.com','2026-01-02 11:00:00');
 ```
 
+### 三类格式共有的值处理
+
+- **`YEAR` 零值**：MySQL/MariaDB 文本协议把 `YEAR(0000)` 发回裸字符串 `0`，直接回导会被服务端两位 YEAR 规则解释成 2000。导出时识别 YEAR 列并统一写成 `0000`，DEL/SQL/Parquet 一致（实测 `--format del` 得 `"1","0000",`，`--format sql` 得 `'0000'`）。
+- **NULL 与空字符串**：DEL 默认模式下 NULL 是不加定界符的空字段、空串是 `""`，可区分；`--no-char-del` 下两者形态相同，回读一律按 NULL。SQL 用 `NULL` 与 `''` 区分。Parquet 用列式 NULL 区分。
+- **二进制列**：DEL/SQL 在 `--hex-blob` 生效时写 `0x…`，空值写 `0x`；Parquet 存原始 BYTE_ARRAY，不做 UTF-8 标注。
+- **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
+
 ## 修复记录（v0.1.0）
 
 对照需求文档的系统自测发现以下缺陷，均已修复并通过端到端回归（HEX 字节指纹 + 单位/整表往返校验）：
@@ -742,15 +764,18 @@ INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (2,'Bob','bob@exam
 ## 项目结构
 
 ```
-mysql-backup-tool/
+gomydump/
 ├── main.go                    # 程序入口
+├── main_test.go               # 日志消息风格静态守卫（go/ast）
 ├── cmd/
 │   ├── root.go                # 根命令和版本命令
 │   ├── export.go              # export 子命令（RunE 与参数校验）
 │   ├── export_flags.go        # export 子命令 flag 注册
 │   ├── import.go              # import 子命令（RunE 与参数校验）
 │   ├── import_flags.go        # import 子命令 flag 注册
-│   ├── validate.go            # 共享参数边界校验（port/threads/statement-size/log-level/分隔符解析）
+│   ├── validate.go            # 共享参数边界校验（port/threads/statement-size/log-level/分隔符解析/格式适用性）
+│   ├── cli_matrix_test.go     # 参数组合矩阵与退出码契约测试
+│   ├── validate_fuzz_test.go  # 校验函数 fuzz 测试
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
 │   ├── config/

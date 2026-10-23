@@ -28,17 +28,21 @@ gomydump encrypt   # 加密密码
 
 | 组件 | 选型 | 说明 |
 |------|------|------|
-| 开发语言 | Go 1.21+ | 纯 Go 实现，无 CGO 依赖 |
-| MySQL 驱动 | github.com/go-sql-driver/mysql | 纯 Go MySQL 驱动 |
-| 命令行 | github.com/spf13/cobra | 子命令框架 |
-| SQL 解析 | vitess.io/vitess sqlparser | 解析/重写 SELECT，用于并行分片条件注入与优化器 hint 保留 |
-| Parquet | github.com/parquet-go/parquet-go | Parquet 格式读写 |
-| 错误处理 | github.com/pkg/errors | 错误包装与调用栈，配合 `--error-stack` 打印堆栈 |
-| 日志 | 标准库 log/slog | 结构化日志 |
+| 开发语言 | Go 1.26（`go.mod` 声明 `go 1.26.9`）| 纯 Go 实现，无 CGO 依赖；发布构建强制 `CGO_ENABLED=0`，产物为静态链接二进制 |
+| MySQL 驱动 | github.com/go-sql-driver/mysql v1.9.3 | 纯 Go MySQL 驱动；三个超时参数经驱动的 `Config.Timeout/ReadTimeout/WriteTimeout` 字段注入（见 2.1.2），而不是拼进 DSN 参数串，`FormatDSN/ParseDSN` 往返后不丢失 |
+| 命令行 | github.com/spf13/cobra v1.10.2（pflag v1.0.10）| 子命令框架；`completion` 已禁用，帮助短选项为 `-?`（`-h` 让给 `--host`） |
+| SQL 解析 | vitess.io/vitess v0.24.5（sqlparser）| 解析/重写 SELECT，用于并行分片条件注入与优化器 hint 保留 |
+| Parquet | github.com/parquet-go/parquet-go v0.26.4 | Parquet 格式读写 |
+| 错误处理 | github.com/pkg/errors v0.9.1 | 错误包装与调用栈，配合 `--error-stack` 打印堆栈 |
+| 日志 | 标准库 log/slog | 结构化日志，双布局（`java`/`text`），见 3.3.2 |
+
+间接依赖中 `grpc`/`protobuf`/`genproto` 由 vitess 引入，仅用于其 parser 内部类型；本工具不监听也不发起 gRPC 连接。
 
 ---
 
 ## 二、功能需求
+
+顶层子命令四个：`export`、`import`、`version`、`encrypt`，另有 cobra 自带的 `help`。`export` 与 `import` 各有一个短别名——`exp`、`imp`（`cmd/export.go:17`、`cmd/import.go:17`），二者与全名共享同一套标志与校验，帮助文本也完全一致；文档与示例统一使用全名，脚本里可用别名。`completion` 子命令已禁用（见 3.3），`--help` 的短选项是 `-?`，因为 `-h` 已让给 `--host`。
 
 ### 2.1 export 子命令 — 数据导出
 
@@ -467,6 +471,20 @@ SQL3110N  The utility has completed processing.  "5000" rows were exported.
 
 当前写入告警文件的告警来源：导出侧 `--no-hex-blob` 与非 utf8mb4 字符集组合、单行 INSERT 超过 `--statement-size`；导入侧无法读取 `max_allowed_packet`（按保守值分批）、`--batch-size` 因 65535 占位符上限被下调。
 
+### 2.4 encrypt 子命令 — 密码加密
+
+把明文密码加密成 `ENC:` 前缀密文，供 `-p/--password` 直接使用，避免明文出现在 `ps` 输出与 shell history 中。
+
+| 项目 | 实现 |
+|------|------|
+| 语法 | `gomydump encrypt <password>`，位置参数恰好 1 个；多给或不给是用法错误，退出 2（见 3.3.4）|
+| 密钥来源 | 环境变量 `GOMYDUMP_KEY`（`common.EnvKey`）；未设置或为空即失败，提示先 `export GOMYDUMP_KEY="..."` |
+| 算法 | AES-256-GCM：密钥 = `sha256(GOMYDUMP_KEY)`，随机 nonce 前置进密文，整体 `base64.StdEncoding` 后加 `ENC:` 前缀（`internal/common/password.go`）|
+| 使用侧 | export/import 在 `RunE` 起始处调用 `common.ResolvePassword`（`cmd/export.go:72`、`cmd/import.go:67`）：值以 `ENC:` 开头则解密，否则原样按明文处理。密钥缺失报 `failed to resolve password: password is encrypted but GOMYDUMP_KEY environment variable is not set`，密钥不符报 `failed to resolve password: failed to decrypt: wrong key or corrupted data`，两者都是**运行时错误，退出码 1**（不是用法错误的 2，因为失败发生在参数校验之后）|
+| 密文非确定性 | nonce 每次随机，同一明文 + 同一密钥两次加密结果不同，不可把密文当等值键比较或做 diff |
+| 输出 | 标准输出仅一行密文；stderr 首行仍是 java 布局的版本横幅（`command=encrypt`），便于日志归属 |
+| 安全边界 | 密码不写入日志与消息文件（见 8.4）。但 `GOMYDUMP_KEY` 本身就是凭据，明文放在环境变量里与明文密码同级风险，该机制只解决"命令行可见性"，不解决密钥托管 |
+
 ---
 
 ## 三、全局选项
@@ -590,6 +608,11 @@ GOMYDUMP_NO_SQL_TAG=1 gomydump export -h 127.0.0.1 -u root -p pass -D mydb -o /b
 | `0` | 成功 |
 | `1` | 运行时错误（连接失败、SQL 执行失败、文件 I/O 错误等） |
 | `2` | 用法错误（参数校验失败、未知选项） |
+
+判定口径（`main.go:17-21`）：错误来自 `common.Usagef`（`common.IsUsageError`）或 cobra 的 `unknown flag` / `unknown command`，一律 2；其余为运行时错误 1。两条容易误解的边界：
+
+- 环境变量导致的失败按发生位置分流：`GOMYDUMP_LOG_FORMAT` 非法在 root 的 `PersistentPreRunE` 校验阶段拦下，退出 2；`GOMYDUMP_KEY` 缺失/不符发生在参数校验之后的密码解析阶段，退出 1。
+- 位置参数个数也属于用法错误。cobra 自带的 `ExactArgs` 返回的是普通 error（会被算成运行时错误的 1），因此 `encrypt` 改用本仓库的 `cmd/validate.go:exactArgs`，消息为 `gomydump encrypt accepts 1 argument(s), received N` 并退出 2；`export`/`import` 的 `cobra.NoArgs` 消息含 `unknown command`，由 `main.go` 兜底归为 2。由 `cmd/cli_matrix_test.go:TestCLIEncryptArgsCountIsUsageError` 锁定（同时断言密钥缺失仍是 1，两级错误不许混淆）。
 
 ### 3.4 失败 SQL 回显与脱敏（`--echo-sql-values`）
 
@@ -753,6 +776,15 @@ message schema {
   parquet-tools schema /backup/users.parquet
   ```
 
+### 5.4 三种格式共有的值处理
+
+| 项 | 行为 | 依据 |
+|----|------|------|
+| `YEAR` 零值 | 文本协议把 `YEAR(0000)` 发回裸字符串 `0`，直接回导会命中服务端两位 YEAR 规则解释为 2000（静默改值）。导出时按 `DatabaseTypeName()==YEAR` 识别列，把单字符 `0` 重写为 `0000`，DEL/SQL/Parquet 一致；非零 YEAR 原样透传 | `internal/export/exporter.go:242-246`、`370-372`；实测 `--format del` 得 `"2","1999",""`、`"1","0000",` |
+| NULL 与空字符串 | DEL（默认带字符串定界符）：NULL 写成两个列分隔符之间的空内容且不加定界符，空字符串写成 `""`，因此可区分。DEL + `--no-char-del`：两者都是空字段，**不可区分**，回读时一律按 NULL 处理。SQL：NULL 写 `NULL` 关键字、空串写 `''`。Parquet：NULL 保留为 Parquet NULL，与空字符串天然区分 | `internal/export/del_writer.go:105-121`；实测 `--no-char-del` 下 `2,1999,` 与 `1,0000,` 形态一致 |
+| 二进制列 | DEL/SQL 在 `--hex-blob` 生效时写 `0x…` 字面量、空值写 `0x`（与 NULL 区分）；Parquet 存原始 BYTE_ARRAY，不带 UTF-8 标注 | 见 2.1.6、5.3 |
+| 日期/时间戳 | `--timestamp-fmt`/`--date-fmt` 只按列类型（`common.ColumnKind`）修饰文本形态，数值/字符串列不受影响 | 见 2.1.5、2.2.5 |
+
 ---
 
 ## 六、OceanBase MySQL 模式兼容性
@@ -846,6 +878,21 @@ SHOW VARIABLES LIKE 'version_comment';
 - **一致性**：每个分片使用独立连接并各自执行 `START TRANSACTION WITH CONSISTENT SNAPSHOT`，各分片内部是一致的，但分片之间的快照建立时刻略有差异；导出期间源表仍有写入时，跨分片不构成同一个时间点快照。
 
 **注意：** `--batch-size` / `--pipeline-buffer` 仅作用于单线程导出与导入。并行导出为分片内同步 scan→write，不受管道参数影响。
+
+**并行导出的降级触发点：** 以下任一条件命中即回落单线程，并记一条 `warn` 级日志（消息文本即下表右列，`--quiet` 不抑制 warn）：
+
+| 触发条件 | 日志消息 |
+|----------|----------|
+| `--query` 含 JOIN/派生表/集合运算等复杂特性 | `query has complex features, falling back to single-threaded export`（带 `feature=<识别到的特性>`）|
+| 无法从语句提取表名 | `failed to extract table name, falling back to single-threaded export`（带 `error=`）|
+| 检测不到可用分片键（无主键、无唯一键、`--shard-key` 列不存在）| `failed to detect shard key, falling back to single-threaded export`（带 `error=`）|
+| 分片范围为空或只能切出一段（`MIN()==MAX()`、首列非数值如 UUID/字符串主键、区间无法精确运算）| `only 1 shard range, falling back to single-threaded export` |
+
+前三项与第四项都在 `exporter.go:463-486`，级别 `warn`。`--format parquet` 走的是更早的独立分支，级别是 **`info`** 而非 warn，消息为 `parallel export is not supported for parquet format, using single-threaded export`（`exporter.go:457`，详见 5.3）。
+
+选中键时会先写一条 `debug`：`using primary key for sharding` 或 `using unique key for sharding`，附 `columns=`，便于确认复合键实际用了哪几列。
+
+**复合键与非数值键：** 主键/唯一键可以是复合的（`shard.go` 的 `ShardInfo.Columns` 为切片）。切分只作用于**首列**，其余列保持其全范围，因此每个元组仍被恰好覆盖一次；首列非数值（字符串、UUID、日期之外的类型）时无法计算数值边界，按上表第 4 行降级为单分片。数值边界一律用 `math/big.Rat` 精确运算，整数键保持整数文本形态以命中索引，`DECIMAL` 按 30 位精度输出。
 
 ### 7.3 import 流程
 
@@ -1001,19 +1048,25 @@ DEL 与 SQL 导入不再使用 `bufio.Scanner`（有 token 长度上限 10 MB）
 
 ```
 gomydump/
+├── main.go                    # 入口：执行命令，把用法错误映射为退出码 2，其余 1
+├── main_test.go               # 日志消息风格静态守卫（go/ast 遍历全部 logger 调用点）
 ├── cmd/
 │   ├── root.go                # 根命令（--error-stack、--echo-sql-values、--quiet、--log-format、--no-sql-tag、completion 禁用）
-│   ├── export.go              # export 子命令
-│   ├── export_flags.go        # export 子命令标志注册
-│   ├── import.go              # import 子命令
-│   ├── import_flags.go        # import 子命令标志注册
-│   ├── validate.go            # 参数校验（端口、线程数、batch-size、字符集冲突等）
+│   ├── export.go              # export 子命令（RunE：密码解析 → 校验 → 调度）
+│   ├── export_flags.go        # export 子命令标志注册与默认值
+│   ├── import.go              # import 子命令（RunE：同上）
+│   ├── import_flags.go        # import 子命令标志注册与默认值
+│   ├── validate.go            # 参数校验：数值边界、字符集冲突、格式适用性（SQL 专属/DEL 专属/parquet 专属选项）
+│   ├── cli_matrix_test.go     # 参数组合矩阵与退出码契约测试
+│   ├── validate_fuzz_test.go  # 校验函数的 fuzz 测试
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
 │   ├── config/
 │   │   └── config.go          # 配置定义与默认值常量
 │   ├── common/
-│   │   ├── util.go            # 工具函数
+│   │   ├── util.go            # DSN 构建（超时/字符集/会话变量注入）与通用工具
+│   │   ├── usage.go           # 用法错误类型（Usagef / IsUsageError），退出码 2 的依据
+│   │   ├── stats.go           # 吞吐统计与速率计算（rows/sec、字节数、耗时）
 │   │   ├── colkind.go         # 列类型分类（修饰选项/Parquet 二进制判定共用）
 │   │   ├── sessionvars.go     # 会话变量解析与 DSN 注入（--session-var）
 │   │   ├── sqlpreview.go      # 失败 SQL 脱敏回显（--echo-sql-values）
@@ -1021,7 +1074,7 @@ gomydump/
 │   │   ├── dberr.go           # 瞬态错误判定（连接级错误码/网络错误/文本兜底）
 │   │   ├── retry.go           # 重试策略（次数、指数退避、抖动、ctx 取消）
 │   │   ├── pool.go            # 连接池老化（ConnMaxIdleTime / ConnMaxLifetime）
-│   │   ├── log.go             # 日志模块（版本信息、启动日志、日志格式）
+│   │   ├── log.go             # 日志模块（java/text 双布局、版本横幅、一条记录一行）
 │   │   ├── message.go         # 消息文件处理
 │   │   ├── password.go        # 密码加密/解密（AES-256-GCM）
 │   │   └── detect.go          # 服务器类型检测
@@ -1040,11 +1093,21 @@ gomydump/
 │       ├── del_reader.go      # DEL 格式读取器
 │       ├── sql_reader.go      # SQL 格式读取器
 │       └── parquet_reader.go  # Parquet 格式读取器
-├── go.mod
+├── test/
+│   └── integration/
+│       ├── roundtrip_test.go  # 离线往返（写入器→读取器，无需数据库）
+│       └── live_mysql_test.go # 真实 MySQL/OceanBase 端到端，需 GOMYDUMP_TEST_DSN，未设置则跳过
+├── docs/
+│   ├── requirements.md        # 本文件
+│   └── cli-oracle.txt         # 已发布二进制 --help 契约快照（回归基线）
+├── go.mod                     # go 1.26.9
+├── go.sum
 ├── Makefile
 ├── Dockerfile
 └── README.md
 ```
+
+另有 19 个包内 `*_test.go`（`internal/common` 7、`internal/export` 6、`internal/import` 6），加上 `cmd` 2、仓库根 1、集成 2，全仓库共 24 个测试文件，清单见十一节。
 
 ---
 
@@ -1210,16 +1273,44 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | SQL 格式多表查询 | `--format sql` + JOIN/派生表/CTE → 验证解析阶段报错并提示改用 del/parquet |
 | 位置映射列数 | `--columns` 条目数与文件列数不符 → 验证写入前报错并提示名称映射 |
 
+### 11.1 测试资产清单
+
+上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 24 个 `_test.go`、127 个 `Test*`、4 个 `Fuzz*`、5 个 `Benchmark*`）。
+
+| 文件 | 用例数 | 覆盖点 | 运行方式 |
+|------|--------|--------|----------|
+| `cmd/cli_matrix_test.go` | 5 | 参数组合矩阵与退出码契约：DEL/SQL/parquet 专属选项互斥、`--log-format` 标志与环境变量、必填项缺失 | `make test` |
+| `cmd/validate_fuzz_test.go` | 4 fuzz | 边界校验函数（batch-size、pipeline-buffer、statement-size、threads）对畸形输入不 panic | `make test` |
+| `internal/common/*_test.go`（7 个文件）| 27 | 瞬态错误判定、日志单行与切布局保持级别、消息文件记录、重试退避与取消、会话变量解析与 DSN 注入、失败 SQL 脱敏回显、DSN 构建 | `make test` |
+| `internal/export/*_test.go`（6 个文件）| 52 | DEL/SQL/Parquet 写入器转义与攒批、分片边界精确运算与 hint 保留、分片合并的 header/LOCK 配对、hex-blob 判定 | `make test` |
+| `internal/import/*_test.go`（6 个文件）| 28 + 5 bench | 攒批字节上限与 65535 占位符、DEL/SQL 读取器回读、无上限记录读取、会话重连回放与空闲提交、位置映射列数校验 | `make test` |
+| `main_test.go` | 1 | go/ast 静态守卫：全部 logger 调用消息首字母小写且单行（防日志词汇回归）| `make test` |
+| `test/integration/roundtrip_test.go` | 10 | 离线往返（写入器→读取器）：转义文本、每条语句一个物理行、`--statement-size` 攒批、`0x` 二进制字面量、MySQL 文本值与 HEX 一致、DEL 引号/反斜杠两种模式、看似十六进制的文本不被误解码、单行 INSERT | `make test` |
+| `test/integration/live_mysql_test.go` | 4 | 真实 MySQL 端到端：三种格式往返、并行导出与并行导入、四种导入模式、列映射；消息文件路径随用例参数一起断言 | `GOMYDUMP_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/db' make test-live`，未设置该变量时自动跳过 |
+
+`make test` 与 `make test-live` 固定 `CGO_ENABLED=1 go test -race`，这是 `-race` 的要求，与发布构建的 `CGO_ENABLED=0` 无关。
+
+### 11.2 当前环境尚未自动化覆盖的场景
+
+| 场景 | 现状 |
+|------|------|
+| OceanBase 端到端 | 沙箱内无 OceanBase 实例。仅覆盖到 SQL 层的 OceanBase 分支单测（如 OceanBase 下不写表锁的合并用例），完整链路未验证 |
+| GB 级大文件 | 由 5 个 benchmark 覆盖单点（记录读取器、攒批），属微基准；8.1 的大文件与吞吐是目标值，没有端到端自动化断言，需在真实环境按压测计划验证 |
+| 长时间稳定性 / 断连恢复 | `internal/import/session_test.go` 用模拟重连覆盖回放逻辑，真实网络中断（LB/NAT 回收）未做长时间实验 |
+
 ---
 
 ## 十二、交付物
 
 | 交付物 | 说明 |
 |--------|------|
-| 源代码 | 完整 Go 项目源码 |
-| 二进制文件 | Linux amd64/arm64 |
-| Dockerfile | 容器构建 |
-| README.md | 使用说明 |
+| 源代码 | 完整 Go 项目源码（含 24 个 `_test.go`、`docs/requirements.md`、`docs/cli-oracle.txt`），发布形态为 `gomydump-<version>-<commit>[-dirty]-src.tar.gz`，排除 `.git/`、`bin/`、`dist/`、`vendor/` |
+| 二进制文件 | Linux amd64、Linux arm64、Windows amd64 三个平台；均 `CGO_ENABLED=0` 静态链接、`-s -w` 去符号，由 `make build-all` 产出，版本信息经 ldflags 注入 |
+| 校验清单 | 每个发布批次附 `*-bin-SHA256SUMS.txt`，逐产物一行 SHA256 |
+| Dockerfile | 容器构建（`make docker`）|
+| README.md | 使用说明；本文件为需求与实现说明 |
+
+自 2026-10-23 起**不提供 macOS 预编译产物**：工具是纯 Go 无 CGO，macOS 用户拉源码后 `make build` 即得本机二进制，只是不随发布包提供（见变更记录 33）。
 
 ---
 
@@ -1274,7 +1365,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 26 | `--no-char-del` 写出前校验 | 读端只在**引号内**处理转义，因此 `--no-char-del`（或空字符定界符）时每个字段都是裸文本，含列分隔符/行分隔符的数据会产出无法解析的文件（实测 `sql: expected N arguments` 或整行错位）。现与 `--no-escape` 共用写出前校验，报 `--no-char-del: column N value contains the ... delimiter` 并中止 |
 | 27 | Parquet 导出限制行组大小 | parquet-go 的行组上限默认是 `math.MaxInt64`，写端会把**整个结果集**缓存在内存：1M 行 10 列表实测峰值 RSS 271 MB 且随行数线性增长。现固定每行组 100 000 行，同一导出 RSS 降到 ~73 MB 且与行数无关，文件体积仅增 0.02% |
 | 28 | `make test` / `make test-live` 可用 | 两个目标都带 `-race`，而 `-race` 需要 cgo；此前沿用发布构建的 `CGO_ENABLED=0`，导致 `make test` 在任何环境都直接失败（`-race requires cgo`）。测试目标固定 `CGO_ENABLED=1`，发布构建不变 |
-| 29 | DEL 专属选项改为显式报错 | 此前 `-f sql --col-del '@' --no-char-del --date-fmt ...` 与 `-f parquet --col-del '|' --hex-blob` 都退出 0 并静默忽略这些标志，而 SQL 专属选项（`--no-create`/`--statement-size` 等）早已有强制校验，两类格式专属标志的不对称会误导用户以为文件按指定布局写出。新增 `validateDELOnlyOptions`：`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 在导出与导入的 `--format sql`/`parquet` 下一律报 `can only be used with --format del` 并退出 2（默认值不算显式传入，故不影响既有命令）；同时新增 `validateParquetBinaryOptions`，`--hex-blob`/`--no-hex-blob` 与 `--format parquet` 组合退出 2——Parquet 二进制列已是原生 `binary`，开关无意义，而 SQL/DEL 仍正常使用它们 |
+| 29 | DEL 专属选项改为显式报错 | 此前 `-f sql --col-del '@' --no-char-del --date-fmt ...` 与 `-f parquet --col-del '\|' --hex-blob` 都退出 0 并静默忽略这些标志，而 SQL 专属选项（`--no-create`/`--statement-size` 等）早已有强制校验，两类格式专属标志的不对称会误导用户以为文件按指定布局写出。新增 `validateDELOnlyOptions`：`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 在导出与导入的 `--format sql`/`parquet` 下一律报 `can only be used with --format del` 并退出 2（默认值不算显式传入，故不影响既有命令）；同时新增 `validateParquetBinaryOptions`，`--hex-blob`/`--no-hex-blob` 与 `--format parquet` 组合退出 2——Parquet 二进制列已是原生 `binary`，开关无意义，而 SQL/DEL 仍正常使用它们 |
 | 30 | 日志一条记录一行、切布局不改级别 | 两处不一致。① `java` 布局只给含空格/制表/换行的值加引号，且不转义换行本身：配置行打印 DEL 定界符时 `row_del=` 后面是真实换行，一条记录被拆成两行，`char_del="` 与 `escape="` 又是裸双引号，后续 token 无法切分。现统一按 slog 规则转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），一条记录恒为一个物理行，`java`/`text` 对同一值渲染出同一 token。② `currentLevel()` 只探测 debug/warn/error，`ApplyLogFormat()` 在 `PersistentPreRunE` 里重设布局时把 info 误判为更高级别，抬高阈值后文档承诺的版本横幅 `gomydump starting` 以及任何早于子命令 `InitLogger` 的 INFO 记录被静默丢弃（实测 export/import/version 三种运行均无首行横幅）。补 `LevelInfo` 探测，横幅恢复为运行首行；新增 `internal/common/log_test.go` 固化单行、转义、级别保持、横幅四项行为 |
 | 31 | `--log-format` 非法取值改为用法错误 | `internal/common.ValidLogFormat` 与 `cmd/validate.go` 的 `validateLogFormat` 此前无调用方，`--log-format bogus` 与 `GOMYDUMP_LOG_FORMAT=javaness` 都退出 0 并静默回落 java 布局，与其它参数不一致（`log.go` 的注释还声称会退出 2）。现把它接进 root 的 `PersistentPreRunE`（在应用布局之前校验），非法取值报 `invalid --log-format %q: must be one of java/text` 并退出 2；`cmd/cli_matrix_test.go` 补标志与环境变量两条用例，并修正测试夹具：`logFormat` 是包级标志变量，pflag 只在显式传入时写入，必须逐例复位，否则一条非法取值会污染后续所有用例 |
 | 32 | 日志消息统一为小写 `<对象> <事件>` | 原先同一份日志混着三种写法：`Export completed`/`Query failed` 大写开头、`export configuration`/`gomydump starting` 小写、`Starting export`/`Executing CREATE TABLE statement` 用动名词或 SQL 关键字，大小写敏感的 grep 会漏掉一半记录；而且 `Starting export`/`Starting import` 与紧随其后的配置行字段完全重复。现将全部 56 处 logger 调用（50 个不同消息）统一为小写单行短语，事件词固定为 started/config/progress/completed/aborted/failed（`export command started`→`export started`，`export configuration`→`export config`，`Thread completed`→`worker completed`，`Executing CREATE TABLE statement`→`create table executing`，余同），删除重复的 `Starting export`/`Starting import`（导入的 `bytes` 字段并入 `import config`）；`gomydump starting` 与 `command failed` 保持原样以免破坏既有文档与告警脚本。新增 `main_test.go` 用 go/ast 静态检查所有 logger 调用的消息首字母小写且单行，防回归 |
@@ -1287,6 +1378,14 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 |------|------|
 | `--default-charset` 取 `gbk`/`gb18030` 时 SQL 格式拒绝导出 | 有意约束：SQL 文本需按行回读，多字节字符集下无可靠转义。Parquet 仅接受 utf8mb4，DEL 全部可用 |
 | 非 utf8mb4 字符集导出含非 ASCII 文本的列 | 由驱动协商的 collation 决定，latin1 下实测出现 `????` 替换且不产生服务端 Warning。属外部行为，工具无法在不改变协议语义的前提下代为报错，建议非 ASCII 数据固定 utf8mb4，二进制列用 `--hex-blob` |
-| Parquet + `--threads>1` | 记录 `Parallel export is not supported for parquet format` 后降级单线程；实测吞吐不随行数变化，属文档化限制而非缺陷 |
+| Parquet + `--threads>1` | 记录 `parallel export is not supported for parquet format, using single-threaded export`（`info` 级）后降级单线程；实测吞吐不随行数变化，属文档化限制而非缺陷 |
 | `--commit-count 0` | 视为参数错误退出 2（最小值 1），"只在结束时提交"需要足够大的 `--commit-count` |
 | `-q "SELECT 1"`（无 FROM）+ SQL 格式 | 隐式 `DUAL` 表没有 `SHOW CREATE TABLE`，导出退出 1；改用 `--format del`/`parquet` |
+
+### 2026-10-23 文档与实现对齐
+
+| # | 改动项 | 说明 |
+|---|--------|------|
+| 34 | 需求文档按实现全量核对后修订 | 以 `--help` 输出、`cmd/validate.go`、`internal/*` 常量与 `main.go` 的退出码分派为准逐项核对：全部 49 个选项在本文与 README 均有落点（无遗漏、无废弃选项），数值边界（port 1–65535、threads 1–256、batch-size 1–100000、pipeline-buffer 0–1024、statement-size ≤268435456、commit-count ≥1、skip/row-count ≥0）与 `docs/cli-oracle.txt` 快照一致。据此修订：1.3 技术栈补齐真实版本（`go.mod` 的 `go 1.26.9`、mysql v1.9.3、cobra v1.10.2、vitess v0.24.5、parquet-go v0.26.4、pkg/errors v0.9.1）并说明超时经驱动字段注入；二节开头补子命令别名 `exp`/`imp`、`-?` 帮助短选项与 completion 禁用；新增 2.4 `encrypt`（`ENC:` + AES-256-GCM + `GOMYDUMP_KEY`，含解密调用点与失败退出码实测）；3.3.4 退出码补判定口径（含环境变量失败的分流与位置参数个数的归类）；九节项目结构补 `main.go`、`main_test.go`、`usage.go`、`stats.go`、`test/`、`docs/`、`go.sum`；十一节新增 11.1 测试资产清单（24 文件 / 127 `Test*` / 4 `Fuzz*` / 5 `Benchmark*`）与 11.2 未自动化覆盖场景；十二节交付物改为三平台二进制 + 源码包 + SHA256 清单，并显式声明不再提供 macOS 预编译产物。README 另修两处遗留目录名 `mysql-backup-tool` → `gomydump` |
+| 35 | `encrypt` 位置参数个数错误改为退出 2 | `gomydump encrypt`（缺参数）与 `encrypt a b`（多参数）此前由 cobra `ExactArgs(1)` 拦截，返回普通 error，实测退出 1，违反"用法错误 → 2"的契约（同类的未知选项、未知子命令、缺必填项都是 2）。`cmd/validate.go` 新增 `exactArgs`，用 `common.Usagef` 报 `gomydump encrypt accepts 1 argument(s), received N`，`cmd/encrypt.go` 换用它；新增 `cmd/cli_matrix_test.go:TestCLIEncryptArgsCountIsUsageError`，除两种越界外还断言正确参数下密钥缺失仍是运行时错误 1，避免把两类错误合并。实测：无参/两参 → 2，正常加密 → 0，空 `GOMYDUMP_KEY` → 1 |
+| 36 | 补齐值处理与并行降级两处长年缺失的说明 | 新增 5.4「三种格式共有的值处理」：`YEAR(0000)` 归一化为 `0000`（文本协议回裸 `0`，回导会被两位 YEAR 规则解释为 2000）、NULL 与空字符串在 DEL/SQL/Parquet 下的表示、`--no-char-del` 时二者不可区分且回读一律为 NULL（均已在 MariaDB 上实测确认）。7.2 补「并行导出的降级触发点」表（4 个 warn 触发点 + parquet 的 info 分支，附实际日志文本与代码行号）与复合键/非数值首列语义。同时修正一处过期引用：十四节边界表里 parquet 降级的消息仍写作大写 `Parallel export is not supported for parquet format`，实际已是小写且级别为 `info`。README 对应补：无包裹符模式的 NULL/空串注意、并行导出的降级触发点与复合键说明、格式示例后的「三类格式共有的值处理」小节，并把遗留的 `见 3.6` 引用改为需求文档 3.3.4 |
