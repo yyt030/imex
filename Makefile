@@ -26,7 +26,7 @@ COMPRESS ?= 0
 
 # 构建后自动压缩的钩子：仅当 COMPRESS=1 且检测到 upx 时执行，否则静默跳过。
 maybe_compress = @if [ "$(COMPRESS)" = "1" ] && [ -n "$(UPX_BIN)" ]; then \
-	for f in $(BUILD_DIR)/$(BINARY) $(BUILD_DIR)/$(BINARY)-linux-* $(BUILD_DIR)/$(BINARY)-darwin-* $(BUILD_DIR)/$(BINARY)-windows-*; do \
+	for f in $(BUILD_DIR)/$(BINARY) $(BUILD_DIR)/$(BINARY)-linux-* $(BUILD_DIR)/$(BINARY)-windows-*; do \
 		[ -f "$$f" ] && $(UPX) $(UPX_LEVEL) -q "$$f" || true; \
 	done; \
 	echo "upx compressed (fast mode, level=$(UPX_LEVEL))"; \
@@ -34,7 +34,7 @@ elif [ "$(COMPRESS)" = "1" ] && [ -z "$(UPX_BIN)" ]; then \
 	echo "COMPRESS=1 but upx not found; skipped"; \
 fi
 
-.PHONY: all build build-all linux darwin windows clean docker vet test test-live compress
+.PHONY: all build build-all linux windows clean docker vet test test-live compress
 
 all: build
 
@@ -50,26 +50,20 @@ linux:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-linux-arm64 .
 	$(maybe_compress)
 
-darwin:
-	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-darwin-amd64 .
-	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-darwin-arm64 .
-	$(maybe_compress)
-
 windows:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-windows-amd64.exe .
 	$(maybe_compress)
 
-# 全平台交叉编译产物
-build-all: linux darwin windows
+# 发布平台交叉编译产物（Linux + Windows；macOS 请在本机 make build）
+build-all: linux windows
 
 # 显式压缩：对现有 bin/ 产物单独运行 upx（`make compress`，无需 COMPRESS=1）
 compress:
 	@if [ -z "$(UPX_BIN)" ]; then \
 		echo "upx not found; install upx to enable compression"; \
 	else \
-		for f in $(BUILD_DIR)/$(BINARY) $(BUILD_DIR)/$(BINARY)-linux-* $(BUILD_DIR)/$(BINARY)-darwin-* $(BUILD_DIR)/$(BINARY)-windows-*; do \
+		for f in $(BUILD_DIR)/$(BINARY) $(BUILD_DIR)/$(BINARY)-linux-* $(BUILD_DIR)/$(BINARY)-windows-*; do \
 			[ -f "$$f" ] && $(UPX) $(UPX_LEVEL) -q "$$f" || true; \
 		done; \
 		echo "upx compressed (fast mode, level=$(UPX_LEVEL))"; \

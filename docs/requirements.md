@@ -992,7 +992,7 @@ DEL 与 SQL 导入不再使用 `bufio.Scanner`（有 token 长度上限 10 MB）
 | 项目 | 要求 |
 |------|------|
 | 编译产物 | 单一静态二进制 |
-| 跨平台 | Linux / macOS / Windows |
+| 跨平台 | 预编译产物覆盖 Linux / Windows；macOS 代码可编译，在本机 `make build` 产出 |
 | 容器化 | 提供 Dockerfile |
 
 ---
@@ -1278,6 +1278,8 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 30 | 日志一条记录一行、切布局不改级别 | 两处不一致。① `java` 布局只给含空格/制表/换行的值加引号，且不转义换行本身：配置行打印 DEL 定界符时 `row_del=` 后面是真实换行，一条记录被拆成两行，`char_del="` 与 `escape="` 又是裸双引号，后续 token 无法切分。现统一按 slog 规则转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），一条记录恒为一个物理行，`java`/`text` 对同一值渲染出同一 token。② `currentLevel()` 只探测 debug/warn/error，`ApplyLogFormat()` 在 `PersistentPreRunE` 里重设布局时把 info 误判为更高级别，抬高阈值后文档承诺的版本横幅 `gomydump starting` 以及任何早于子命令 `InitLogger` 的 INFO 记录被静默丢弃（实测 export/import/version 三种运行均无首行横幅）。补 `LevelInfo` 探测，横幅恢复为运行首行；新增 `internal/common/log_test.go` 固化单行、转义、级别保持、横幅四项行为 |
 | 31 | `--log-format` 非法取值改为用法错误 | `internal/common.ValidLogFormat` 与 `cmd/validate.go` 的 `validateLogFormat` 此前无调用方，`--log-format bogus` 与 `GOMYDUMP_LOG_FORMAT=javaness` 都退出 0 并静默回落 java 布局，与其它参数不一致（`log.go` 的注释还声称会退出 2）。现把它接进 root 的 `PersistentPreRunE`（在应用布局之前校验），非法取值报 `invalid --log-format %q: must be one of java/text` 并退出 2；`cmd/cli_matrix_test.go` 补标志与环境变量两条用例，并修正测试夹具：`logFormat` 是包级标志变量，pflag 只在显式传入时写入，必须逐例复位，否则一条非法取值会污染后续所有用例 |
 | 32 | 日志消息统一为小写 `<对象> <事件>` | 原先同一份日志混着三种写法：`Export completed`/`Query failed` 大写开头、`export configuration`/`gomydump starting` 小写、`Starting export`/`Executing CREATE TABLE statement` 用动名词或 SQL 关键字，大小写敏感的 grep 会漏掉一半记录；而且 `Starting export`/`Starting import` 与紧随其后的配置行字段完全重复。现将全部 56 处 logger 调用（50 个不同消息）统一为小写单行短语，事件词固定为 started/config/progress/completed/aborted/failed（`export command started`→`export started`，`export configuration`→`export config`，`Thread completed`→`worker completed`，`Executing CREATE TABLE statement`→`create table executing`，余同），删除重复的 `Starting export`/`Starting import`（导入的 `bytes` 字段并入 `import config`）；`gomydump starting` 与 `command failed` 保持原样以免破坏既有文档与告警脚本。新增 `main_test.go` 用 go/ast 静态检查所有 logger 调用的消息首字母小写且单行，防回归 |
+
+| 33 | 发布产物去掉 macOS 架构 | 按要求，打包矩阵不再包含 darwin。`Makefile` 删除 `darwin` 目标、`build-all` 改为 `linux windows`、`.PHONY` 与两处 upx 通配去掉 `-darwin-*`；`bin/gomydump-darwin-*` 一并清理。工具本身仍是纯 Go、`CGO_ENABLED=0`，在 macOS 上 `make build` 照常可用，只是不再随包发布预编译产物。README 构建说明与本文 §8.5「跨平台」行同步为"预编译产物覆盖 Linux / Windows" |
 
 ### 本轮测试确认的既有行为（未改动）
 

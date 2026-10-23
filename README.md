@@ -37,7 +37,7 @@ go build -o gomydump
 ```bash
 make build          # 编译当前平台二进制 → bin/gomydump
 make linux          # 交叉编译 Linux（amd64 + arm64）
-make build-all      # 交叉编译全平台（Linux / macOS / Windows）
+make build-all      # 交叉编译发布平台（Linux / Windows；macOS 在本机 make build）
 make build COMPRESS=1  # 编译后自动 upx 快速压缩（-1，需安装 upx；未装则跳过）
 make compress       # 单独对 bin/ 现有产物运行 upx -1
 ```
