@@ -37,6 +37,50 @@ type DelReader struct {
 	// hex encoding is on, so the reader has to decode them back to bytes; for
 	// any other column a 0x token is ordinary text.
 	binaryCols []bool
+
+	// Delimiter layout, resolved once. scanRows is a bufio.SplitFunc that runs
+	// for every record and parseLine tests delimiters at every byte position,
+	// so converting the configured strings there would repeat the same work
+	// row after row. delimSpec also carries the first byte, which turns the
+	// default single-byte delimiters into byte compares instead of prefix
+	// calls over a freshly built substring.
+	rowD, charD, colD, escD delimSpec
+	quote                   bool // string delimiters are in use
+	doubleWrite             bool // escape == charDel: quotes escape by doubling
+	backslashEsc            bool // escape is set and differs from charDel
+
+	// Reused per-reader scratch for the row path. Field values themselves are
+	// always fresh strings, because the pipeline hands rows to another
+	// goroutine and recordReader reuses its buffer; only the slices holding
+	// them are recycled here.
+	fields  []string
+	quoted  []bool
+	scratch []byte
+}
+
+// delimSpec is a configured delimiter pre-sliced for byte-level scanning.
+type delimSpec struct {
+	b   []byte
+	n   int
+	one byte // b[0]; meaningful only when n == 1
+}
+
+func newDelimSpec(s string) delimSpec {
+	d := delimSpec{n: len(s)}
+	if len(s) > 0 {
+		d.b = []byte(s)
+		d.one = s[0]
+	}
+	return d
+}
+
+// at reports whether the delimiter starts at s[i:]. An empty delimiter matches
+// everywhere, which is strings.HasPrefix(s[i:], "") behaviour.
+func (d delimSpec) at(s []byte, i int) bool {
+	if d.n == 1 {
+		return i < len(s) && s[i] == d.one
+	}
+	return i+d.n <= len(s) && bytes.Equal(s[i:i+d.n], d.b)
 }
 
 // SetColumnKinds supplies per-file-column target kinds so --dec-pt/--date-fmt/
@@ -62,6 +106,17 @@ func NewDelReader(r *bufio.Reader, mod *config.DelModifier, readColumns bool) *D
 	d := &DelReader{
 		mod:      mod,
 		readCols: readColumns,
+		rowD:     newDelimSpec(mod.RowDel),
+		charD:    newDelimSpec(mod.CharDel),
+		colD:     newDelimSpec(mod.ColDel),
+		escD:     newDelimSpec(mod.Escape),
+	}
+	// Quote handling is off for --no-char-del and for an empty char delimiter,
+	// exactly as the per-position checks below require.
+	d.quote = !mod.NoCharDel && mod.CharDel != ""
+	if !mod.NoEscape {
+		d.doubleWrite = d.quote && mod.Escape == mod.CharDel
+		d.backslashEsc = mod.Escape != "" && mod.Escape != mod.CharDel
 	}
 	// --date-fmt / --timestamp-fmt: re-parse configured layouts back to the
 	// canonical MySQL text the server expects.
@@ -81,42 +136,33 @@ func NewDelReader(r *bufio.Reader, mod *config.DelModifier, readColumns bool) *D
 // scanRows is a bufio.SplitFunc that yields complete records, treating the
 // row delimiter as a boundary only when it occurs outside a quoted field.
 func (d *DelReader) scanRows(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	rowDel := []byte(d.mod.RowDel)
-	charDel := []byte(d.mod.CharDel)
-	escape := []byte(d.mod.Escape)
-	if d.mod.NoCharDel {
-		charDel = nil
-	}
-	noEscape := d.mod.NoEscape
-
 	inQuote := false
 	pos := 0
 	for pos < len(data) {
 		if inQuote {
-			if len(charDel) > 0 && bytes.HasPrefix(data[pos:], charDel) {
-				// Double-write escape: charDel followed by charDel -> escaped, stay in quote
-				if !noEscape && len(escape) > 0 && bytes.Equal(escape, charDel) &&
-					bytes.HasPrefix(data[pos+len(charDel):], charDel) {
-					pos += 2 * len(charDel)
+			if d.quote && d.charD.at(data, pos) {
+				// Double-write escape: charDel followed by charDel -> escaped,
+				// stay in quote.
+				if d.doubleWrite && d.charD.at(data, pos+d.charD.n) {
+					pos += 2 * d.charD.n
 					continue
 				}
 				// Closing quote
 				inQuote = false
-				pos += len(charDel)
+				pos += d.charD.n
 				continue
 			}
 			// Backslash-style escape (escape distinct from charDel): skip the
 			// whole escape sequence. A multi-byte escape may be followed by a
 			// multi-byte delimiter, so consuming a single byte would leave the
 			// splitter inside the delimiter and corrupt the quote state.
-			if !noEscape && len(escape) > 0 && !bytes.Equal(escape, charDel) &&
-				bytes.HasPrefix(data[pos:], escape) {
-				next := pos + len(escape)
+			if d.backslashEsc && d.escD.at(data, pos) {
+				next := pos + d.escD.n
 				switch {
-				case len(charDel) > 0 && bytes.HasPrefix(data[next:], charDel):
-					pos = next + len(charDel)
-				case bytes.HasPrefix(data[next:], escape):
-					pos = next + len(escape)
+				case d.quote && d.charD.at(data, next):
+					pos = next + d.charD.n
+				case d.escD.at(data, next):
+					pos = next + d.escD.n
 				case next < len(data):
 					pos = next + 1
 				case atEOF:
@@ -132,13 +178,13 @@ func (d *DelReader) scanRows(data []byte, atEOF bool) (advance int, token []byte
 		}
 
 		// Outside quotes: a row delimiter terminates the record
-		if len(rowDel) > 0 && bytes.HasPrefix(data[pos:], rowDel) {
-			return pos + len(rowDel), data[:pos], nil
+		if d.rowD.n > 0 && d.rowD.at(data, pos) {
+			return pos + d.rowD.n, data[:pos], nil
 		}
 		// Opening quote
-		if len(charDel) > 0 && bytes.HasPrefix(data[pos:], charDel) {
+		if d.quote && d.charD.at(data, pos) {
 			inQuote = true
-			pos += len(charDel)
+			pos += d.charD.n
 			continue
 		}
 		pos++
@@ -167,8 +213,8 @@ func (d *DelReader) ReadHeader() ([]string, error) {
 		return nil, errors.New("EOF")
 	}
 
-	line := d.rd.Text()
-	fields, _ := d.parseLine(line)
+	line := d.rd.Bytes()
+	fields, _ := d.parseLine(line, nil, nil)
 	d.columns = fields
 	d.colCount = len(fields)
 	return fields, nil
@@ -184,8 +230,9 @@ func (d *DelReader) ReadRow() ([]interface{}, error) {
 		return nil, errors.New("EOF")
 	}
 
-	line := d.rd.Text()
-	fields, quoted := d.parseLine(line)
+	line := d.rd.Bytes()
+	fields, quoted := d.parseLine(line, d.fields, d.quoted)
+	d.fields, d.quoted = fields, quoted
 
 	values := make([]interface{}, len(fields))
 	for i, f := range fields {
@@ -251,98 +298,116 @@ func convertImportFormat(fmt string) string {
 	return replacer.Replace(fmt)
 }
 
-// parseLine parses a delimited line into fields. It returns the field values
-// and a parallel slice indicating whether each field was originally quoted.
-// Quote-ness is what distinguishes an empty string from NULL.
-func (d *DelReader) parseLine(line string) ([]string, []bool) {
-	colDel := d.mod.ColDel
-	charDel := d.mod.CharDel
-	escape := d.mod.Escape
-	noEscape := d.mod.NoEscape
+// parseLine splits one record into field values plus a parallel slice marking
+// which fields were originally quoted — quote-ness is what distinguishes an
+// empty string from NULL.
+//
+// Callers pass back the slices they want reused (`fields[:0]`/`quoted[:0]`) so
+// a long import allocates those headers once instead of per row; the field
+// *values* are always fresh strings because the pipeline hands rows to another
+// goroutine while recordReader recycles its own buffer. A field that needs no
+// un-escaping is therefore a single conversion of its own bytes, and only
+// fields that really contain an escape sequence are rebuilt in scratch space.
+func (d *DelReader) parseLine(line []byte, fields []string, quoted []bool) ([]string, []bool) {
+	fields = fields[:0]
+	quoted = quoted[:0]
+	i, n := 0, len(line)
+	// An empty column delimiter would match at every position and never
+	// advance; the CLI rejects empty delimiters, so treat it as "no column
+	// separation" and let each record parse as one field.
+	hasCol := d.colD.n > 0
 
-	var fields []string
-	var quoted []bool
-	var current strings.Builder
-	i := 0
-
-	for i < len(line) {
-		// Check if we're at a quoted field
-		if !d.mod.NoCharDel && charDel != "" && strings.HasPrefix(line[i:], charDel) {
-			// Start of a quoted field
-			i += len(charDel)
-			current.Reset()
-
-			for i < len(line) {
-				// Check for closing quote first
-				if strings.HasPrefix(line[i:], charDel) {
-					// Check if it's a double-write escape (two quotes in a row)
-					if !noEscape && escape == charDel && i+len(charDel) < len(line) && strings.HasPrefix(line[i+len(charDel):], charDel) {
-						// Double-write escape: "" -> "
-						current.WriteString(charDel)
-						i += 2 * len(charDel)
+	for i < n {
+		switch {
+		case d.quote && d.charD.at(line, i):
+			// Quoted field.
+			start := i + d.charD.n
+			i = start
+			clean := start
+			dirty := false
+			closed := false
+			for i < n {
+				if d.charD.at(line, i) {
+					// Double-write escape ("" -> ") or end of the field.
+					if d.doubleWrite && d.charD.at(line, i+d.charD.n) {
+						d.scratch = append(d.scratch, line[clean:i]...)
+						dirty = true
+						d.scratch = append(d.scratch, d.charD.b...)
+						i += 2 * d.charD.n
+						clean = i
 						continue
 					}
-					// End of quoted field
-					i += len(charDel)
+					i += d.charD.n
+					closed = true
 					break
 				}
-
-				// Check for backslash-style escape (only if escape != charDel)
-				if !noEscape && escape != "" && escape != charDel && strings.HasPrefix(line[i:], escape) {
-					afterEscape := i + len(escape)
-					if afterEscape < len(line) {
-						if strings.HasPrefix(line[afterEscape:], charDel) {
-							// Escaped quote: \" -> "
-							current.WriteString(charDel)
-							i = afterEscape + len(charDel)
-							continue
-						} else if strings.HasPrefix(line[afterEscape:], escape) {
-							// Double escape: \\ -> \
-							current.WriteString(escape)
-							i = afterEscape + len(escape)
-							continue
-						}
+				if d.backslashEsc && d.escD.at(line, i) {
+					d.scratch = append(d.scratch, line[clean:i]...)
+					dirty = true
+					after := i + d.escD.n
+					switch {
+					case d.charD.at(line, after):
+						// Escaped quote: \" -> "
+						d.scratch = append(d.scratch, d.charD.b...)
+						i = after + d.charD.n
+					case d.escD.at(line, after):
+						// Double escape: \\ -> \
+						d.scratch = append(d.scratch, d.escD.b...)
+						i = after + d.escD.n
+					case after < n:
+						// Escape byte followed by ordinary data.
+						d.scratch = append(d.scratch, d.escD.b...)
+						d.scratch = append(d.scratch, line[after])
+						i = after + 1
+					default:
+						// Trailing escape byte at end of record.
+						d.scratch = append(d.scratch, d.escD.b...)
+						i = after
 					}
-					// Just a regular escape character
-					current.WriteString(escape)
-					i += len(escape)
+					clean = i
 					continue
 				}
-
-				current.WriteByte(line[i])
 				i++
 			}
-
-			fields = append(fields, current.String())
+			// Content stops before the closing quote; an unterminated field runs
+			// to the end of the record, exactly as the byte-by-byte writer did.
+			end := i
+			if closed {
+				end = i - d.charD.n
+			}
+			if dirty {
+				fields = append(fields, string(append(d.scratch, line[clean:end]...)))
+				d.scratch = d.scratch[:0]
+			} else {
+				fields = append(fields, string(line[start:end]))
+			}
 			quoted = append(quoted, true)
 
-			// Skip column delimiter after quoted field
-			if i < len(line) && strings.HasPrefix(line[i:], colDel) {
-				i += len(colDel)
+			// Skip the column delimiter that ends the field, if present.
+			if hasCol && d.colD.at(line, i) {
+				i += d.colD.n
 			}
-		} else if strings.HasPrefix(line[i:], colDel) {
-			// Empty field between delimiters
+		case hasCol && d.colD.at(line, i):
+			// Empty field between delimiters.
 			fields = append(fields, "")
 			quoted = append(quoted, false)
-			i += len(colDel)
-		} else {
-			// Unquoted field
-			current.Reset()
-			for i < len(line) && !strings.HasPrefix(line[i:], colDel) {
-				current.WriteByte(line[i])
+			i += d.colD.n
+		default:
+			// Unquoted field: written verbatim, no escape handling applies.
+			start := i
+			for i < n && !(hasCol && d.colD.at(line, i)) {
 				i++
 			}
-			fields = append(fields, current.String())
+			fields = append(fields, string(line[start:i]))
 			quoted = append(quoted, false)
-
-			if i < len(line) && strings.HasPrefix(line[i:], colDel) {
-				i += len(colDel)
+			if hasCol && d.colD.at(line, i) {
+				i += d.colD.n
 			}
 		}
 	}
 
 	// Handle trailing delimiter (empty last field)
-	if len(line) > 0 && strings.HasSuffix(line, colDel) {
+	if n > 0 && hasCol && d.colD.n <= n && bytes.Equal(line[n-d.colD.n:], d.colD.b) {
 		fields = append(fields, "")
 		quoted = append(quoted, false)
 	}

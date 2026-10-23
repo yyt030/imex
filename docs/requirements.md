@@ -951,6 +951,17 @@ DEL 与 SQL 导入不再使用 `bufio.Scanner`（有 token 长度上限 10 MB）
 
 因此**单条巨型 INSERT / 单条巨型 DEL 记录都能读**，代价是该语句一次性解析。进程内存由 `GOMEMLIMIT` 环境变量控制。
 
+**DEL 解析路径（`del_reader.go`）：** 记录分帧与字段解析是 DEL 导入的主要 CPU 开销（改写前占导入 CPU 的约 60%），按以下方式约束在"每个值一次拷贝"：
+
+- **定界符预计算**：`--row-del`/`--char-del`/`--col-del`/`--escape` 在构造时各转一次 `[]byte`（`delSpec`，含首字节），`scanRows` 与 `parseLine` 逐字节位置比较时用 `bytes.Equal` 或直接比首字节，不再在每个位置把字符串定界符转成 `[]byte`
+- **不额外物化整行**：`ReadHeader`/`ReadRow` 取 `recordReader.Bytes()` 的切片，不调用会 `string()` 拷贝的 `Text()`
+- **字段值只在需要时拷贝**：未被转义的字段一次 `string(line[start:end])` 物化；含双写引号或反斜杠转义的字段用 reader 自带的 `scratch` 缓冲拼装，`fields`/`quoted`/`scratch` 三个切片在同一 reader 内复用
+- **值的类型仍是 `string`**：改为 `[]byte` 不能减少分配——`driver.Value` 的装箱对非指针类型必然分配（`convTslice` 24 B > `convTstring` 16 B），还会改变预处理语句的字符集语义，因此只去掉多余的*拷贝次数*，不换类型
+
+`--escape` 与 `--char-del` 相同（默认双写转义）或不同（反斜杠转义）两条分支都覆盖；`--no-char-del`、`--no-escape` 与多字节定界符（如 `||`、`\r\n`）走同一套 `delSpec` 比较。另消除一处库内隐患：空 `--col-del` 在 CLI 层已被 `validateDelimiters` 拒绝（`delimiter cannot be empty`），但直接构造 `DelReader` 时旧实现会在 `parseLine` 里对空前缀逐位置命中、`i += 0` 无限追加空字段（实测不返回），新实现用 `hasCol` 门控该分支，此时整行作为单个字段返回（`del_reader_test.go` 有 2 s 超时守卫用例盯住它）。语义等价性由 `del_reader_equiv_test.go` 的差分测试守住（见 11.1）。
+
+实测收益（4 核 / 本地 MariaDB，`bench` 表 50 万行 × 11 列、DEL 文件 125 MB）：微基准 `ReadRow` 89.4→31.4 ms（2.8×）、分帧 31.6→9.3 ms（3.4×）、纯解析 45.8→18.5 ms（2.5×），`ReadRow` 每次操作分配 757,137→440,256 次、驻留字节 26.8→10.5 MB；端到端导入 `--threads 1` 6.81→5.70 s，客户端 CPU 时间 8.02→3.76 s（-53%），`--threads` 的扩展性因此被释放——t4 由 5.61 s 降到 3.64 s，t1→t4 加速比从 1.21× 提高到 1.87×（继续加线程时数据库写入侧成为主要限制）。同一份基准语料在改动前的代码（HEAD 工作树）与新代码上背靠背各测两轮，上表取其中一次。
+
 ### 7.6 幂等性
 
 | 导入模式 | 幂等性 | 说明 |
@@ -1107,7 +1118,7 @@ gomydump/
 └── README.md
 ```
 
-另有 19 个包内 `*_test.go`（`internal/common` 7、`internal/export` 6、`internal/import` 6），加上 `cmd` 2、仓库根 1、集成 2，全仓库共 24 个测试文件，清单见十一节。
+另有 22 个包内 `*_test.go`（`internal/common` 7、`internal/export` 6、`internal/import` 9），加上 `cmd` 3、仓库根 1、集成 2，全仓库共 28 个测试文件，清单见十一节。
 
 ---
 
@@ -1275,15 +1286,16 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 
 ### 11.1 测试资产清单
 
-上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 25 个 `_test.go`、133 个 `Test*`、4 个 `Fuzz*`、5 个 `Benchmark*`）。
+上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 28 个 `_test.go`、139 个 `Test*`、5 个 `Fuzz*`、8 个 `Benchmark*`）。
 
 | 文件 | 用例数 | 覆盖点 | 运行方式 |
 |------|--------|--------|----------|
 | `cmd/cli_matrix_test.go` | 6 | 参数组合矩阵与退出码契约：DEL/SQL/parquet 专属选项互斥、`--log-format` 标志与环境变量、必填项缺失、`encrypt` 位置参数个数（越界为用法错误 2、密钥缺失仍为运行时 1）| `make test` |
 | `cmd/validate_fuzz_test.go` | 4 fuzz | 边界校验函数（batch-size、pipeline-buffer、statement-size、threads）对畸形输入不 panic | `make test` |
+| `cmd/version_log_test.go` | 2 | `version` 子命令不写日志记录（stdout/stderr 捕获后断言），`run` 横幅仍照常记录 | `make test` |
 | `internal/common/*_test.go`（7 个文件）| 27 | 瞬态错误判定、日志单行与切布局保持级别、消息文件记录、重试退避与取消、会话变量解析与 DSN 注入、失败 SQL 脱敏回显、DSN 构建 | `make test` |
 | `internal/export/*_test.go`（6 个文件）| 52 | DEL/SQL/Parquet 写入器转义与攒批、分片边界精确运算与 hint 保留、分片合并的 header/LOCK 配对、hex-blob 判定 | `make test` |
-| `internal/import/*_test.go`（7 个文件）| 32 + 5 bench | 攒批字节上限与 65535 占位符、DEL/SQL 读取器回读、无上限记录读取、会话重连回放与空闲提交、位置映射列数校验、`inserted`/`updated`/`unchanged` 拆分（含 affected 读不到与超限钳制）| `make test` |
+| `internal/import/*_test.go`（9 个文件）| 36 + 1 fuzz + 8 bench | 攒批字节上限与 65535 占位符、DEL/SQL 读取器回读、无上限记录读取、会话重连回放与空闲提交、位置映射列数校验、`inserted`/`updated`/`unchanged` 拆分（含 affected 读不到与超限钳制）；DEL 读取器重写以差分方式守住语义——保留改动前的 `parseLine`/`scanRows` 为参考实现，用 28 个手写用例 + 4000 行随机语料 × 6 套定界符配置逐字段比对，配 `FuzzDelReaderParse` 持续模糊，另有空 `--col-del` 的超时守卫用例（`del_reader_equiv_test.go`、`del_reader_test.go`）；`del_reader_bench_test.go` 用 2 万行、贴近导出器真实产物（全字段带引号、空串与 NULL 可区分、二进制列裸 `0x`、引号内含 `||`/`;`）的确定性语料覆盖整行读取、纯分帧、纯解析三段 | `make test`（bench 用 `go test -run '^$' -bench . ./internal/import`，fuzz 用 `-fuzz FuzzDelReaderParse`）|
 | `main_test.go` | 1 | go/ast 静态守卫：全部 logger 调用消息首字母小写且单行（防日志词汇回归）| `make test` |
 | `test/integration/roundtrip_test.go` | 10 | 离线往返（写入器→读取器）：转义文本、每条语句一个物理行、`--statement-size` 攒批、`0x` 二进制字面量、MySQL 文本值与 HEX 一致、DEL 引号/反斜杠两种模式、看似十六进制的文本不被误解码、单行 INSERT | `make test` |
 | `test/integration/live_mysql_test.go` | 5 | 真实 MySQL 端到端：三种格式往返、并行导出与并行导入、四种导入模式、列映射、导入行数拆分对真实服务端 `RowsAffected` 的断言；消息文件路径随用例参数一起断言 | `GOMYDUMP_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/db' make test-live`，未设置该变量时自动跳过 |
@@ -1295,7 +1307,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 场景 | 现状 |
 |------|------|
 | OceanBase 端到端 | 沙箱内无 OceanBase 实例。仅覆盖到 SQL 层的 OceanBase 分支单测（如 OceanBase 下不写表锁的合并用例），完整链路未验证 |
-| GB 级大文件 | 由 5 个 benchmark 覆盖单点（记录读取器、攒批），属微基准；8.1 的大文件与吞吐是目标值，没有端到端自动化断言，需在真实环境按压测计划验证 |
+| GB 级大文件 | 由 8 个 benchmark 覆盖单点（记录读取器、DEL 整行读取/分帧/解析、攒批），属微基准；8.1 的大文件与吞吐是目标值，没有端到端自动化断言，需在真实环境按压测计划验证 |
 | 长时间稳定性 / 断连恢复 | `internal/import/session_test.go` 用模拟重连覆盖回放逻辑，真实网络中断（LB/NAT 回收）未做长时间实验 |
 
 ---
@@ -1304,7 +1316,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 
 | 交付物 | 说明 |
 |--------|------|
-| 源代码 | 完整 Go 项目源码（含 24 个 `_test.go`、`docs/requirements.md`、`docs/cli-oracle.txt`），发布形态为 `gomydump-<version>-<commit>[-dirty]-src.tar.gz`，排除 `.git/`、`bin/`、`dist/`、`vendor/` |
+| 源代码 | 完整 Go 项目源码（含 28 个 `_test.go`、`docs/requirements.md`、`docs/cli-oracle.txt`），发布形态为 `gomydump-<version>-<commit>[-dirty]-src.tar.gz`，排除 `.git/`、`bin/`、`dist/`、`vendor/` |
 | 二进制文件 | Linux amd64、Windows amd64 两个平台；均 `CGO_ENABLED=0` 静态链接、`-s -w` 去符号，由 `make build-all` 产出，版本信息经 ldflags 注入。Linux arm64 与 macOS 不在发布矩阵内，按 README 的单平台命令自行编译 |
 | 校验清单 | 每个发布批次附 `*-bin-SHA256SUMS.txt`，逐产物一行 SHA256 |
 | Dockerfile | 容器构建（`make docker`）|
@@ -1381,6 +1393,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | Parquet + `--threads>1` | 记录 `parallel export is not supported for parquet format, using single-threaded export`（`info` 级）后降级单线程；实测吞吐不随行数变化，属文档化限制而非缺陷 |
 | `--commit-count 0` | 视为参数错误退出 2（最小值 1），"只在结束时提交"需要足够大的 `--commit-count` |
 | `-q "SELECT 1"`（无 FROM）+ SQL 格式 | 隐式 `DUAL` 表没有 `SHOW CREATE TABLE`，导出退出 1；改用 `--format del`/`parquet` |
+| `--char-del "'" --escape "''"`（转义串是定界符的重复）DEL 往返失败 | 既有缺陷，非本轮引入（旧二进制同样失败，已隔离最小复现）：导出端把内嵌 `'` 写成 `'''`，读取端先判字符定界符再判转义符，引号状态错位，导入报 `sql: expected 27 arguments, got 57`。改用 `--escape "'"` 或默认 `"` 均正常。若要修复需统一读写两端的"转义符等于定界符"判定顺序，属独立改动 |
 
 ### 2026-10-23 文档与实现对齐
 
@@ -1392,3 +1405,9 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 37 | 发布矩阵收窄为 amd64 | 按要求，预编译产物只保留 Linux amd64 与 Windows amd64。`Makefile` 的 `linux` 目标去掉 `GOARCH=arm64` 那行（`build-all` 由 3 个二进制降为 2 个），注释同步；README 构建说明与本文 §8.5「跨平台」、§12 交付物改为两平台，并给出 Linux arm64 的单平台编译命令。本批次的 `*-bin-SHA256SUMS.txt` 相应只列 2 个二进制 |
 | 38 | 导入行数拆分新增 `unchanged` 计数 | 实测发现 `insert_update` 重复导入同一文件时（服务端 `RowsAffected=0`）旧推导报 `inserted=4 updated=0`，而真实是 0 新增 0 改动 4 行相同；根因是 `updated = affected - rows` 再钳 0 的推导隐含"每行至少贡献 1 个 affected"。`internal/import/importer.go:addBatchResult` 改为互斥三分：`updated = max(0, affected-rows)`、`unchanged = max(0, rows-affected)`、`inserted = rows-updated-unchanged`（另对 affected 超过 2×rows 的异常值把 `updated` 钳到 `rows`），三数之和恒等于批行数；`internal/common.Stats` 随之增 `AddUnchanged`/`Unchanged`，五处计数日志（`import progress`、结构-only 完成、`import completed`、`import aborted`、`parallel import completed`）统一加 `unchanged` 字段。同时以 go-sql-driver 实测确认 `insert`/`create`/`replace` 三种模式 affected 恒等于行数（`replace` 先清空目标表再插，故每行都是新增），推导对它们是恒等变形。新增 `internal/import/counters_test.go`（4 个测试：11 例拆分表、affected 不可读与负值、跨批累加、`Stats()` 未初始化零值）与 `test/integration/live_mysql_test.go:TestLive_ImportCounters`（真实服务端 5 个场景，配套 `importFileStats` 辅助与 `Importer.Stats()` 只读访问器）。实测：相同内容重导 `inserted=0 updated=0 unchanged=4`，全部改动 `updated=4`，删 2 行重导 `inserted=2 unchanged=2`，replace `inserted=4`。8.3「导入行数」与 README 的行数统计说明、修复记录同步 |
 | 39 | `version` 子命令不再写日志 | 此前 `gomydump version` 先在 stderr 打一条 java 布局的 `gomydump starting ... command=version`，再打四行版本信息，内容完全重复，且 `--log-format text` 也会改变首行形状，导致 `gomydump version \| grep` 之类的取版本管道要先过滤日志。`cmd/root.go` 的 `PersistentPreRunE` 把 `common.LogVersion` 改为对 `cmd.Name() == "version"` 跳过，其余子命令（`export`/`import`/`encrypt`/`help`）首行横幅不变。新增 `cmd/version_log_test.go` 两个用例：一个断言 version 的 stderr 为空且四行齐全、输出中不含日志记录，一个反向断言 `encrypt` 运行时横幅仍是 stderr 首行（防止把例外扩成全量禁用）。README 版本说明与本文的日志事件表、8.3「日志顺序」同步 |
+
+### 2026-10-23 DEL 读取路径性能改写
+
+| # | 改动项 | 说明 |
+|---|--------|------|
+| 40 | DEL 导入解析改为全程 `[]byte`、去掉无效字节↔字符串转换 | 性能分析（pprof CPU + heap，4 核 / 本地 MariaDB，`bench` 表 50 万行 DEL 125 MB）显示导入 CPU 的约 60% 落在 DEL 分帧与字段解析上，堆分配量 1392 MB 是输入体积的 11 倍，其中 `parseLine` 479 MB + `recordReader.Text()` 121 MB。改写 `internal/import/del_reader.go`：① 四个定界符在 `NewDelReader` 里预计算成 `delSpec`（`[]byte` + 长度 + 首字节），`scanRows`/`parseLine` 逐位置比较改为定长比较；② `ReadHeader`/`ReadRow` 用 `recordReader.Bytes()` 取代 `Text()`，取消整行 `string()` 物化；③ 无转义字段直接一次 `string(line[start:end])`，含转义字段用复用的 `scratch` 拼装，`fields`/`quoted`/`scratch` 在 reader 内跨行复用；④ 门控空 `--col-del` 分支（`hasCol`）——CLI 已拒绝空定界符，但库内直接构造 `DelReader` 时旧实现会因空前缀恒命中而不返回，新实现把整行作为单个字段返回。值类型仍保持 `string`——装箱到 `driver.Value` 对 `[]byte` 同样分配且更宽（`convTslice` 24 B vs `convTstring` 16 B），换类型不会减少分配。改写过程由差分测试暴露并修复两个引号边界缺陷：闭合定界符被留在值末尾（`TestDelReader_LargeRecord` 长度 +1）、双写转义后未把干净片段并入 `scratch` 导致 `Alice ""The Great""` 解析为 `Alice ""`。新增 `del_reader_equiv_test.go`（保留改写前的 `parseLine`/`scanRows` 作参考实现，28 个手写用例 + 4000 行随机语料 × 6 套定界符配置逐字段比对 + `FuzzDelReaderParse` 差分模糊，25 s 246,417 次执行无发现）与 `del_reader_bench_test.go`（2 万行贴近导出器真实产物的确定性语料，`ReadRow`/分帧/纯解析三段基准）。实测：微基准 89.4→31.4 ms（2.8×）、31.6→9.3 ms（3.4×）、45.8→18.5 ms（2.5×），`ReadRow` 分配 757,137→440,256 次/操作、驻留 26.8→10.5 MB/操作（同一语料在 HEAD 工作树与新树上背靠背各测两轮，取其一）；端到端 `--threads 1` 6.81→5.70 s、客户端 CPU 8.02→3.76 s，t4 5.61→3.64 s，t1→t4 加速比 1.21×→1.87×。6 组定界符/转义/十六进制标志组合的真实往返逐行一致（其中一组暴露上表的 `--escape "''"` 既有缺陷）。`make test`（`-race`）、`make test-live`、`go vet ./internal/...`、`gofmt -l` 全通过。新增测试资产使全仓库规模升至 28 文件 / 139 `Test*` / 5 `Fuzz*` / 8 `Benchmark*`，11.1、11.2、九节、十二节的计数同步更新，7.5 增补「DEL 解析路径」小节 |

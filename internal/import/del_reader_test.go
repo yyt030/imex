@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"strings"
 	"testing"
+	"time"
 
 	"fmt"
 
@@ -330,7 +331,7 @@ func TestDelReader_ParseLine(t *testing.T) {
 			reader := bufio.NewReader(strings.NewReader(""))
 			delReader := NewDelReader(reader, tt.mod, false)
 
-			result, _ := delReader.parseLine(tt.line)
+			result, _ := delReader.parseLine([]byte(tt.line), nil, nil)
 			if len(result) != len(tt.expected) {
 				t.Errorf("parseLine() result length = %d, want %d", len(result), len(tt.expected))
 				t.Errorf("result: %v", result)
@@ -510,5 +511,29 @@ func TestDelReader_LargeRecord(t *testing.T) {
 	}
 	if len(got) != payloadLen {
 		t.Fatalf("payload length: got %d, want %d", len(got), payloadLen)
+	}
+}
+
+// An empty column delimiter is rejected by the CLI (validateDelimiters), so the
+// only way to reach it is constructing a DelReader directly. Prefix comparisons
+// against an empty delimiter succeed at every position, which previously meant
+// parseLine never returned.
+func TestDelReader_EmptyColDelTerminates(t *testing.T) {
+	mod := &config.DelModifier{CharDel: `"`, ColDel: "", RowDel: "\n", Escape: `"`}
+	d := NewDelReader(bufio.NewReader(strings.NewReader("x\n")), mod, false)
+
+	done := make(chan []string, 1)
+	go func() {
+		fields, _ := d.parseLine([]byte(`1,"a"`), nil, nil)
+		done <- fields
+	}()
+
+	select {
+	case fields := <-done:
+		if len(fields) != 1 || fields[0] != `1,"a"` {
+			t.Errorf("fields = %q, want [1,\"a\"]", fields)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("parseLine did not return with an empty column delimiter")
 	}
 }
