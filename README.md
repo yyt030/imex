@@ -77,7 +77,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o gomydump .
 
 `make build-all` 只产出 Linux amd64 与 Windows amd64，不再构建 darwin 目标，也不产出 Linux arm64。macOS、ARM 服务器等环境同样是纯 Go 可直接编译：macOS 在本机执行 `make build` 即得 `bin/gomydump`，ARM64 Linux 用上面的单平台命令，只是发布包不再附带这些预编译产物。
 
-版本信息通过 ldflags 注入 `cmd` 包，`gomydump version` 可打印版本、Git commit 与构建时间。
+版本信息通过 ldflags 注入 `cmd` 包，`gomydump version` 可打印版本、Git commit、构建时间与 Go 版本；该子命令只写标准输出、不产生任何日志记录，可直接接管道与 `grep`。
 
 ### Docker
 
@@ -584,7 +584,7 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 
 导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`create`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 **5 秒**打印一次进度（已处理条数、总速率 `rate`、区间速率 `interval_rate`、`elapsed`），结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。
 
-版本横幅（`gomydump starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后才是命令启动与配置参数。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `started`/`config`/`progress`/`completed`/`aborted`/`failed`（如 `export started`、`export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `java` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `GOMYDUMP_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；此时 `--messages` 消息文件仍按 DB2 兼容格式记录行进度（`SQL3105N`）与统计，因为消息文件是显式产物不受静默影响。
+版本横幅（`gomydump starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后才是命令启动与配置参数；唯一例外是 `gomydump version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `gomydump version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `started`/`config`/`progress`/`completed`/`aborted`/`failed`（如 `export started`、`export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `java` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `GOMYDUMP_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；此时 `--messages` 消息文件仍按 DB2 兼容格式记录行进度（`SQL3105N`）与统计，因为消息文件是显式产物不受静默影响。
 
 消息文件本身按 DB2 LOAD/EXPORT 风格记录全过程：任务开始一行（导出 `SQL3104N`、导入 `SQL3109N`，含表名），每 1000 行一条 `SQL3105N` 进度，运行中的告警逐条写成 `SQL3107N` 并在结束时追加一条 `SQL3107N At least one warning message was encountered.` 汇总，正常结束写 `SQL3110N` 行数统计与 `# Completed/# Duration/# Rate` 注释行。当前会写入 `SQL3107N` 的告警来源：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调。
 

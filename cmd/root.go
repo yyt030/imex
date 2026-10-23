@@ -113,8 +113,14 @@ func init() {
 		// Apply log format BEFORE any validation so errors use chosen style.
 		common.ApplyLogFormat()
 
-		// Version banner must be the first log line of a run.
-		common.LogVersion(cmd.Name())
+		// Version banner must be the first log line of a run — for the commands
+		// that actually do work. `version` is excluded: its entire job is to
+		// print those same four fields, so prefixing it with a log record would
+		// duplicate the output and make `gomydump version` unusable in pipelines
+		// and version greps.
+		if cmd.Name() != "version" {
+			common.LogVersion(cmd.Name())
+		}
 
 		return nil
 	}

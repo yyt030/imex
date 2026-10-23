@@ -572,7 +572,7 @@ GOMYDUMP_LOG_FORMAT=text gomydump import -h 127.0.0.1 -u root -p pass -D mydb -i
 
 | 记录 | 触发时机 |
 |------|----------|
-| `gomydump starting` | 每次运行的首行（version/build_time/git_commit/go_version/command） |
+| `gomydump starting` | 每次真实运行的首行（version/build_time/git_commit/go_version/command）；`version` 子命令本身不产生任何日志记录 |
 | `export started` / `import started` | 子命令入口，含 output/input、format、连接目标 |
 | `export config` / `import config` | 完整生效参数快照（含 DEL 定界符、字符集、批/管道参数） |
 | `session variables will be set on every connection` | 传入了 `--session-var` |
@@ -1017,7 +1017,7 @@ DEL 与 SQL 导入不再使用 `bufio.Scanner`（有 token 长度上限 10 MB）
 | 项目 | 要求 |
 |------|------|
 | 进度输出 | 导出、导入均每隔 5 秒打印一次进度：已处理条数、总速率、区间速率、已用时长；`--quiet` / `GOMYDUMP_QUIET=1` 禁止定时进度日志（配置、结束统计、ERROR 仍输出，消息文件进度不受影响） |
-| 日志顺序 | 版本横幅（version/build_time/git_commit/go_version/command）作为运行首行输出，其后为命令启动与配置参数 |
+| 日志顺序 | 版本横幅（version/build_time/git_commit/go_version/command）作为运行首行输出，其后为命令启动与配置参数；`version` 子命令例外——它只向标准输出打印版本四行，不写任何日志（`help` 子命令仍走横幅）|
 | 错误输出 | 命令失败统一以 `level=ERROR msg="command failed"` 日志记录输出，与其它诊断格式一致，不再单独打印裸 `Error:` 行 |
 | 导出行数 | 按实际写入文件的行数统计（含单线程与并行分片，统一取共享计数快照） |
 | 导入行数 | `read` 按进入写入管道的文件行数统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行）；每批按服务端 `RowsAffected` 拆成 `inserted`/`updated`/`unchanged` 三个互斥计数（`insert_update` 下新行记 1、改动已存在的行记 2、写入相同值的行记 0，故 `updated=max(0, affected-rows)`、`unchanged=max(0, rows-affected)`、`inserted=rows-updated-unchanged`，三者之和恒等于该批行数；`insert`/`create`/`replace` 模式 affected 恒等于行数，全部记 `inserted`，其中 `replace` 是先清空目标表再插入，因此文件里的每一行都是新插入）；批次执行失败的行计入 `failed` |
@@ -1391,3 +1391,4 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 36 | 补齐值处理与并行降级两处长年缺失的说明 | 新增 5.4「三种格式共有的值处理」：`YEAR(0000)` 归一化为 `0000`（文本协议回裸 `0`，回导会被两位 YEAR 规则解释为 2000）、NULL 与空字符串在 DEL/SQL/Parquet 下的表示、`--no-char-del` 时二者不可区分且回读一律为 NULL（均已在 MariaDB 上实测确认）。7.2 补「并行导出的降级触发点」表（4 个 warn 触发点 + parquet 的 info 分支，附实际日志文本与代码行号）与复合键/非数值首列语义。同时修正一处过期引用：十四节边界表里 parquet 降级的消息仍写作大写 `Parallel export is not supported for parquet format`，实际已是小写且级别为 `info`。README 对应补：无包裹符模式的 NULL/空串注意、并行导出的降级触发点与复合键说明、格式示例后的「三类格式共有的值处理」小节，并把遗留的 `见 3.6` 引用改为需求文档 3.3.4 |
 | 37 | 发布矩阵收窄为 amd64 | 按要求，预编译产物只保留 Linux amd64 与 Windows amd64。`Makefile` 的 `linux` 目标去掉 `GOARCH=arm64` 那行（`build-all` 由 3 个二进制降为 2 个），注释同步；README 构建说明与本文 §8.5「跨平台」、§12 交付物改为两平台，并给出 Linux arm64 的单平台编译命令。本批次的 `*-bin-SHA256SUMS.txt` 相应只列 2 个二进制 |
 | 38 | 导入行数拆分新增 `unchanged` 计数 | 实测发现 `insert_update` 重复导入同一文件时（服务端 `RowsAffected=0`）旧推导报 `inserted=4 updated=0`，而真实是 0 新增 0 改动 4 行相同；根因是 `updated = affected - rows` 再钳 0 的推导隐含"每行至少贡献 1 个 affected"。`internal/import/importer.go:addBatchResult` 改为互斥三分：`updated = max(0, affected-rows)`、`unchanged = max(0, rows-affected)`、`inserted = rows-updated-unchanged`（另对 affected 超过 2×rows 的异常值把 `updated` 钳到 `rows`），三数之和恒等于批行数；`internal/common.Stats` 随之增 `AddUnchanged`/`Unchanged`，五处计数日志（`import progress`、结构-only 完成、`import completed`、`import aborted`、`parallel import completed`）统一加 `unchanged` 字段。同时以 go-sql-driver 实测确认 `insert`/`create`/`replace` 三种模式 affected 恒等于行数（`replace` 先清空目标表再插，故每行都是新增），推导对它们是恒等变形。新增 `internal/import/counters_test.go`（4 个测试：11 例拆分表、affected 不可读与负值、跨批累加、`Stats()` 未初始化零值）与 `test/integration/live_mysql_test.go:TestLive_ImportCounters`（真实服务端 5 个场景，配套 `importFileStats` 辅助与 `Importer.Stats()` 只读访问器）。实测：相同内容重导 `inserted=0 updated=0 unchanged=4`，全部改动 `updated=4`，删 2 行重导 `inserted=2 unchanged=2`，replace `inserted=4`。8.3「导入行数」与 README 的行数统计说明、修复记录同步 |
+| 39 | `version` 子命令不再写日志 | 此前 `gomydump version` 先在 stderr 打一条 java 布局的 `gomydump starting ... command=version`，再打四行版本信息，内容完全重复，且 `--log-format text` 也会改变首行形状，导致 `gomydump version \| grep` 之类的取版本管道要先过滤日志。`cmd/root.go` 的 `PersistentPreRunE` 把 `common.LogVersion` 改为对 `cmd.Name() == "version"` 跳过，其余子命令（`export`/`import`/`encrypt`/`help`）首行横幅不变。新增 `cmd/version_log_test.go` 两个用例：一个断言 version 的 stderr 为空且四行齐全、输出中不含日志记录，一个反向断言 `encrypt` 运行时横幅仍是 stderr 首行（防止把例外扩成全量禁用）。README 版本说明与本文的日志事件表、8.3「日志顺序」同步 |
