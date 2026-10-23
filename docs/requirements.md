@@ -168,7 +168,7 @@ gomydump export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQ
 - 文件首行：`/*!40101 SET NAMES <charset> */;`（charset 取自 `--default-charset`）
 - MySQL 下数据段带 `LOCK TABLES <table> WRITE;` / `UNLOCK TABLES;` 一对
 - OceanBase 下不输出 LOCK/UNLOCK（OceanBase 对 LOCK TABLES 支持有限）
-- 并行导出时，LOCK/UNLOCK 由合并步骤（`mergeShardFiles`）统一写出，各分片片段自身不写 LOCK/UNLOCK
+- 并行导出时，LOCK/UNLOCK 由流式写出步骤（`writeShardStream`）统一写出，各分片片段自身不写 LOCK/UNLOCK
 
 **SQL 格式的单表限制：** SQL 输出文件描述的是**一张真实表**（`CREATE TABLE <table>` + `LOCK TABLES <table> WRITE` + 指向该表的 `INSERT`）。因此 `--format sql` 要求 `--query` 为单表查询，解析阶段即拒绝 JOIN、隐式多表（`FROM a, b`）、派生表（`FROM (SELECT …) t`）与 `WITH` CTE，报错并提示改用 `--format del` / `--format parquet`（二者只写出结果集，不依赖表结构）。校验在输出文件创建之前完成，不会留下半成品文件。不带 `FROM` 的 `SELECT 1` 按 MySQL 惯例解析为隐式 `DUAL` 表，工具同样按单表处理（服务端因无 `DUAL` 表结构而报错属预期行为）。
 
@@ -578,6 +578,7 @@ GOMYDUMP_LOG_FORMAT=text gomydump import -h 127.0.0.1 -u root -p pass -D mydb -i
 | `session variables will be set on every connection` | 传入了 `--session-var` |
 | `export progress` / `import progress` | 每 5 秒定时进度（`--quiet` 抑制） |
 | `parallel export detected` / `shard export completed` / `parallel export completed` | 并行导出：分片计划、每个分片、汇总 |
+| `shard stream failed` / `incomplete output file removed` | 并行导出写输出文件失败（如 `ENOSPC`）：前者 `error` 带具体错误，后者 `warn` 带被删除的 `output=`；其余分片此时以 `shard export failed error="... shard output consumer stopped"` 结束 |
 | `worker completed` / `parallel import completed` | 并行导入：每个工作线程、汇总 |
 | `export completed` / `import completed` / `import aborted` | 结束统计（中止时仍给出已达进度与 `failed`） |
 | `query failed` / `insert batch failed` / `create table failed` / `shard query failed` / `shard export failed` | 语句级失败，附 `sql` 预览（默认脱敏） |
@@ -861,15 +862,21 @@ SHOW VARIABLES LIKE 'version_comment';
 1. 检测查询复杂度（JOIN 查询自动降级为单线程）
 2. 检测分片键（主键 > 唯一键 > 用户指定 --shard-key）
 3. 生成分片范围
-4. 每个分片独立连接、独立查询、写入临时文件 <output>.shard_<i>.tmp
+4. 每个分片独立连接、独立查询，把序列化结果写入自己的字节队列（`shardPipe`）
    - SQL 格式下，分片片段不写 LOCK TABLES/UNLOCK TABLES（SetSkipTableLocks=true）
    - 分片片段不写 CREATE TABLE（writeCreate=false）
-5. mergeShardFiles 顺序拼接：
+5. writeShardStream 流式写出到最终文件：
    - 先由 SQLWriter/DelWriter 写出 header（SET NAMES、CREATE TABLE、LOCK TABLES 等）
-   - 再依次 io.Copy 各分片临时文件
+   - 再按分片序号依次消费各自的队列（分片仍在并行产出，只是文件位置由这一个 goroutine 独占）
    - 最后由 SQLWriter 写出 footer（UNLOCK TABLES 等）
-6. 清理临时文件（任一分片失败时也会删除临时文件）
+6. 不产生任何临时文件
 ```
+
+**并行导出不再写临时文件（`shard_stream.go`）：** 旧实现是每个分片写一份 `<output>.shard_<i>.tmp`，全部分片结束后再 `io.Copy` 拼接、删除临时文件。代价是**每个字节落盘两次**：实测 50 万行表（DEL 输出 124,903,023 B）单次并行导出的写入量为 487,920 × 512 B ≈ 238 MB，约输出体积的 2 倍，SQL 格式为 515,152 块 ≈ 251 MB 对 131,872,590 B（两轮重复测得同一组数字）；容量上意味着并行导出需要两倍的空闲空间，且中途被信号打断会在输出目录留下一堆 `<output>.shard_N.tmp`（实测 4 个共 33 MB）。现在分片直接把 `[]byte` 块交给按分片序号消费的那个 goroutine，写入量降到 243,952 / 257,568 块（等于输出体积按 512 B 向上取整，写放大归零），输出目录里只有最终文件本身。字节序列与旧实现**逐字节一致**（DEL/SQL 两种格式、同一库同一时刻分别与旧二进制比对），导出内容与单线程导出、以及导入回读的行集（count + 顺序无关 CRC 和）也都一致。
+
+队列深度不是细节：单个输出 goroutine 一旦偶尔落后，分片就会填满队列并停下，而它停下的时候其他分片的数据库读取仍在推进，整体变成"读一批、写一批"的停顿。同一台 4 核机器上以 SQL 格式实测（每组 7 次交替、取中位数，消除温漂）：旧实现 1.09 s；每分片 2.5 MiB 前瞻为 1.31 s、8 MiB 为 1.24 s（慢 14~20%）；16 MiB 为 1.09 s，与旧实现持平——写入量减半不再牺牲时间。因此 `shardStreamQueueBlocks` 用一个固定的 64 MiB 总预算按分片数均分，上界 64 块（16 MiB）、下界 2 块，与 `--pipeline-buffer`（按行数计）无关。代价是这部分在途字节从磁盘移到堆上：4 分片并行导出的进程峰值 RSS 由约 33 MB 升到约 111 MB（DEL）、114 MB 升到 215 MB（SQL），8 分片 DEL 为 36→118 MB；`--threads 8` 的产物同样与旧实现逐字节一致、写入量同样是恰好一半。
+
+**并行导出的失败与中断语义：** 流式写法意味着失败时输出文件已经存在并写了部分内容。任一分片报错或写文件报错（如 `ENOSPC`）时，导出整体报错、把已写出的输出文件删除并记一条 `incomplete output file removed` 警告，其余仍在队列上等待的分片由 `shard output consumer stopped` 立即解除阻塞（不会挂死），实测 32 MB tmpfs 目标下 4 分片导出在第 1 个分片写满后整体失败且不留任何文件。旧实现在分片失败时是"不产生输出文件"，在合并阶段失败时同样会留下半截输出，因此新语义在两种情况下都只留一种结果：**要么完整、要么没有**。注意：程序未安装信号处理器，`SIGINT`/`SIGTERM` 仍是直接终止进程，此时流式写法会留下一个不完整的输出文件（旧实现留下的是等量的分片临时文件），需要用户自行删除。
 
 **并行导出的结果语义：**
 
@@ -877,7 +884,7 @@ SHOW VARIABLES LIKE 'version_comment';
 - **行序**：最终文件按分片序号顺序拼接，**不保证**与 `--query` 的全局结果顺序一致；需要稳定全局顺序时请使用单线程导出。
 - **一致性**：每个分片使用独立连接并各自执行 `START TRANSACTION WITH CONSISTENT SNAPSHOT`，各分片内部是一致的，但分片之间的快照建立时刻略有差异；导出期间源表仍有写入时，跨分片不构成同一个时间点快照。
 
-**注意：** `--batch-size` / `--pipeline-buffer` 仅作用于单线程导出与导入。并行导出为分片内同步 scan→write，不受管道参数影响。
+**注意：** `--batch-size` / `--pipeline-buffer` 仅作用于单线程导出与导入。并行导出为分片内同步 scan→write，不受管道参数影响；分片到输出文件之间的字节队列深度是内部常量（64 MiB 总预算按分片数均分，见 7.2），不通过命令行暴露。
 
 **并行导出的降级触发点：** 以下任一条件命中即回落单线程，并记一条 `warn` 级日志（消息文本即下表右列，`--quiet` 不抑制 warn）：
 
@@ -888,7 +895,7 @@ SHOW VARIABLES LIKE 'version_comment';
 | 检测不到可用分片键（无主键、无唯一键、`--shard-key` 列不存在）| `failed to detect shard key, falling back to single-threaded export`（带 `error=`）|
 | 分片范围为空或只能切出一段（`MIN()==MAX()`、首列非数值如 UUID/字符串主键、区间无法精确运算）| `only 1 shard range, falling back to single-threaded export` |
 
-前三项与第四项都在 `exporter.go:463-486`，级别 `warn`。`--format parquet` 走的是更早的独立分支，级别是 **`info`** 而非 warn，消息为 `parallel export is not supported for parquet format, using single-threaded export`（`exporter.go:457`，详见 5.3）。
+前三项与第四项都在 `exporter.go:461-486`，级别 `warn`。`--format parquet` 走的是更早的独立分支，级别是 **`info`** 而非 warn，消息为 `parallel export is not supported for parquet format, using single-threaded export`（`exporter.go:456`，详见 5.3）。
 
 选中键时会先写一条 `debug`：`using primary key for sharding` 或 `using unique key for sharding`，附 `columns=`，便于确认复合键实际用了哪几列。
 
@@ -1090,11 +1097,12 @@ gomydump/
 │   │   ├── password.go        # 密码加密/解密（AES-256-GCM）
 │   │   └── detect.go          # 服务器类型检测
 │   ├── export/
-│   │   ├── exporter.go        # 导出调度器（Pipeline 模式、并行分片、mergeShardFiles）
+│   │   ├── exporter.go        # 导出调度器（Pipeline 模式、并行分片、writeShardStream 流式写出）
 │   │   ├── del_writer.go      # DEL 格式写入器
 │   │   ├── sql_writer.go      # SQL 格式写入器（INSERT 合并/转义/单行模式/LOCK 抑制）
 │   │   ├── parquet_writer.go  # Parquet 格式写入器（列式存储）
 │   │   ├── shard.go           # 分片逻辑（主键/唯一键检测）
+│   │   ├── shard_stream.go    # 分片到输出文件的字节队列（并行导出流式写出，免临时文件）
 │   │   └── sql_parser.go      # SQL 解析器（JOIN 检测、hint 保留）
 │   └── import/
 │       ├── importer.go        # 导入调度器（Pipeline 模式、列映射、并行导入）
@@ -1118,7 +1126,7 @@ gomydump/
 └── README.md
 ```
 
-另有 22 个包内 `*_test.go`（`internal/common` 7、`internal/export` 6、`internal/import` 9），加上 `cmd` 3、仓库根 1、集成 2，全仓库共 28 个测试文件，清单见十一节。
+另有 23 个包内 `*_test.go`（`internal/common` 7、`internal/export` 7、`internal/import` 9），加上 `cmd` 3、仓库根 1、集成 2，全仓库共 29 个测试文件，清单见十一节。
 
 ---
 
@@ -1286,7 +1294,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 
 ### 11.1 测试资产清单
 
-上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 28 个 `_test.go`、139 个 `Test*`、5 个 `Fuzz*`、8 个 `Benchmark*`）。
+上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 29 个 `_test.go`、149 个 `Test*`、5 个 `Fuzz*`、8 个 `Benchmark*`）。
 
 | 文件 | 用例数 | 覆盖点 | 运行方式 |
 |------|--------|--------|----------|
@@ -1294,7 +1302,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | `cmd/validate_fuzz_test.go` | 4 fuzz | 边界校验函数（batch-size、pipeline-buffer、statement-size、threads）对畸形输入不 panic | `make test` |
 | `cmd/version_log_test.go` | 2 | `version` 子命令不写日志记录（stdout/stderr 捕获后断言），`run` 横幅仍照常记录 | `make test` |
 | `internal/common/*_test.go`（7 个文件）| 27 | 瞬态错误判定、日志单行与切布局保持级别、消息文件记录、重试退避与取消、会话变量解析与 DSN 注入、失败 SQL 脱敏回显、DSN 构建 | `make test` |
-| `internal/export/*_test.go`（6 个文件）| 52 | DEL/SQL/Parquet 写入器转义与攒批、分片边界精确运算与 hint 保留、分片合并的 header/LOCK 配对、hex-blob 判定 | `make test` |
+| `internal/export/*_test.go`（7 个文件）| 62 | DEL/SQL/Parquet 写入器转义与攒批、分片边界精确运算与 hint 保留、hex-blob 判定、并行导出流式写出的 header/LOCK 配对与分块顺序（`exporter_stream_test.go`）、分片字节队列的语义（`shard_stream.go`：任意写入切分后重组逐字节一致、块不超上限、队列满时背压、消费端停止后生产端被 `shard output consumer stopped` 解除阻塞、ctx 取消同样解除、Close 幂等且刷出尾部、队列深度按分片数均分且内存有界）| `make test` |
 | `internal/import/*_test.go`（9 个文件）| 36 + 1 fuzz + 8 bench | 攒批字节上限与 65535 占位符、DEL/SQL 读取器回读、无上限记录读取、会话重连回放与空闲提交、位置映射列数校验、`inserted`/`updated`/`unchanged` 拆分（含 affected 读不到与超限钳制）；DEL 读取器重写以差分方式守住语义——保留改动前的 `parseLine`/`scanRows` 为参考实现，用 28 个手写用例 + 4000 行随机语料 × 6 套定界符配置逐字段比对，配 `FuzzDelReaderParse` 持续模糊，另有空 `--col-del` 的超时守卫用例（`del_reader_equiv_test.go`、`del_reader_test.go`）；`del_reader_bench_test.go` 用 2 万行、贴近导出器真实产物（全字段带引号、空串与 NULL 可区分、二进制列裸 `0x`、引号内含 `||`/`;`）的确定性语料覆盖整行读取、纯分帧、纯解析三段 | `make test`（bench 用 `go test -run '^$' -bench . ./internal/import`，fuzz 用 `-fuzz FuzzDelReaderParse`）|
 | `main_test.go` | 1 | go/ast 静态守卫：全部 logger 调用消息首字母小写且单行（防日志词汇回归）| `make test` |
 | `test/integration/roundtrip_test.go` | 10 | 离线往返（写入器→读取器）：转义文本、每条语句一个物理行、`--statement-size` 攒批、`0x` 二进制字面量、MySQL 文本值与 HEX 一致、DEL 引号/反斜杠两种模式、看似十六进制的文本不被误解码、单行 INSERT | `make test` |
@@ -1316,7 +1324,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 
 | 交付物 | 说明 |
 |--------|------|
-| 源代码 | 完整 Go 项目源码（含 28 个 `_test.go`、`docs/requirements.md`、`docs/cli-oracle.txt`），发布形态为 `gomydump-<version>-<commit>[-dirty]-src.tar.gz`，排除 `.git/`、`bin/`、`dist/`、`vendor/` |
+| 源代码 | 完整 Go 项目源码（含 29 个 `_test.go`、`docs/requirements.md`、`docs/cli-oracle.txt`），发布形态为 `gomydump-<version>-<commit>[-dirty]-src.tar.gz`，排除 `.git/`、`bin/`、`dist/`、`vendor/` |
 | 二进制文件 | Linux amd64、Windows amd64 两个平台；均 `CGO_ENABLED=0` 静态链接、`-s -w` 去符号，由 `make build-all` 产出，版本信息经 ldflags 注入。Linux arm64 与 macOS 不在发布矩阵内，按 README 的单平台命令自行编译 |
 | 校验清单 | 每个发布批次附 `*-bin-SHA256SUMS.txt`，逐产物一行 SHA256 |
 | Dockerfile | 容器构建（`make docker`）|
@@ -1411,3 +1419,4 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | # | 改动项 | 说明 |
 |---|--------|------|
 | 40 | DEL 导入解析改为全程 `[]byte`、去掉无效字节↔字符串转换 | 性能分析（pprof CPU + heap，4 核 / 本地 MariaDB，`bench` 表 50 万行 DEL 125 MB）显示导入 CPU 的约 60% 落在 DEL 分帧与字段解析上，堆分配量 1392 MB 是输入体积的 11 倍，其中 `parseLine` 479 MB + `recordReader.Text()` 121 MB。改写 `internal/import/del_reader.go`：① 四个定界符在 `NewDelReader` 里预计算成 `delSpec`（`[]byte` + 长度 + 首字节），`scanRows`/`parseLine` 逐位置比较改为定长比较；② `ReadHeader`/`ReadRow` 用 `recordReader.Bytes()` 取代 `Text()`，取消整行 `string()` 物化；③ 无转义字段直接一次 `string(line[start:end])`，含转义字段用复用的 `scratch` 拼装，`fields`/`quoted`/`scratch` 在 reader 内跨行复用；④ 门控空 `--col-del` 分支（`hasCol`）——CLI 已拒绝空定界符，但库内直接构造 `DelReader` 时旧实现会因空前缀恒命中而不返回，新实现把整行作为单个字段返回。值类型仍保持 `string`——装箱到 `driver.Value` 对 `[]byte` 同样分配且更宽（`convTslice` 24 B vs `convTstring` 16 B），换类型不会减少分配。改写过程由差分测试暴露并修复两个引号边界缺陷：闭合定界符被留在值末尾（`TestDelReader_LargeRecord` 长度 +1）、双写转义后未把干净片段并入 `scratch` 导致 `Alice ""The Great""` 解析为 `Alice ""`。新增 `del_reader_equiv_test.go`（保留改写前的 `parseLine`/`scanRows` 作参考实现，28 个手写用例 + 4000 行随机语料 × 6 套定界符配置逐字段比对 + `FuzzDelReaderParse` 差分模糊，25 s 246,417 次执行无发现）与 `del_reader_bench_test.go`（2 万行贴近导出器真实产物的确定性语料，`ReadRow`/分帧/纯解析三段基准）。实测：微基准 89.4→31.4 ms（2.8×）、31.6→9.3 ms（3.4×）、45.8→18.5 ms（2.5×），`ReadRow` 分配 757,137→440,256 次/操作、驻留 26.8→10.5 MB/操作（同一语料在 HEAD 工作树与新树上背靠背各测两轮，取其一）；端到端 `--threads 1` 6.81→5.70 s、客户端 CPU 8.02→3.76 s，t4 5.61→3.64 s，t1→t4 加速比 1.21×→1.87×。6 组定界符/转义/十六进制标志组合的真实往返逐行一致（其中一组暴露上表的 `--escape "''"` 既有缺陷）。`make test`（`-race`）、`make test-live`、`go vet ./internal/...`、`gofmt -l` 全通过。新增测试资产使全仓库规模升至 28 文件 / 139 `Test*` / 5 `Fuzz*` / 8 `Benchmark*`，11.1、11.2、九节、十二节的计数同步更新，7.5 增补「DEL 解析路径」小节 |
+| 41 | 并行导出去掉分片临时文件，改为流式写出 | 承接 40 之后的性能分析：并行导出每个分片先写 `<output>.shard_<i>.tmp`，全部分片结束后再 `io.Copy` 拼接，**每个字节落盘两次**（实测 DEL 输出 124,903,023 B 对应写入量 487,920×512 B ≈ 238 MB，SQL 131,872,590 B 对应 515,152 块 ≈ 251 MB），并行导出因此需要两倍输出的空闲空间，且被信号打断时输出目录残留整批临时文件（实测 4 个共 33 MB）。新增 `internal/export/shard_stream.go`：每个分片序列化到自己的 `shardPipe`（256 KiB 块，块深由 64 MiB 总预算按分片数均分、上界 64 块下界 2 块），`exporter.go` 的 `mergeShardFiles` 改为 `writeShardStream`，在分片仍在产出时按分片序号依次消费并写进最终文件，不再创建任何临时文件；分片失败或写文件失败（如 `ENOSPC`）时删除已写出的不完整输出并警告 `incomplete output file removed`，其余阻塞在队列上的分片由 `shard output consumer stopped` 解除（不会挂死，ctx 取消同路径）。队列深度实测是关键：SQL 格式每分片 2.5 MiB 时墙钟 1.31 s、8 MiB 时 1.24 s，对旧实现 1.09 s（慢 14~20%，写合并 goroutine 反复等已经停下的生产端），16 MiB 回到 1.09 s 持平，故取预算值而非常数；代价是在途字节从磁盘移到堆上，4 分片峰值 RSS 约 33→111 MB（DEL）、114→215 MB（SQL）。验收：与旧二进制在同一库同一时刻并行导出的产物**逐字节一致**（DEL/SQL），写入量减半（DEL 487,920→243,952 块、SQL 515,152→257,568 块），单线程导出产物不变，导入回读的行数与顺序无关 CRC 和与原表一致，32 MB tmpfs 上的 ENOSPC 用例失败后不留任何文件，7 次交替 A/B 取中位数。测试侧 `exporter_merge_test.go` 改为 `exporter_stream_test.go`（同一组 header/LOCK/前导断言改走队列）并新增分块顺序用例，`shard_stream_test.go` 以 9 个用例覆盖队列与流式语义；全仓库测试资产升至 29 文件 / 149 `Test*` / 5 `Fuzz*` / 8 `Benchmark*`，九节项目结构、11.1 计数同步，7.2 并行导出流程改写并新增失败与中断语义段落，README「并行导出」补充说明 |

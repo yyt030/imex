@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"github.com/pkg/errors"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -504,11 +503,13 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 		return errors.Wrap(err, "failed to get columns")
 	}
 
-	// Create temporary files for each shard
-	tempFiles := make([]string, len(shardRanges))
-	for i := range shardRanges {
-		tempFile := fmt.Sprintf("%s.shard_%d.tmp", e.config.Output, i)
-		tempFiles[i] = tempFile
+	// One pipe per shard: the shard goroutines serialize into it and the stream
+	// writer below pulls from them in shard order, so the output is written once
+	// instead of via per-shard temporary files.
+	pipes := make([]*shardPipe, len(shardRanges))
+	queueBlocks := shardStreamQueueBlocks(len(shardRanges))
+	for i := range pipes {
+		pipes[i] = newShardPipe(ctx, queueBlocks, shardBlockSize)
 	}
 
 	// Start parallel export goroutines
@@ -521,14 +522,25 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 
 	for i, shardRange := range shardRanges {
 		go func(shardIdx int, shardRange ShardRange) {
-			rowCount, err := e.exportShard(ctx, shardIdx, shardInfo, shardRange, columns, serverType)
+			rowCount, err := e.exportShard(ctx, shardIdx, shardInfo, shardRange, columns, serverType, pipes[shardIdx])
 			resultCh <- shardResult{shardIdx: shardIdx, rowCount: rowCount, err: err}
 		}(i, shardRange)
 	}
 
-	// Wait for all shards to complete
+	// Consume the shards in order while they are still running.
+	streamErr := e.writeShardStream(pipes, columns, serverType)
+	if streamErr != nil {
+		common.Logger.Error("shard stream failed", "error", streamErr)
+		for _, pipe := range pipes {
+			pipe.terminate()
+		}
+	}
+
+	// Collect shard results. Every producer has returned by now: a shard only
+	// ends when its pipe is closed, and the stream above consumed them all (or
+	// released them after an error).
 	totalRows := int64(0)
-	var exportErr error
+	exportErr := streamErr
 	for i := 0; i < len(shardRanges); i++ {
 		result := <-resultCh
 		if result.err != nil {
@@ -542,22 +554,17 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 		}
 	}
 
-	// If any shard failed, clean up and return error
+	// Streaming means the output file already holds whatever was written before a
+	// failure. A truncated dump is worse than no dump, because it looks complete:
+	// drop it and say so. (Temporary files used to hide this by leaving the
+	// previous output untouched.)
 	if exportErr != nil {
-		for _, tempFile := range tempFiles {
-			os.Remove(tempFile)
+		if err := os.Remove(e.config.Output); err != nil && !os.IsNotExist(err) {
+			common.Logger.Warn("failed to remove incomplete output file", "output", e.config.Output, "error", err)
+		} else {
+			common.Logger.Warn("incomplete output file removed", "output", e.config.Output)
 		}
 		return exportErr
-	}
-
-	// Merge temporary files into final output
-	if err := e.mergeShardFiles(tempFiles, columns, serverType); err != nil {
-		return errors.Wrap(err, "failed to merge shard files")
-	}
-
-	// Clean up temporary files
-	for _, tempFile := range tempFiles {
-		os.Remove(tempFile)
 	}
 
 	duration := time.Since(startTime)
@@ -572,8 +579,9 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	return nil
 }
 
-// exportShard exports a single shard to a temporary file
-func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *ShardInfo, shardRange ShardRange, columns []string, serverType common.ServerType) (int64, error) {
+// exportShard serializes one shard into its pipe; the stream writer owns the
+// output file and consumes the pipes in shard order.
+func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *ShardInfo, shardRange ShardRange, columns []string, serverType common.ServerType, out *shardPipe) (rowCount int64, err error) {
 	// Build shard-specific query using SQL parser
 	shardQuery, err := e.sqlParser.BuildShardedQuery(e.config.Query, shardInfo, shardRange)
 	if err != nil {
@@ -597,13 +605,14 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 	}
 	defer rows.Close()
 
-	// Create temporary file for this shard
-	tempFile := fmt.Sprintf("%s.shard_%d.tmp", e.config.Output, shardIdx)
-	outputFile, err := os.Create(tempFile)
-	if err != nil {
-		return 0, errors.Wrap(err, "failed to create temporary file")
-	}
-	defer outputFile.Close()
+	// Serialize the shard into its pipe. The stream writer consumes pipes in shard
+	// order, so it must see a close on every exit path — including failures — or
+	// it waits for an EOF that never arrives.
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = errors.Wrapf(cerr, "failed to finish shard %d output", shardIdx)
+		}
+	}()
 
 	// Detect YEAR columns so "0" (the wire text for YEAR(0000)) can be
 	// normalized to "0000" before writing, matching the single-threaded path.
@@ -616,11 +625,12 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 	binaryFlags := common.BinaryColumnFlags(colTypes)
 	hex := e.config.HexBlob || (!e.config.NoHexBlob && config.HexBlobForCharset(e.config.DefaultCharset))
 
-	// Create writer for this shard (writeCreate=false: header written by merge)
+	// Create writer for this shard (writeCreate=false: preamble written by the
+	// stream writer, which owns the one LOCK/UNLOCK pair and the header)
 	var writer Writer
 	switch e.config.Format {
 	case "del":
-		delWriter := NewDelWriter(outputFile, &e.config.DelModifier, false, common.ApplyColumnKinds(colTypes))
+		delWriter := NewDelWriter(out, &e.config.DelModifier, false, common.ApplyColumnKinds(colTypes))
 		delWriter.SetBinaryFormat(binaryFlags, hex)
 		writer = delWriter
 	case "sql":
@@ -628,7 +638,7 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 		if err != nil {
 			return 0, errors.Wrap(err, "failed to extract table name")
 		}
-		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, false, !e.config.NoData, serverType, "", e.config.DefaultCharset)
+		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, false, !e.config.NoData, serverType, "", e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetSingleRowInsert(e.config.SingleRowInsert)
 		sqlWriter.SetWarningFunc(e.warningFunc())
@@ -641,7 +651,6 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 	}
 
 	// Read and write rows using sql.RawBytes to avoid per-value allocation
-	rowCount := int64(0)
 	rawValues := make([]sql.RawBytes, len(columns))
 	valuePtrs := make([]interface{}, len(columns))
 	for i := range rawValues {
@@ -721,8 +730,12 @@ func (e *Exporter) createShardConnection() (*sql.DB, error) {
 	return db, nil
 }
 
-// mergeShardFiles merges all shard temporary files into the final output file
-func (e *Exporter) mergeShardFiles(tempFiles []string, columns []string, serverType common.ServerType) error {
+// writeShardStream writes the final output file while the shards are still
+// running: the preamble first, then every shard pipe in shard order, then the
+// footer. Consuming the pipes one at a time is what fixes the byte order; the
+// shards stay concurrent because each of them keeps producing until its own
+// queue fills up.
+func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string, serverType common.ServerType) error {
 	// Create final output file
 	outputFile, err := os.Create(e.config.Output)
 	if err != nil {
@@ -739,14 +752,14 @@ func (e *Exporter) mergeShardFiles(tempFiles []string, columns []string, serverT
 			if err := writer.WriteHeader(columns); err != nil {
 				return errors.Wrap(err, "failed to write header")
 			}
-			// Flush the buffered writer: the shard files below are copied
+			// Flush the buffered writer: the shard blocks below are written
 			// straight to outputFile, so the header must hit disk first.
 			if err := writer.Flush(); err != nil {
 				return errors.Wrap(err, "failed to flush header")
 			}
 		}
 	case "sql":
-		// The merged file is opened with the same writer a serial export uses, so
+		// The output is opened with the same writer a serial export uses, so
 		// a parallel dump can never drift from a single-threaded one in its
 		// preamble or epilogue.
 		tableName, err := e.sqlParser.ExtractTableName(e.config.Query)
@@ -765,25 +778,20 @@ func (e *Exporter) mergeShardFiles(tempFiles []string, columns []string, serverT
 		if err := sqlWriter.WriteHeader(columns); err != nil {
 			return errors.Wrap(err, "failed to write header")
 		}
-		// The shard files are copied straight to outputFile, so the buffered
+		// The shard blocks are written straight to outputFile, so the buffered
 		// preamble has to hit disk first.
 		if err := sqlWriter.Flush(); err != nil {
 			return errors.Wrap(err, "failed to flush header")
 		}
 	}
 
-	// Append each shard file
-	for _, tempFile := range tempFiles {
-		shardFile, err := os.Open(tempFile)
-		if err != nil {
-			return errors.Wrap(err, "failed to open shard file")
+	// Append each shard, in shard order, as its blocks arrive.
+	for i, pipe := range pipes {
+		for block := range pipe.ch {
+			if _, err := outputFile.Write(block); err != nil {
+				return errors.Wrapf(err, "failed to write shard %d output", i)
+			}
 		}
-
-		if _, err := io.Copy(outputFile, shardFile); err != nil {
-			shardFile.Close()
-			return errors.Wrap(err, "failed to copy shard file")
-		}
-		shardFile.Close()
 	}
 
 	// Write footer for SQL format

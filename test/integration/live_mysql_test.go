@@ -305,7 +305,7 @@ func TestLive_RoundTripEveryFormat(t *testing.T) {
 }
 
 // TestLive_ParallelExportImport exercises sharded export and concurrent
-// import workers, including the shard-file merge and float-exact boundaries.
+// import workers, including the streamed shard merge and float-exact boundaries.
 func TestLive_ParallelExportImport(t *testing.T) {
 	env := newLiveEnv(t)
 	dir := t.TempDir()
@@ -324,6 +324,21 @@ func TestLive_ParallelExportImport(t *testing.T) {
 
 	file := filepath.Join(dir, "parallel.del")
 	env.export(t, exportOptions{table: src, format: "del", output: file, threads: 4})
+
+	// Parallel export streams shard output into the final file, so nothing else
+	// may appear next to it: the previous design wrote one temporary file per
+	// shard and concatenated them, which doubled the bytes hitting the disk and
+	// left the fragments behind whenever a run was interrupted.
+	if entries, err := os.ReadDir(dir); err != nil {
+		t.Fatalf("read output dir: %v", err)
+	} else {
+		for _, ent := range entries {
+			if ent.Name() != "parallel.del" {
+				t.Errorf("unexpected file next to the output: %s", ent.Name())
+			}
+		}
+	}
+
 	env.importFile(t, importOptions{
 		input: file, format: "del", mode: config.ImportModeInsert, table: dst,
 		threads: 4, commitCount: 17, batchSize: 5,
