@@ -67,6 +67,7 @@ func newLiveEnv(t *testing.T) *liveEnv {
 		ConnectTimeout:     config.DefaultConnectTimeout,
 		SocketReadTimeout:  config.DefaultSocketTimeout,
 		SocketWriteTimeout: config.DefaultSocketTimeout,
+		ProgressInterval:   config.DefaultProgressInterval,
 	}
 	switch mc.Net {
 	case "unix":
@@ -114,6 +115,9 @@ func (e *liveEnv) export(t *testing.T, opts exportOptions) {
 	cfg.Format = opts.format
 	cfg.Query = "SELECT * FROM `" + opts.table + "`"
 	cfg.Threads = opts.threads
+	if opts.progressInterval > 0 {
+		cfg.ProgressInterval = opts.progressInterval
+	}
 
 	if opts.messages != "" {
 		defer teeLogToFile(t, opts.messages)()
@@ -135,6 +139,9 @@ type exportOptions struct {
 	output   string
 	messages string
 	threads  int
+	// progressInterval compresses the progress ticker so a test can make the
+	// record repeat; zero keeps the shipped default.
+	progressInterval time.Duration
 }
 
 func (e *liveEnv) importFile(t *testing.T, opts importOptions) {
@@ -166,6 +173,9 @@ func (e *liveEnv) importFileStats(t *testing.T, opts importOptions) common.Stats
 	if opts.batchSize > 0 {
 		cfg.BatchSize = opts.batchSize
 	}
+	if opts.progressInterval > 0 {
+		cfg.ProgressInterval = opts.progressInterval
+	}
 
 	imp, err := _import.NewImporter(cfg)
 	if err != nil {
@@ -188,6 +198,8 @@ type importOptions struct {
 	threads     int
 	commitCount int
 	batchSize   int
+	// progressInterval compresses the progress ticker; zero keeps the default.
+	progressInterval time.Duration
 }
 
 // snapshotTable renders every row in a type-stable, NULL-aware text form. HEX
@@ -600,10 +612,12 @@ func (e *liveEnv) growTable(t *testing.T, table string, times int) {
 // after "… completed" reads as a job that is still going, and the window is
 // real — a report already in flight when the work finishes cannot be recalled.
 // The exporter and importer therefore stop the ticker before writing their
-// summary, and stopping waits for the goroutine to leave report. The interval is
-// a variable precisely so this runs on a 5 ms clock instead of the shipped 5 s.
+// summary, and stopping waits for the goroutine to leave report. The cadence is
+// --progress-interval now, so the phases run on a 1 ms clock instead of the
+// shipped 5 s, and the last phase drives the compiled binary to prove the flag
+// actually reaches the ticker.
 func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
-	env := newLiveEnv(t)
+	env := newCLILive(t)
 	dir := t.TempDir()
 
 	src := env.liveTable(t, "order_src")
@@ -613,30 +627,51 @@ func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
 	env.growTable(t, src, 13) // 8192 rows: a run long enough for hundreds of ticks
 	env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
 
-	defer func(q bool, d time.Duration) {
-		common.Quiet = q
-		common.MonitorInterval = d
-	}(common.Quiet, common.MonitorInterval)
+	defer func(q bool) { common.Quiet = q }(common.Quiet)
 	common.Quiet = false // progress records are what is under test
-	common.MonitorInterval = time.Millisecond
 
-	// --messages raises the level to INFO for the run and collects every record,
-	// so the ordering is checked on the same stream an operator reads.
+	// The command log is the stream an operator reads, so the ordering is checked
+	// there (see teeLogToFile: with --messages attached the records go only to
+	// the file).
 	file := filepath.Join(dir, "order.del")
-	env.export(t, exportOptions{table: src, format: "del", output: file, messages: filepath.Join(dir, "export1.log"), threads: 1})
+	env.export(t, exportOptions{table: src, format: "del", output: file, messages: filepath.Join(dir, "export1.log"),
+		threads: 1, progressInterval: time.Millisecond})
 	assertLogEndsOn(t, filepath.Join(dir, "export1.log"), "export completed")
 
-	env.export(t, exportOptions{table: src, format: "del", output: filepath.Join(dir, "order-p.del"), messages: filepath.Join(dir, "export2.log"), threads: 4})
+	env.export(t, exportOptions{table: src, format: "del", output: filepath.Join(dir, "order-p.del"),
+		messages: filepath.Join(dir, "export2.log"), threads: 4, progressInterval: time.Millisecond})
 	assertLogEndsOn(t, filepath.Join(dir, "export2.log"), "parallel export completed")
 
 	env.importFile(t, importOptions{input: file, format: "del", mode: config.ImportModeInsert, table: dst,
-		messages: filepath.Join(dir, "import1.log"), threads: 1, commitCount: 200, batchSize: 200})
+		messages: filepath.Join(dir, "import1.log"), threads: 1, commitCount: 200, batchSize: 200,
+		progressInterval: time.Millisecond})
 	assertLogEndsOn(t, filepath.Join(dir, "import1.log"), "import completed")
 
 	env.exec(t, "TRUNCATE TABLE `"+dst+"`")
 	env.importFile(t, importOptions{input: file, format: "del", mode: config.ImportModeInsert, table: dst,
-		messages: filepath.Join(dir, "import2.log"), threads: 4, commitCount: 200, batchSize: 200})
+		messages: filepath.Join(dir, "import2.log"), threads: 4, commitCount: 200, batchSize: 200,
+		progressInterval: time.Millisecond})
 	assertLogEndsOn(t, filepath.Join(dir, "import2.log"), "parallel import completed")
+
+	// Same invariant through the real argv, plus the two things the flag and the
+	// dropped start records changed: --progress-interval must land in the ticker,
+	// and the config echo must be the record that opens the run (there is no
+	// longer a "export started" line repeating part of it).
+	cliLog := filepath.Join(dir, "cli-export.log")
+	cliFile := filepath.Join(dir, "cli-order.del")
+	out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "del", "-o", cliFile,
+		"--log-level", "info", "--progress-interval", "1ms", "--messages", cliLog)
+	if code != 0 {
+		t.Fatalf("CLI export with --progress-interval: exit %d\n%s", code, out)
+	}
+	text := readFile(t, cliLog)
+	assertLogEndsOn(t, cliLog, "export completed")
+	if strings.Contains(text, " started ") {
+		t.Errorf("the run still logs a start record next to the config echo:\n%s", text)
+	}
+	if !strings.Contains(text, "progress_interval=1ms") {
+		t.Errorf("config echo does not carry the resolved cadence:\n%s", text)
+	}
 }
 
 // assertLogEndsOn checks that a run's last log record is its summary and that

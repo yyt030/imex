@@ -167,7 +167,7 @@ func TestLogFileTakesOverFromStderr(t *testing.T) {
 				t.Fatalf("close log file: %v", err)
 			}
 		}()
-		logger.Info("export started", "output", "/tmp/a.del")
+		logger.Info("export config", "output", "/tmp/a.del")
 		logger.Warn("single-row INSERT exceeds --statement-size", "statement_bytes", 4096)
 		logger.Error("command failed", "error", "no such table")
 	})
@@ -183,7 +183,7 @@ func TestLogFileTakesOverFromStderr(t *testing.T) {
 	if n := strings.Count(string(data), "\n"); n != 3 {
 		t.Fatalf("log file holds %d records, want all 3:\n%s", n, string(data))
 	}
-	for _, want := range []string{"export started", "single-row INSERT", "command failed"} {
+	for _, want := range []string{"export config", "single-row INSERT", "command failed"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("log file missing %q:\n%s", want, string(data))
 		}

@@ -36,6 +36,10 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.DurationVar(&exportCfg.SocketReadTimeout, "socket-read-timeout", 5*time.Minute, "Per-read socket timeout (maps to JDBC socketTimeout)")
 	f.DurationVar(&exportCfg.SocketWriteTimeout, "socket-write-timeout", 5*time.Minute, "Per-write socket timeout (Go-only; no JDBC equivalent)")
 
+	// Progress cadence
+	f.DurationVar(&exportCfg.ProgressInterval, "progress-interval", config.DefaultProgressInterval,
+		"How often to write the periodic progress record (must be positive; --quiet drops the records entirely)")
+
 	// Session variables (repeatable)
 	f.StringArrayVar(&exportCfg.SessionVars, "session-var", nil,
 		"Set a MySQL/OceanBase session variable before export (repeatable), e.g. --session-var \"sql_mode=STRICT_TRANS_TABLES\" --session-var foreign_key_checks=0")

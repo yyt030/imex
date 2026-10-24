@@ -95,15 +95,6 @@ Examples:
 			common.Logger.Info("session variables will be set on every connection", "vars", importCfg.SessionVars)
 		}
 
-		common.Logger.Info("import started",
-			"input", importCfg.Input,
-			"format", importCfg.Format,
-			"mode", importCfg.Mode,
-			"host", importCfg.Host,
-			"port", importCfg.Port,
-			"database", importCfg.Database,
-		)
-
 		importer, err := _import.NewImporter(importCfg)
 		if err != nil {
 			return errors.Wrap(err, "failed to create importer")

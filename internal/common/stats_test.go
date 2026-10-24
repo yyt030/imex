@@ -82,10 +82,33 @@ func TestMonitorStopDrainsInFlightReport(t *testing.T) {
 	}
 }
 
-// MonitorInterval is what the commands pass to StartMonitor; the default is the
-// documented 5 s progress cadence.
-func TestMonitorIntervalDefaultIsFiveSeconds(t *testing.T) {
-	if MonitorInterval != 5*time.Second {
-		t.Errorf("MonitorInterval = %v, want 5s", MonitorInterval)
+// A job shorter than the interval never gets a progress record: the first tick
+// fires only a full interval in, and stop() does not wait for it — it returns as
+// soon as the monitor goroutine has left report. A run that finishes in three
+// seconds on the shipped five-second cadence therefore ends on its summary with
+// no progress line at all, and without idling out the rest of the interval.
+func TestMonitorSilentBeforeFirstTick(t *testing.T) {
+	stats := NewStats()
+	stats.AddProcessed(10)
+
+	var mu sync.Mutex
+	var reports int
+
+	stop := StartMonitor(context.Background(), time.Hour, stats, func(prev, curr StatsSnapshot) {
+		mu.Lock()
+		reports++
+		mu.Unlock()
+	})
+
+	started := time.Now()
+	stop()
+	if waited := time.Since(started); waited > 500*time.Millisecond {
+		t.Errorf("stop() waited %v for a tick that cannot fire; it must only drain a report already in flight", waited)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if reports != 0 {
+		t.Errorf("%d progress reports before the first tick", reports)
 	}
 }

@@ -288,6 +288,9 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 	if err := validatePositiveDuration("socket-write-timeout", cfg.SocketWriteTimeout); err != nil {
 		return err
 	}
+	if err := validatePositiveDuration("progress-interval", cfg.ProgressInterval); err != nil {
+		return err
+	}
 	if err := validateLogLevel(string(cfg.LogLevel)); err != nil {
 		return err
 	}
@@ -337,6 +340,9 @@ func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
 		return err
 	}
 	if err := validatePositiveDuration("socket-write-timeout", cfg.SocketWriteTimeout); err != nil {
+		return err
+	}
+	if err := validatePositiveDuration("progress-interval", cfg.ProgressInterval); err != nil {
 		return err
 	}
 	if err := validateLogLevel(string(cfg.LogLevel)); err != nil {

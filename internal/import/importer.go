@@ -39,6 +39,37 @@ type Importer struct {
 
 // NewImporter creates a new Importer instance
 func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
+	// The parameters go out before the connection is dialled: this is the record
+	// an operator reads when the run cannot reach the server at all, so it must
+	// not depend on the dial succeeding.
+	common.Logger.Info("import config",
+		"host", cfg.Host,
+		"port", cfg.Port,
+		"user", cfg.User,
+		"database", cfg.Database,
+		"input", cfg.Input,
+		"bytes", common.FileSize(cfg.Input),
+		"table", cfg.Table,
+		"format", cfg.Format,
+		"mode", cfg.Mode,
+		"threads", cfg.ImportThreads,
+		"skip_count", cfg.SkipCount,
+		"row_count", cfg.RowCount,
+		"commit_count", cfg.CommitCount,
+		"char_del", cfg.DelModifier.CharDel,
+		"col_del", cfg.DelModifier.ColDel,
+		"row_del", cfg.DelModifier.RowDel,
+		"escape", cfg.DelModifier.Escape,
+		"default_charset", cfg.DefaultCharset,
+		"timestamp_fmt", cfg.DelModifier.TimestampFmt,
+		"no_col_names", cfg.DelModifier.NoColNames,
+		"batch_size", cfg.BatchSize,
+		"pipeline_buffer", cfg.PipelineBuffer,
+		"progress_interval", cfg.EffectiveProgressInterval(),
+		"columns", cfg.Columns,
+		"log_level", cfg.LogLevel,
+	)
+
 	// Build DSN using mysql.Config to properly escape special characters
 	dsn := common.BuildDSN(&cfg.Config)
 
@@ -80,7 +111,7 @@ func (imp *Importer) Close() error {
 func (imp *Importer) Import(ctx context.Context) error {
 	startTime := time.Now()
 	imp.stats = common.NewStats()
-	imp.stopMonitor = common.StartMonitor(ctx, common.MonitorInterval, imp.stats, func(prev, curr common.StatsSnapshot) {
+	imp.stopMonitor = common.StartMonitor(ctx, imp.cfg.EffectiveProgressInterval(), imp.stats, func(prev, curr common.StatsSnapshot) {
 		// --quiet suppresses the periodic progress record. --messages receives the
 		// command log itself rather than a report of its own, so a suppressed
 		// record is absent from the file as well.
@@ -98,34 +129,6 @@ func (imp *Importer) Import(ctx context.Context) error {
 		}
 	})
 	defer imp.stopMonitor()
-
-	// 输出配置参数
-	common.Logger.Info("import config",
-		"host", imp.cfg.Host,
-		"port", imp.cfg.Port,
-		"user", imp.cfg.User,
-		"database", imp.cfg.Database,
-		"input", imp.cfg.Input,
-		"bytes", common.FileSize(imp.cfg.Input),
-		"table", imp.cfg.Table,
-		"format", imp.cfg.Format,
-		"mode", imp.cfg.Mode,
-		"threads", imp.cfg.ImportThreads,
-		"skip_count", imp.cfg.SkipCount,
-		"row_count", imp.cfg.RowCount,
-		"commit_count", imp.cfg.CommitCount,
-		"char_del", imp.cfg.DelModifier.CharDel,
-		"col_del", imp.cfg.DelModifier.ColDel,
-		"row_del", imp.cfg.DelModifier.RowDel,
-		"escape", imp.cfg.DelModifier.Escape,
-		"default_charset", imp.cfg.DefaultCharset,
-		"timestamp_fmt", imp.cfg.DelModifier.TimestampFmt,
-		"no_col_names", imp.cfg.DelModifier.NoColNames,
-		"batch_size", imp.cfg.BatchSize,
-		"pipeline_buffer", imp.cfg.PipelineBuffer,
-		"columns", imp.cfg.Columns,
-		"log_level", imp.cfg.LogLevel,
-	)
 
 	// Open input file
 	file, err := os.Open(imp.cfg.Input)

@@ -57,6 +57,11 @@ const (
 	DefaultMaxAllowedPacketCap = 256 << 20
 )
 
+// DefaultProgressInterval is how often a running export or import writes its
+// periodic progress record. --progress-interval overrides it; --quiet drops the
+// records altogether instead of making them rarer.
+const DefaultProgressInterval = 5 * time.Second
+
 // DelModifier holds DEL format modifier options.
 type DelModifier struct {
 	CharDel      string // string delimiter (wraps string values)
@@ -97,6 +102,11 @@ type Config struct {
 	ConnectTimeout     time.Duration // TCP connect deadline
 	SocketReadTimeout  time.Duration // per-read socket deadline
 	SocketWriteTimeout time.Duration // per-write socket deadline
+
+	// ProgressInterval is how often a running job writes its periodic progress
+	// record (--progress-interval). Non-positive values resolve to
+	// DefaultProgressInterval; see EffectiveProgressInterval.
+	ProgressInterval time.Duration
 
 	SessionVars []string          // raw --session-var values ("name=value")
 	Vars        map[string]string // parsed session vars, SQL-literal-quoted (nil when unset)
@@ -184,7 +194,19 @@ func defaultConfig() Config {
 		ConnectTimeout:     DefaultConnectTimeout,
 		SocketReadTimeout:  DefaultSocketTimeout,
 		SocketWriteTimeout: DefaultSocketTimeout,
+		ProgressInterval:   DefaultProgressInterval,
 	}
+}
+
+// EffectiveProgressInterval is the interval the progress ticker runs on. A
+// library caller that left the field unset gets the shipped default rather than
+// a non-positive duration, which time.NewTicker rejects by panicking; the CLI
+// rejects such values earlier still, as a usage error that exits 2.
+func (c *Config) EffectiveProgressInterval() time.Duration {
+	if c.ProgressInterval > 0 {
+		return c.ProgressInterval
+	}
+	return DefaultProgressInterval
 }
 
 // NewExportConfig returns an ExportConfig with default values.

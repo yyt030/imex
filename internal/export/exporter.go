@@ -30,6 +30,37 @@ type Exporter struct {
 
 // NewExporter creates a new exporter instance
 func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
+	// The parameters go out before the connection is dialled: this is the record
+	// an operator reads when the run cannot reach the server at all, so it must
+	// not depend on the dial succeeding.
+	common.Logger.Info("export config",
+		"host", cfg.Host,
+		"port", cfg.Port,
+		"user", cfg.User,
+		"database", cfg.Database,
+		"output", cfg.Output,
+		"format", cfg.Format,
+		"query", cfg.Query,
+		"threads", cfg.Threads,
+		"shard_key", cfg.ShardKey,
+		"statement_size", cfg.StatementSize,
+		"no_create", cfg.NoCreate,
+		"no_data", cfg.NoData,
+		"no_replace", cfg.NoReplace,
+		"char_del", cfg.DelModifier.CharDel,
+		"col_del", cfg.DelModifier.ColDel,
+		"row_del", cfg.DelModifier.RowDel,
+		"escape", cfg.DelModifier.Escape,
+		"default_charset", cfg.DefaultCharset,
+		"timestamp_fmt", cfg.DelModifier.TimestampFmt,
+		"no_col_names", cfg.DelModifier.NoColNames,
+		"log_level", cfg.LogLevel,
+		"batch_size", cfg.BatchSize,
+		"pipeline_buffer", cfg.PipelineBuffer,
+		"progress_interval", cfg.EffectiveProgressInterval(),
+		"hex_blob", cfg.HexBlob,
+	)
+
 	// Build DSN using mysql.Config to properly escape special characters
 	dsn := common.BuildDSN(&cfg.Config)
 
@@ -90,7 +121,7 @@ func (e *Exporter) Close() error {
 func (e *Exporter) Export(ctx context.Context) error {
 	startTime := time.Now()
 	e.stats = common.NewStats()
-	e.stopMonitor = common.StartMonitor(ctx, common.MonitorInterval, e.stats, func(prev, curr common.StatsSnapshot) {
+	e.stopMonitor = common.StartMonitor(ctx, e.config.EffectiveProgressInterval(), e.stats, func(prev, curr common.StatsSnapshot) {
 		// --quiet suppresses the periodic progress record. --messages receives the
 		// command log itself rather than a report of its own, so a suppressed
 		// record is absent from the file as well.
@@ -104,34 +135,6 @@ func (e *Exporter) Export(ctx context.Context) error {
 		}
 	})
 	defer e.stopMonitor()
-
-	// 输出配置参数
-	common.Logger.Info("export config",
-		"host", e.config.Host,
-		"port", e.config.Port,
-		"user", e.config.User,
-		"database", e.config.Database,
-		"output", e.config.Output,
-		"format", e.config.Format,
-		"query", e.config.Query,
-		"threads", e.config.Threads,
-		"shard_key", e.config.ShardKey,
-		"statement_size", e.config.StatementSize,
-		"no_create", e.config.NoCreate,
-		"no_data", e.config.NoData,
-		"no_replace", e.config.NoReplace,
-		"char_del", e.config.DelModifier.CharDel,
-		"col_del", e.config.DelModifier.ColDel,
-		"row_del", e.config.DelModifier.RowDel,
-		"escape", e.config.DelModifier.Escape,
-		"default_charset", e.config.DefaultCharset,
-		"timestamp_fmt", e.config.DelModifier.TimestampFmt,
-		"no_col_names", e.config.DelModifier.NoColNames,
-		"log_level", e.config.LogLevel,
-		"batch_size", e.config.BatchSize,
-		"pipeline_buffer", e.config.PipelineBuffer,
-		"hex_blob", e.config.HexBlob,
-	)
 
 	// --format sql writes CREATE TABLE plus INSERT statements aimed at one
 	// concrete table, so a join, CTE, or derived-table result cannot be

@@ -3,6 +3,7 @@ package cmd
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -358,6 +359,74 @@ func TestCLILogFormatEnvOverrideRejected(t *testing.T) {
 	}
 	if !common.IsUsageError(err) {
 		t.Errorf("error %q must be a usage error (exit code 2)", err)
+	}
+}
+
+// TestCLIProgressInterval pins the cadence option: absent flag keeps the
+// shipped 5 s default on both subcommands, a positive value reaches the config
+// verbatim, and a non-positive value is a usage error rather than a panic in
+// time.NewTicker — an operator who writes 0 means "never", which is what
+// --quiet already says, so the option does not take on that meaning too.
+func TestCLIProgressInterval(t *testing.T) {
+	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb"}
+	exportArgs := append(append([]string{}, base...), "-o", "/tmp/out.del", "-q", "SELECT 1")
+	importArgs := append(append([]string{}, base...), "-i", "/tmp/in.del", "-t", "users")
+
+	if err := validateOnly(t, "export", exportArgs); err != nil {
+		t.Fatalf("export without --progress-interval: %v", err)
+	}
+	if exportCfg.ProgressInterval != config.DefaultProgressInterval {
+		t.Errorf("export default = %v, want %v", exportCfg.ProgressInterval, config.DefaultProgressInterval)
+	}
+	if err := validateOnly(t, "import", importArgs); err != nil {
+		t.Fatalf("import without --progress-interval: %v", err)
+	}
+	if importCfg.ProgressInterval != config.DefaultProgressInterval {
+		t.Errorf("import default = %v, want %v", importCfg.ProgressInterval, config.DefaultProgressInterval)
+	}
+
+	for _, tc := range []struct {
+		value   string
+		want    time.Duration
+		wantErr string
+	}{
+		{value: "1ms", want: time.Millisecond},
+		{value: "30s", want: 30 * time.Second},
+		{value: "0", wantErr: "invalid --progress-interval"},
+		{value: "-1s", wantErr: "invalid --progress-interval"},
+	} {
+		flag := "--progress-interval=" + tc.value
+		for _, sub := range []string{"export", "import"} {
+			args := exportArgs
+			if sub == "import" {
+				args = importArgs
+			}
+			err := validateOnly(t, sub, append(append([]string{}, args...), flag))
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Errorf("%s %s: expected usage error, got nil", sub, flag)
+					continue
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("%s %s: error %q lacks %q", sub, flag, err, tc.wantErr)
+				}
+				if !common.IsUsageError(err) {
+					t.Errorf("%s %s: %q must be a usage error (exit code 2)", sub, flag, err)
+				}
+				continue
+			}
+			if err != nil {
+				t.Errorf("%s %s: unexpected error %v", sub, flag, err)
+				continue
+			}
+			got := exportCfg.ProgressInterval
+			if sub == "import" {
+				got = importCfg.ProgressInterval
+			}
+			if got != tc.want {
+				t.Errorf("%s %s: ProgressInterval = %v, want %v", sub, flag, got, tc.want)
+			}
+		}
 	}
 }
 

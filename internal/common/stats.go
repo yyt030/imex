@@ -69,15 +69,13 @@ func (curr StatsSnapshot) IntervalRate(prev StatsSnapshot) float64 {
 	return float64(curr.Processed-prev.Processed) / dt
 }
 
-// MonitorInterval is how often StartMonitor reports a running job. The commands
-// use it for the periodic progress record; it is a variable so a test can make
-// the ticker fire on its own clock instead of waiting five seconds.
-var MonitorInterval = 5 * time.Second
-
 // StartMonitor spawns a goroutine that invokes report every `interval` with
 // the previous and current snapshots, until ctx is canceled or the returned
-// stop func is called. The first tick fires after `interval`; a final
-// report-on-complete is the caller's responsibility (via its completion log).
+// stop func is called. The first tick fires after `interval`, so a job that
+// finishes sooner never writes a progress record at all — stop does not wait
+// out the interval, it waits only for a report that is already in flight. A
+// final report-on-complete is the caller's responsibility (via its completion
+// log).
 //
 // stop cancels the monitor and waits for the goroutine to leave report, so
 // once it returns no progress record can still be written. Without that drain a

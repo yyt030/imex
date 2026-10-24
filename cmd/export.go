@@ -100,14 +100,6 @@ Examples:
 			common.Logger.Info("session variables will be set on every connection", "vars", exportCfg.SessionVars)
 		}
 
-		common.Logger.Info("export started",
-			"output", exportCfg.Output,
-			"format", exportCfg.Format,
-			"host", exportCfg.Host,
-			"port", exportCfg.Port,
-			"database", exportCfg.Database,
-		)
-
 		exporter, err := export.NewExporter(exportCfg)
 		if err != nil {
 			return errors.Wrap(err, "failed to create exporter")

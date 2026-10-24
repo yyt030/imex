@@ -1,12 +1,18 @@
 # CLI surface extracted from shipped binary commit 4934dd2
-# Frozen baseline, kept verbatim as a regression reference. Three intentional
+# Frozen baseline, kept verbatim as a regression reference. Four intentional
 # deltas vs the current tree: --statement-size now defaults to 8388608 (8 MiB),
-# export gained --single-row-insert, and --messages/-m changed meaning (help is
-# now "Redirect the command log to this file; with it, nothing is printed to
+# export gained --single-row-insert, --messages/-m changed meaning (help is now
+# "Redirect the command log to this file; with it, nothing is printed to
 # stderr"; the option no longer writes a DB2-style SQL3xxxN report — it receives
-# the run's command log and takes it away from the terminal). --echo-sql-values
-# likewise now warns about "stderr, or the --messages file". Diff
-# `gomydump <cmd> --help` against this file and expect only those lines.
+# the run's command log and takes it away from the terminal), and both export
+# and import gained --progress-interval (default 5s; the periodic progress
+# record used to be hardcoded at that same 5s, and a non-positive value is a
+# usage error, exit 2). Two help strings were also reworded: --echo-sql-values
+# now says "writes real data to stderr, or to the --messages file when one is
+# given", and import's --skip-count now says "Skip first n data rows (header is
+# consumed separately)". Diff `gomydump <cmd> --help` against this file and
+# expect only those lines: five added/changed option lines per side plus the
+# wording of --echo-sql-values.
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.
