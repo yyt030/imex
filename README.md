@@ -600,7 +600,7 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
   -q "SELECT * FROM users"
 ```
 
-导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`create`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 **5 秒**打印一次进度（已处理条数、总速率 `rate`、区间速率 `interval_rate`、`elapsed`），结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。
+导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`create`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 **5 秒**打印一次进度：`rate` 是**自开始以来的总速率**（已处理 ÷ 已用时长，平滑，反映整体快慢），`interval_rate` 是**上一个进度点到这一个进度点之间的区间速率**（两次快照之差，反映此刻吞吐与抖动；两者无倍率关系，长跑时看 `interval_rate` 判断当前快不快、看 `rate` 判断整体多少），另打印已处理条数与 `elapsed`。结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。**汇总恒为本次运行的最后一条记录**：写汇总之前先停掉进度计时器，而停止会等待正在写的那条进度落笔，因此不会再出现 `completed` 之后跟一条 `progress` 的读感。
 
 版本横幅（`gomydump starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后才是命令启动与配置参数；唯一例外是 `gomydump version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `gomydump version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `started`/`config`/`progress`/`completed`/`aborted`/`failed`（如 `export started`、`export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `java` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `GOMYDUMP_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；`--messages` 文件同样没有进度行（早期版本让消息文件按 DB2 格式继续记 `SQL3105N`，该例外已随报告一起取消）。
 
@@ -783,6 +783,7 @@ INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (2,'Bob','bob@exam
 | `--no-col-names` 导出的文件只用 `-c` 导入时静默丢掉首行（3 行只进 2 行、退出码 0）| 文件本身无法区分"有表头 + 位置映射"与"无表头"，两种情形都必须能导入，因此不改结果、只补可见性：被当作表头丢弃的那一行若与目标表列名全不匹配，记 WARN 日志（`--messages` 打开时只写进该文件），提示补 `--no-col-names`；`--no-col-names` 是成对选项，导出加了导入也要加 |
 | `--messages` 写的是另成一套的 DB2 风格报告（`SQL3104N/3105N/3107N/3109N/3110N` 与 `# Completed/# Duration/# Rate`），既与命令行日志重复，又漏掉日志里的多数记录 | `--messages` / `-m` 改为**命令行日志的文件副本**：`internal/common/log.go` 里加带锁的日志 sink（两种布局都经它，`os.Stderr` 在写入时解析），根命令在打印版本横幅之前打开文件、`cmd.Execute()` 在记完 `command failed` 之后关闭，因此文件首行是横幅、失败收尾也在文件里；`MessageWriter` 与导出/导入侧 35 处消息调用整体删除（告警与失败本来就各有一条日志记录，只去掉重复的第二份）；`--log-level`、`--log-format`、`--quiet` 一并作用于文件。实测 `-m` 导出失败时文件与 stderr `diff` 逐字节一致。**注：这一版仍同时写 stderr 与文件，下一行改为只写文件、终端静默 |
 | 带 `--messages` 时终端与文件各打一份，`-m` 语义仍像“另存一份”而不是“交给文件” | `sink.Write` 改为单一目的地：文件挂载期间**只写文件**，未挂载时照旧写 stderr，因此带 `-m` 的运行终端完全静默，文件是这次运行唯一的记录，退出码不变（实测失败导出：stdout/stderr 各 0 字节、文件 5 条、退出 1；同一命令不带 `-m` 的 stderr 与该文件去掉时间戳/PID 后逐行相同）。`CloseLogFile` 先脱钩再关闭，所以“关闭失败”这条 ERROR 是唯一回到 stderr、不落进文件的记录。帮助文本改为「Redirect the command log to this file; with it, nothing is printed to stderr」；未知选项在 `PersistentPreRunE` 之前失败，文件尚未打开，故只上 stderr 且不建文件，`--help` 与 `-m` 同时给也不建文件。测试同步改为断言终端为空：`internal/common/log_test.go` 的镜像用例改名 `TestLogFileTakesOverFromStderr`（stderr 0 字节、文件恰 3 条、关闭后记录回 stderr），CLI 矩阵的 5 种格式/并行组合 + `-m` 短选项 + 失败记录 + 级别过滤各加“stdout+stderr 为空”断言，`--no-col-names` 对称用例的 WARN 断言移进文件 |
+| 长跑到结束时日志最后一行是 `export progress`，读起来像任务还没完 | 计时器的停止方式导致：`StartMonitor` 返回的 cancel 只发信号，goroutine 里已开始的那次 report 收不回来，而汇总先写好、`defer stopMon()` 在函数返回后才执行。现 stop 改为**排空**（等待 monitor goroutine 退出，并在 tick 与 cancel 同时就绪时再确认一次取消），导出/导入的 6 处终点汇总（`export completed`、`parallel export completed`、结构-only 与常规 `import completed`、`parallel import completed`、`import aborted`）在写汇总**之前**显式停止，停止句柄提为结构体字段；间隔从硬编码 5 s 改为 `common.MonitorInterval` 变量（默认值不变），使回归测试能把计时器压到毫秒级。回归：`internal/common/stats_test.go` 把一条 report 钉在"正在写"的状态再 stop，旧实现必然产出 `[completed progress progress]`；`TestLive_ProgressNeverOutlivesCompletion` 以 8192 行表在 1 ms 间隔下跑单线程/并行 × 导出/导入四段，断言日志里确有进度记录且最后一条是对应汇总 |
 
 ## 项目结构
 
@@ -814,7 +815,7 @@ gomydump/
 │   │   ├── pool.go              # 连接池老化（ConnMaxIdleTime / ConnMaxLifetime）
 │   │   ├── usage.go             # 用法错误分类（退出码 2）
 │   │   ├── log.go               # 日志模块（java/text 两种格式、版本信息、启动日志）
-│   │   ├── stats.go             # 吞吐统计与速率计算
+│   │   ├── stats.go             # 吞吐统计、速率计算与定时进度计时器（停止时排空在写的记录）
 │   │   ├── password.go          # 密码加密/解密（AES-256-GCM）
 │   │   └── detect.go            # 服务器类型检测
 │   ├── export/

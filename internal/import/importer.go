@@ -29,6 +29,12 @@ type Importer struct {
 	// so an import that never reaches the INSERT stage costs no extra round-trip.
 	packetOnce    sync.Once
 	maxBatchBytes int64
+
+	// stopMonitor ends the periodic progress record. It is held on the struct
+	// because the summaries are logged by the import methods, which must stop the
+	// monitor first: a progress record after "import completed" reads as a run
+	// that is still going.
+	stopMonitor func()
 }
 
 // NewImporter creates a new Importer instance
@@ -74,7 +80,7 @@ func (imp *Importer) Close() error {
 func (imp *Importer) Import(ctx context.Context) error {
 	startTime := time.Now()
 	imp.stats = common.NewStats()
-	stopMon := common.StartMonitor(ctx, 5*time.Second, imp.stats, func(prev, curr common.StatsSnapshot) {
+	imp.stopMonitor = common.StartMonitor(ctx, common.MonitorInterval, imp.stats, func(prev, curr common.StatsSnapshot) {
 		// --quiet suppresses the periodic progress record. --messages receives the
 		// command log itself rather than a report of its own, so a suppressed
 		// record is absent from the file as well.
@@ -91,7 +97,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 			)
 		}
 	})
-	defer stopMon()
+	defer imp.stopMonitor()
 
 	// 输出配置参数
 	common.Logger.Info("import config",
@@ -289,6 +295,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 	}
 
 	if structureOnly {
+		imp.stopMonitor()
 		total := imp.stats.Snapshot()
 		common.Logger.Info("import completed",
 			"read", total.Processed,
@@ -329,7 +336,10 @@ func (imp *Importer) Import(ctx context.Context) error {
 		importErr = imp.importSingle(ctx, reader, targetColumns, startTime)
 	}
 	if importErr != nil {
-		// Aborted run: still surface what was accomplished before failing.
+		// Aborted run: still surface what was accomplished before failing. The
+		// progress ticker is stopped first, so the abort summary is the last
+		// record of the run.
+		imp.stopMonitor()
 		total := imp.stats.Snapshot()
 		common.Logger.Info("import aborted",
 			"read", total.Processed,
@@ -773,6 +783,11 @@ loop:
 
 	duration := time.Since(startTime)
 
+	// Stop the progress ticker before the summary and take its drained counters:
+	// a run must not end on a "progress" record, which reads as a job that is
+	// still going.
+	imp.stopMonitor()
+
 	total := imp.stats.Snapshot()
 	common.Logger.Info("import completed",
 		"read", total.Processed,
@@ -985,6 +1000,11 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 	}
 
 	duration := time.Since(startTime)
+
+	// Stop the progress ticker before the summary and take its drained counters:
+	// a run must not end on a "progress" record, which reads as a job that is
+	// still going.
+	imp.stopMonitor()
 
 	total := imp.stats.Snapshot()
 	common.Logger.Info("parallel import completed",

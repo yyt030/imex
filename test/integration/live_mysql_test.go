@@ -578,3 +578,87 @@ func TestLive_ImportCounters(t *testing.T) {
 	// insert from the server's point of view.
 	check("replace after the table was emptied", run(config.ImportModeReplace), counters{4, 0, 0})
 }
+
+// growTable doubles the table `times` times server-side, which is how a test
+// gets a run long enough for the progress ticker to fire repeatedly without
+// paying for a million client-side inserts. ids are shifted by the current row
+// count so the primary key stays unique.
+func (e *liveEnv) growTable(t *testing.T, table string, times int) {
+	t.Helper()
+	for i := 0; i < times; i++ {
+		var n int
+		if err := e.db.QueryRow("SELECT COUNT(*) FROM `" + table + "`").Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		e.exec(t, "INSERT INTO `"+table+"` (id, name, amount, note, created, payload, flag) "+
+			"SELECT id + ?, name, amount, note, created, payload, flag FROM `"+table+"`", n)
+	}
+}
+
+// TestLive_ProgressNeverOutlivesCompletion pins the record order operators
+// asked for: the summary is the last thing a run writes. A "… progress" line
+// after "… completed" reads as a job that is still going, and the window is
+// real — a report already in flight when the work finishes cannot be recalled.
+// The exporter and importer therefore stop the ticker before writing their
+// summary, and stopping waits for the goroutine to leave report. The interval is
+// a variable precisely so this runs on a 5 ms clock instead of the shipped 5 s.
+func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
+	env := newLiveEnv(t)
+	dir := t.TempDir()
+
+	src := env.liveTable(t, "order_src")
+	dst := env.liveTable(t, "order_dst")
+	env.exec(t, fmt.Sprintf(liveSourceDDL, src))
+	env.exec(t, "INSERT INTO `"+src+"` VALUES (1,'seed','1.0000','note','2026-01-01 00:00:00',NULL,0)")
+	env.growTable(t, src, 13) // 8192 rows: a run long enough for hundreds of ticks
+	env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
+
+	defer func(q bool, d time.Duration) {
+		common.Quiet = q
+		common.MonitorInterval = d
+	}(common.Quiet, common.MonitorInterval)
+	common.Quiet = false // progress records are what is under test
+	common.MonitorInterval = time.Millisecond
+
+	// --messages raises the level to INFO for the run and collects every record,
+	// so the ordering is checked on the same stream an operator reads.
+	file := filepath.Join(dir, "order.del")
+	env.export(t, exportOptions{table: src, format: "del", output: file, messages: filepath.Join(dir, "export1.log"), threads: 1})
+	assertLogEndsOn(t, filepath.Join(dir, "export1.log"), "export completed")
+
+	env.export(t, exportOptions{table: src, format: "del", output: filepath.Join(dir, "order-p.del"), messages: filepath.Join(dir, "export2.log"), threads: 4})
+	assertLogEndsOn(t, filepath.Join(dir, "export2.log"), "parallel export completed")
+
+	env.importFile(t, importOptions{input: file, format: "del", mode: config.ImportModeInsert, table: dst,
+		messages: filepath.Join(dir, "import1.log"), threads: 1, commitCount: 200, batchSize: 200})
+	assertLogEndsOn(t, filepath.Join(dir, "import1.log"), "import completed")
+
+	env.exec(t, "TRUNCATE TABLE `"+dst+"`")
+	env.importFile(t, importOptions{input: file, format: "del", mode: config.ImportModeInsert, table: dst,
+		messages: filepath.Join(dir, "import2.log"), threads: 4, commitCount: 200, batchSize: 200})
+	assertLogEndsOn(t, filepath.Join(dir, "import2.log"), "parallel import completed")
+}
+
+// assertLogEndsOn checks that a run's last log record is its summary and that
+// progress was actually being reported — otherwise the ordering it pins would
+// never have been exercised.
+func assertLogEndsOn(t *testing.T, path, want string) {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log %s: %v", path, err)
+	}
+	text := string(data)
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("log %s is empty", path)
+	}
+	if !strings.Contains(text, "progress") {
+		t.Fatalf("no progress record in %s, so the ordering was not exercised:\n%s", path, text)
+	}
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, want) {
+		t.Errorf("last record is %q, want the %q summary:\n%s", last, want, text)
+	}
+}

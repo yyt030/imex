@@ -20,6 +20,12 @@ type Exporter struct {
 	db        *sql.DB
 	sqlParser *SQLParser
 	stats     *common.Stats
+
+	// stopMonitor ends the periodic progress record. It is held on the struct
+	// because the completion summary is logged by the export methods, which must
+	// stop the monitor first: a progress record after "export completed" reads as
+	// a run that is still going.
+	stopMonitor func()
 }
 
 // NewExporter creates a new exporter instance
@@ -84,7 +90,7 @@ func (e *Exporter) Close() error {
 func (e *Exporter) Export(ctx context.Context) error {
 	startTime := time.Now()
 	e.stats = common.NewStats()
-	stopMon := common.StartMonitor(ctx, 5*time.Second, e.stats, func(prev, curr common.StatsSnapshot) {
+	e.stopMonitor = common.StartMonitor(ctx, common.MonitorInterval, e.stats, func(prev, curr common.StatsSnapshot) {
 		// --quiet suppresses the periodic progress record. --messages receives the
 		// command log itself rather than a report of its own, so a suppressed
 		// record is absent from the file as well.
@@ -97,7 +103,7 @@ func (e *Exporter) Export(ctx context.Context) error {
 			)
 		}
 	})
-	defer stopMon()
+	defer e.stopMonitor()
 
 	// 输出配置参数
 	common.Logger.Info("export config",
@@ -400,6 +406,11 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 
 	duration := time.Since(startTime)
 
+	// Stop the progress ticker before the summary and take its drained counters:
+	// a run must not end on a "progress" record, which reads as a job that is
+	// still going.
+	e.stopMonitor()
+
 	common.Logger.Info("export completed", "rows", rowCount, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", float64(rowCount)/duration.Seconds()))
 
 	return nil
@@ -521,6 +532,11 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	}
 
 	duration := time.Since(startTime)
+
+	// Stop the progress ticker before the summary and take its drained counters:
+	// a run must not end on a "progress" record, which reads as a job that is
+	// still going.
+	e.stopMonitor()
 
 	total := e.stats.Snapshot()
 	common.Logger.Info("parallel export completed", "rows", total.Processed, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "shards", len(shardRanges), "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", total.RatePerSec()))

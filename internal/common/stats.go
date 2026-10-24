@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -68,13 +69,28 @@ func (curr StatsSnapshot) IntervalRate(prev StatsSnapshot) float64 {
 	return float64(curr.Processed-prev.Processed) / dt
 }
 
+// MonitorInterval is how often StartMonitor reports a running job. The commands
+// use it for the periodic progress record; it is a variable so a test can make
+// the ticker fire on its own clock instead of waiting five seconds.
+var MonitorInterval = 5 * time.Second
+
 // StartMonitor spawns a goroutine that invokes report every `interval` with
 // the previous and current snapshots, until ctx is canceled or the returned
 // stop func is called. The first tick fires after `interval`; a final
 // report-on-complete is the caller's responsibility (via its completion log).
+//
+// stop cancels the monitor and waits for the goroutine to leave report, so
+// once it returns no progress record can still be written. Without that drain a
+// run that finished while a report was in flight (the writer was busy, so the
+// record took milliseconds to land) emitted "… progress" after "… completed" —
+// a log that ends by saying the run is still going. stop is idempotent and safe
+// to call from several places, so a caller can stop before its summary and keep
+// a deferred stop for the error paths.
 func StartMonitor(ctx context.Context, interval time.Duration, stats *Stats, report func(prev, curr StatsSnapshot)) (stop func()) {
 	monCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		prev := stats.Snapshot()
@@ -83,11 +99,21 @@ func StartMonitor(ctx context.Context, interval time.Duration, stats *Stats, rep
 			case <-monCtx.Done():
 				return
 			case <-ticker.C:
+				// Both cases can be ready at once, and select then picks at
+				// random: re-check cancellation so a tick that was already queued
+				// when stop() ran does not produce one more record.
+				if monCtx.Err() != nil {
+					return
+				}
 				curr := stats.Snapshot()
 				report(prev, curr)
 				prev = curr
 			}
 		}
 	}()
-	return cancel
+	var once sync.Once
+	return func() {
+		once.Do(cancel)
+		<-done
+	}
 }

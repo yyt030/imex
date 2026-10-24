@@ -857,8 +857,8 @@ SHOW VARIABLES LIKE 'version_comment';
    - sql：生成 CREATE TABLE + INSERT 语句
    - parquet：列式写入 Parquet 文件（普通列为可空 UTF-8 字符串，二进制列为原始 BYTE_ARRAY）
 5. 应用修饰选项（--char-del, --col-del, --default-charset 等）
-6. 全程记录运行日志（stderr，或 --messages 文件）
-7. 输出统计信息
+6. 每隔 5 秒记录一次进度（--quiet 时不记），全程写入 stderr 或 --messages 文件
+7. 停止进度计时器，再输出统计信息（汇总恒为最后一条记录）
 ```
 
 **并行导出流程（`--threads>1`）：**
@@ -874,6 +874,7 @@ SHOW VARIABLES LIKE 'version_comment';
    - 再按分片序号依次消费各自的队列（分片仍在并行产出，只是文件位置由这一个 goroutine 独占）
    - 最后由 SQLWriter 写出 footer（UNLOCK TABLES 等）
 6. 不产生任何临时文件
+7. 停止进度计时器，再写出 `parallel export completed` 汇总（汇总恒为最后一条记录）
 ```
 
 **并行导出不再写临时文件（`shard_stream.go`）：** 旧实现是每个分片写一份 `<output>.shard_<i>.tmp`，全部分片结束后再 `io.Copy` 拼接、删除临时文件。代价是**每个字节落盘两次**：实测 50 万行表（DEL 输出 124,903,023 B）单次并行导出的写入量为 487,920 × 512 B ≈ 238 MB，约输出体积的 2 倍，SQL 格式为 515,152 块 ≈ 251 MB 对 131,872,590 B（两轮重复测得同一组数字）；容量上意味着并行导出需要两倍的空闲空间，且中途被信号打断会在输出目录留下一堆 `<output>.shard_N.tmp`（实测 4 个共 33 MB）。现在分片直接把 `[]byte` 块交给按分片序号消费的那个 goroutine，写入量降到 243,952 / 257,568 块（等于输出体积按 512 B 向上取整，写放大归零），输出目录里只有最终文件本身。字节序列与旧实现**逐字节一致**（DEL/SQL 两种格式、同一库同一时刻分别与旧二进制比对），导出内容与单线程导出、以及导入回读的行集（count + 顺序无关 CRC 和）也都一致。
@@ -920,8 +921,8 @@ SHOW VARIABLES LIKE 'version_comment';
    - sql：解析并执行 SQL 语句
    - parquet：读取 Parquet 列式数据
 5. 应用修饰选项（--skip-count, --row-count, --commit-count 等）
-6. 全程记录运行日志（stderr，或 --messages 文件）
-7. 输出统计信息
+6. 每隔 5 秒记录一次进度（--quiet 时不记），全程写入 stderr 或 --messages 文件
+7. 停止进度计时器，再输出统计信息（汇总恒为最后一条记录）
 ```
 
 **并行导入流程（`--threads>1`）：**
@@ -929,7 +930,7 @@ SHOW VARIABLES LIKE 'version_comment';
 1. 单个 reader goroutine 读取文件，按 --commit-count 与字节上限分批
 2. 多个 worker goroutine 通过有界 channel 接收批次，各自独立连接/事务
 3. 每个 worker 构建多行参数化 INSERT 并执行
-4. 汇总统计信息
+4. 全部 worker 汇合后停止进度计时器，再写出汇总（汇总恒为最后一条记录）
 ```
 
 ### 7.4 导入攒批字节上限（`batchcap.go`）
@@ -1038,7 +1039,7 @@ DEL 与 SQL 导入不再使用 `bufio.Scanner`（有 token 长度上限 10 MB）
 
 | 项目 | 要求 |
 |------|------|
-| 进度输出 | 导出、导入均每隔 5 秒打印一次进度：已处理条数、总速率、区间速率、已用时长；`--quiet` / `GOMYDUMP_QUIET=1` 禁止定时进度日志（配置、结束统计、ERROR 仍输出；`--messages` 文件同样无进度行） |
+| 进度输出 | 导出、导入均每隔 5 秒打印一次进度：`rate` 是**自开始以来的总速率**（已处理 ÷ 已用时长），`interval_rate` 是**上一个进度点到这一个进度点之间的区间速率**（两次快照之差），前者平滑、后者反映当前吞吐与抖动；另打印已用时长。`--quiet` / `GOMYDUMP_QUIET=1` 禁止定时进度日志（配置、结束统计、ERROR 仍输出；`--messages` 文件同样无进度行）。结束汇总（`completed`/`aborted`）是该次运行的**最后一条记录**：写汇总之前先停计时器，停止会等待正在写的那条进度落笔，因此汇总之后不会再出现进度行 |
 | 日志顺序 | 版本横幅（version/build_time/git_commit/go_version/command）作为运行首行输出，其后为命令启动与配置参数；`version` 子命令例外——它只向标准输出打印版本四行，不写任何日志（`help` 子命令仍走横幅）|
 | 错误输出 | 命令失败统一以 `level=ERROR msg="command failed"` 日志记录输出，与其它诊断格式一致，不再单独打印裸 `Error:` 行 |
 | 导出行数 | 按实际写入文件的行数统计（含单线程与并行分片，统一取共享计数快照） |
@@ -1088,7 +1089,7 @@ gomydump/
 │   ├── common/
 │   │   ├── util.go            # DSN 构建（超时/字符集/会话变量注入）与通用工具
 │   │   ├── usage.go           # 用法错误类型（Usagef / IsUsageError），退出码 2 的依据
-│   │   ├── stats.go           # 吞吐统计与速率计算（rows/sec、字节数、耗时）
+│   │   ├── stats.go           # 吞吐统计、速率计算与定时进度计时器（停止时排空在写的记录）
 │   │   ├── colkind.go         # 列类型分类（修饰选项/Parquet 二进制判定共用）
 │   │   ├── sessionvars.go     # 会话变量解析与 DSN 注入（--session-var）
 │   │   ├── sqlpreview.go      # 失败 SQL 脱敏回显（--echo-sql-values）
@@ -1130,7 +1131,7 @@ gomydump/
 └── README.md
 ```
 
-另有 22 个包内 `*_test.go`（`internal/common` 6、`internal/export` 7、`internal/import` 9），加上 `cmd` 3、仓库根 1、集成 3，全仓库共 29 个测试文件，清单见十一节。
+另有 23 个包内 `*_test.go`（`internal/common` 7、`internal/export` 7、`internal/import` 9），加上 `cmd` 3、仓库根 1、集成 3，全仓库共 30 个测试文件，清单见十一节。
 
 ---
 
@@ -1305,12 +1306,12 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | `cmd/cli_matrix_test.go` | 6 | 参数组合矩阵与退出码契约：DEL/SQL/parquet 专属选项互斥、`--log-format` 标志与环境变量、必填项缺失、`encrypt` 位置参数个数（越界为用法错误 2、密钥缺失仍为运行时 1）| `make test` |
 | `cmd/validate_fuzz_test.go` | 4 fuzz | 边界校验函数（batch-size、pipeline-buffer、statement-size、threads）对畸形输入不 panic | `make test` |
 | `cmd/version_log_test.go` | 2 | `version` 子命令不写日志记录（stdout/stderr 捕获后断言），`run` 横幅仍照常记录 | `make test` |
-| `internal/common/*_test.go`（6 个文件）| 27 | 瞬态错误判定、日志单行与切布局保持级别、日志文件 sink（挂载后接管 stderr、关闭后归还、并发写入不交叉、替换与失败路径）、重试退避与取消、会话变量解析与 DSN 注入、失败 SQL 脱敏回显、DSN 构建 | `make test` |
+| `internal/common/*_test.go`（7 个文件）| 29 | 瞬态错误判定、日志单行与切布局保持级别、日志文件 sink（挂载后接管 stderr、关闭后归还、并发写入不交叉、替换与失败路径）、进度计时器 stop 排空在飞的记录且二次 stop 不死锁、重试退避与取消、会话变量解析与 DSN 注入、失败 SQL 脱敏回显、DSN 构建 | `make test` |
 | `internal/export/*_test.go`（7 个文件）| 62 | DEL/SQL/Parquet 写入器转义与攒批、分片边界精确运算与 hint 保留、hex-blob 判定、并行导出流式写出的 header/LOCK 配对与分块顺序（`exporter_stream_test.go`）、分片字节队列的语义（`shard_stream.go`：任意写入切分后重组逐字节一致、块不超上限、队列满时背压、消费端停止后生产端被 `shard output consumer stopped` 解除阻塞、ctx 取消同样解除、Close 幂等且刷出尾部、队列深度按分片数均分且内存有界）| `make test` |
 | `internal/import/*_test.go`（9 个文件）| 36 + 1 fuzz + 8 bench | 攒批字节上限与 65535 占位符、DEL/SQL 读取器回读、无上限记录读取、会话重连回放与空闲提交、位置映射列数校验、`inserted`/`updated`/`unchanged` 拆分（含 affected 读不到与超限钳制）；DEL 读取器重写以差分方式守住语义——保留改动前的 `parseLine`/`scanRows` 为参考实现，用 28 个手写用例 + 4000 行随机语料 × 6 套定界符配置逐字段比对，配 `FuzzDelReaderParse` 持续模糊，另有空 `--col-del` 的超时守卫用例（`del_reader_equiv_test.go`、`del_reader_test.go`）；`del_reader_bench_test.go` 用 2 万行、贴近导出器真实产物（全字段带引号、空串与 NULL 可区分、二进制列裸 `0x`、引号内含 `||`/`;`）的确定性语料覆盖整行读取、纯分帧、纯解析三段 | `make test`（bench 用 `go test -run '^$' -bench . ./internal/import`，fuzz 用 `-fuzz FuzzDelReaderParse`）|
 | `main_test.go` | 1 | go/ast 静态守卫：全部 logger 调用消息首字母小写且单行（防日志词汇回归）| `make test` |
 | `test/integration/roundtrip_test.go` | 10 | 离线往返（写入器→读取器）：转义文本、每条语句一个物理行、`--statement-size` 攒批、`0x` 二进制字面量、MySQL 文本值与 HEX 一致、DEL 引号/反斜杠两种模式、看似十六进制的文本不被误解码、单行 INSERT | `make test` |
-| `test/integration/live_mysql_test.go` | 5 | 真实 MySQL 端到端：三种格式往返、并行导出与并行导入、四种导入模式、列映射、导入行数拆分对真实服务端 `RowsAffected` 的断言；`--messages` 日志文件随用例断言（记录齐全、无 `SQL3xxxN`、每行都是日志） | `GOMYDUMP_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/db' make test-live`，未设置该变量时自动跳过 |
+| `test/integration/live_mysql_test.go` | 6 | 真实 MySQL 端到端：三种格式往返、并行导出与并行导入、四种导入模式、列映射、导入行数拆分对真实服务端 `RowsAffected` 的断言；`--messages` 日志文件随用例断言（记录齐全、无 `SQL3xxxN`、每行都是日志）；进度记录不得晚于结束汇总（单线程与并行 × 导出与导入，计时器压到 1 ms） | `GOMYDUMP_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/db' make test-live`，未设置该变量时自动跳过 |
 | `test/integration/option_matrix_test.go` | 12 | 编译出真实二进制后用 argv 跑交叉矩阵：DEL 布局修饰符的导出/导入成对性、`--no-col-names` 无表头配对歧义、逐字写入模式的拒绝与残留文件清理、SQL 攒批/单行 INSERT 与 `--statement-size` 上界、并行 DEL 逐字节等于串行而并行 SQL 只多分片边界的语句头（按头数与字节差精确断言）、日期时间格式的对称性与精度截断、`--no-data`/`--no-create` × `--mode create`、`--skip-count`/`--row-count` × 线程/批量/提交、`--messages`/`-m` 在三格式与并行路径下等于命令行日志且终端静默（含 `-m` 短选项、`--log-format text`、`--log-level error`、失败记录）、`--no-replace` 哨兵文件存活、`--default-charset` 与二进制列 0x 自动切换 | 同上（`TestMain` 先 `go build` 一次，全部用例复用该二进制） |
 
 `make test` 与 `make test-live` 固定 `CGO_ENABLED=1 go test -race`，这是 `-race` 的要求，与发布构建的 `CGO_ENABLED=0` 无关。
@@ -1428,3 +1429,4 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 42 | 交叉选项 / 交叉命令行为矩阵，并修复它暴露的两个数据完整性缺陷 | 此前 CLI 侧只有 `cmd/cli_matrix_test.go` 钉住"哪些组合被接受或被拒"，库侧只有 `live_mysql_test.go` 走 API；**"选项被接受之后是否真的生效、导出与导入两侧是否对称"没有覆盖**。新增 `test/integration/option_matrix_test.go`（12 个测试入口、`TestMain` 一次性 `go build` 出真实二进制后用 argv 驱动，故 flag 解析、校验、config 装配、写入器、读取器全程在链路上）：DEL 布局修饰符成对往返（`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-char-del`/`--no-escape`/`--no-col-names`，含 `\t`、`\r\n` 转义写法）、逐字写入模式对不可表示数据的拒绝、SQL 攒批与单行 INSERT 的语句数/字节上界、`--threads` 的输出确定性、`--date-fmt`/`--timestamp-fmt`、`--no-data`/`--no-create` × `--mode create`、`--skip-count`/`--row-count` × 线程/`--batch-size`/`--commit-count`、`--messages` 在三格式与并行路径下的 SQL3104N/SQL3110N、`--no-replace` 哨兵存活、`--default-charset` × 二进制列 0x 自动切换。矩阵首轮跑出 3 个真缺陷：① **单线程导出失败留下半截产物**（20 万行表被 `--no-char-del` 拒于末行时残留 21,233,664 B 文件，并行路径早已删除），修复为 `exportSingle` 在 `os.Create` 之后注册共用的 `removeIncompleteOutput`（`exportParallel` 改为复用同一方法），注册点在处理之后保证创建前失败不会误删既有文件；② **无表头文件配位置 `-c` 静默丢首行**（`--no-col-names` 导出 + 只给 `-c` 导入时 3 行只进 2 行且退出 0，同一命令用于带表头文件又是对的），因文件自身无法区分两者、改名导入也走同一路径，故不改结果只补齐可见性：被当表头丢弃的那行若与目标表列名全不匹配，记 warn 并写入消息文件，说明加 `--no-col-names` 才不漏行；③ `--columns` 缺失时的报错只提示 `-c`，未说明无表头需成对使用，已在 7.4 与 README 的标志表补"成对使用"。同时确认三项**属既有行为而非缺陷**并写进文档：并行 SQL 输出在分片边界多出 `threads-1` 个 INSERT 头（数据一致，DEL 则逐字节一致，已按头数与字节差精确钉住）、`--timestamp-fmt` 省略 `ss` 会把秒截为 00（用户选定的精度，现固定其余字段不得变动）、非 utf8mb4 连接字符集对不可映射字符由服务端替换为 `?`（文本有损、二进制因 0x 自动切换无损）。另记录两项待用户定级的可用性问题：认证/字符集/库名这类永久错误被 ping 重试 3 次并 6 s 才失败，且错误前缀 `failed to ping database after 3 attempts` 掩盖真实原因；`--no-create` 文件配 `--mode create` 直接撞服务端 1146 而非事先提示文件不含建表语句。`make test`（`-race`）与真实库 `go test -race -count=1 ./test/integration` 全通过，测试资产升至 30 文件 / 161 `Test*`（+1 `TestMain`）/ 5 `Fuzz*` / 8 `Benchmark*`，九节项目结构、11.1 清单、7.2 失败与中断语义、7.4 位置映射、5.3 日志表、README 并行导出与 `--no-col-names` 说明同步 |
 | 43 | `--messages` 改为命令行日志文件，删除 DB2 风格消息报告 | 用户指出 `--messages` 提供的应当是**命令行的日志打印**，而不是 `SQL3xxxN` 样例日志，且带上该选项后所有日志都要进文件。实现落在日志层而不是命令层：`internal/common/log.go` 新增进程级 sink（带互斥锁；`os.Stderr` 在 `Write` 时解析而非构造时捕获，因此既有的 stderr 重定向测试与 `--echo-sql-values` 行为不变），`java` 与 `text` 两种布局都改经该 sink，`OpenLogFile(path)` 把文件挂到 sink 上（同一条记录写完 stderr 再写文件）、`CloseLogFile()` 摘下并关闭；根命令 `PersistentPreRunE` 在应用 `--log-format`、打印版本横幅**之前**打开文件，故横幅恒为文件首行、用法错误也进文件，`cmd.Execute()` 在记录完 `command failed` 之后关闭，故收尾错误同样在文件里。删除 `internal/common/message.go`（`MessageWriter` 及其 `SQL3104N/3105N/3107N/3109N/3110N` 与 `# Completed/# Duration/# Rate` 页脚）与 `message_test.go`，导出器 15 处、导入器 20 处（含 `batchcap.go` 2 处）消息调用全部移除：每条告警与失败本来就有对应的 `common.Logger` 记录，失败还会由 `Execute` 统一记成 `command failed`，因此不丢信息，只去掉重复的第二份；`SQLWriter.SetWarningFunc` 与 `Exporter.warningFunc`/`messageTableName` 一并删除。选项语义变更后 `-m` 短选项沿用（`export`、`import` 两侧均已注册），帮助文本改为「Write every log record to this file as well as to stderr」；`--quiet` 现在同样作用于文件（不再有「消息文件是显式产物」的例外）；`config.ExportConfig.Messages`/`ImportConfig.Messages` 随实现移除，日志文件是进程级 CLI 关注点而非库配置项。实测：`-m` 导出失败时文件与 stderr `diff` 逐字节一致（4 行含版本横幅、`export config`、`query failed` 真实原因与 `command failed` 包装）；`--log-level error` 下成功导出文件只剩横幅；`--log-format text` 布局随 stderr 一起切换。测试：`live_mysql_test.go` 的 `--messages` 断言改为经 `common.OpenLogFile` 走同一 sink，并断言每条告警与失败在日志里都有对应记录、文件里不再出现 `SQL31` 码；`option_matrix_test.go` 的 `--messages` 用例重写为 5 种格式/并行组合下「文件等于命令行日志」（首行为横幅、含 `export config`/`export completed`/`rows=10`、每一行都出现在 stderr 上），另加 `-m` 短选项、`--log-format text`、`--log-level error`、失败记录四个子用例。文档：1.2、导出/导入标志表、2.3 整节改写为「日志文件（`--messages` / `-m`）」、3.3.1 静默、四节 DB2 映射（显式标注语义不同）、导出导入流程步骤、5.3 功能表、九节结构与测试文件计数、11.1/11.2 清单同步，README 同步；`docs/cli-oracle.txt` 保持冻结基线并在头注登记这一处有意差异。`make test`（`-race`）与真实库 `go test -race -count=1 ./test/integration` 全通过，测试资产 29 文件 / 161 `Test*`（+1 `TestMain`）/ 5 `Fuzz*` / 8 `Benchmark*`（`internal/common` 少一个文件、少 5 个 `MessageWriter` 用例，新增 5 个 sink 用例：文件与 stderr 逐字节相等、闭包后脱钩且二次关闭无错、早建好的 text 布局也跟随 sink、200 条并发记录不拆行、替换路径只写最新文件、创建失败时报出路径且不影响 stderr）。**本行是中间态**：该实现把记录同时写 stderr 与文件，下一行（44）改为只写文件 |
 | 44 | `--messages` 改为独占：带 `-m` 时终端不再打印 | 第 43 行留下的选择题有了答案——用户要求"带 `-m` 就只进文件、终端不再打印"。改动只在 `internal/common/log.go` 的 `sink.Write`：文件挂载时**只写文件**、不再写 stderr，未挂载时照旧写 stderr（`os.Stderr` 仍在写入时解析，logger 的重定向测试不受影响），互斥锁保留（并行路径的两个协程仍会同时写同一个文件，交叉写入会毁掉记录）。`CloseLogFile` 先脱钩再关闭，因此"关闭失败"这条 ERROR 是唯一回到 stderr、不落进文件的记录，不会丢。帮助文本由「Write every log record to this file as well as to stderr」改为「Redirect the command log to this file; with it, nothing is printed to stderr」，`--echo-sql-values` 的告警措辞改为"写入 stderr 或 `--messages` 文件"，导出/导入两处进度注释同步。实测（真实二进制 + 本地 MariaDB）：带 `-m` 的成功导出 stdout 与 stderr 均 0 字节、文件 4 条记录、退出 0；带 `-m` 的失败导出同样 0 字节、文件 5 条含 `query failed` 与 `command failed`、退出码仍为 1；同一条失败命令去掉 `-m` 的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同；`--log-level error` 下文件只剩横幅且横幅不回终端；`--log-format text` 同样只进文件。两类例外如实记录并在文档中说明：未知选项在 `PersistentPreRunE` **之前**失败，文件尚未打开，错误只上 stderr 且不建文件；`-m` 路径无法创建时报 `failed to create message file <path>: ...`（stderr，退出 1）。测试：`TestLogFileMirrorsStderr` 改名 `TestLogFileTakesOverFromStderr`，断言 stderr 为空、文件恰有 3 条、关闭后记录回到 stderr 且文件不再增长；text 布局用例改为"处理器早于挂载也只得写文件"；矩阵 `--messages` 用例把"每一行都出现在 stderr"换成"stdout+stderr 为空"（5 种格式/并行组合 + `-m` 短选项 + 失败记录 + 级别过滤四处各加一条静默断言）；`--no-col-names` 对称用例的 WARN 断言从输出移到文件，并加终端必须为空的断言。测试资产数量不变（29 文件 / 161 `Test*` / 1 `TestMain` / 5 `Fuzz*` / 8 `Benchmark*`）。文档：1.2 特性、导出/导入标志表、2.3 引言与行为约定（新增"终端"与"例外"两行）、3.3.1 静默、4 节 DB2 映射、6/7 节流程步骤、5.3 两处功能表、11.1/11.2 清单，README 同步 |
+| 45 | 进度记录不再晚于结束汇总出现，并澄清 `rate` 与 `interval_rate` | 用户实测发现 `completed` 之后还会打印 `progress`，即日志以一个"还没跑完"的记录收尾。根因在计时器的停止方式：`common.StartMonitor` 返回的是 `context.CancelFunc`，`defer stopMon()` 只发出取消信号，goroutine 里**已经开始的那次 report 收不回来**；而汇总在 `Export`/`Import` 返回之前写好，于是"取消之后才落笔"的进度行必然排在 `completed`/`aborted` 之后。两处一起修：① `internal/common/stats.go` 的 stop 改为**排空**——`once.Do(cancel)` 后等待 monitor goroutine 退出（`done` channel），并二次确认 `monCtx.Err()`，避免 select 同时就绪时随机挑到 `ticker.C` 再写一条；stop 幂等，可"汇总前停一次 + defer 兜底一次"。② 五个终点汇总（`export completed`、`parallel export completed`、结构-only `import completed`、`import completed`、`parallel import completed`）与 `import aborted` 之前显式 `stopMonitor()`，停止句柄从 `Export`/`Import` 的局部变量提升为 `Exporter.stopMonitor`/`Importer.stopMonitor` 字段（汇总写在子方法里）。③ 间隔由硬编码 `5*time.Second` 改为 `common.MonitorInterval` 变量（默认值不变，测试压到 1 ms 才能反复触发计时器）。同一提交顺带澄清两个速率的口径并写进 5.3：`rate` 是自开始以来的**总速率**（已处理 ÷ 已用时长，平滑），`interval_rate` 是**相邻两个进度点之间的区间速率**（两次快照之差，反映当前吞吐与抖动），二者无倍率关系，长跑时以 `interval_rate` 判断"此刻快不快"、以 `rate` 判断"整体多少"。测试：新增 `internal/common/stats_test.go`（2 用例）——把一次 report 钉在"正在写"的状态再 stop，断言汇总之后没有任何记录追加、最后一条是汇总、二次 stop 不死锁；该用例在旧实现下**必然失败**（实测输出 `[completed progress progress]`），是这一缺陷的回归钉子。`test/integration/live_mysql_test.go` 新增 `TestLive_ProgressNeverOutlivesCompletion`：8192 行表（`growTable` 服务端翻倍造数）在 1 ms 间隔下跑单线程导出、并行导出、单线程导入、并行导入四段，断言日志里确有进度记录且最后一条是对应汇总。`make test`（`-race`）与真实库 `go test -race -count=1 ./test/integration` 全通过，测试资产 30 文件 / 164 `Test*`（+1 `TestMain`）/ 5 `Fuzz*` / 8 `Benchmark*`（`internal/common` 7 文件 29 个、live 6 个），九节结构与计数、5.3 进度行、6/7 节流程步骤同步，README 补进度段落与修复记录 |
