@@ -1,8 +1,10 @@
 # CLI surface extracted from shipped binary commit 4934dd2
-# Frozen baseline, kept verbatim as a regression reference. Two intentional
-# deltas vs the current tree: --statement-size now defaults to 8388608 (8 MiB)
-# and export gained --single-row-insert. Diff `gomydump <cmd> --help` against
-# this file and expect only those lines.
+# Frozen baseline, kept verbatim as a regression reference. Three intentional
+# deltas vs the current tree: --statement-size now defaults to 8388608 (8 MiB),
+# export gained --single-row-insert, and --messages/-m changed meaning (help is
+# now "Write every log record to this file as well as to stderr"; the option no
+# longer writes a DB2-style SQL3xxxN report, it receives the command log). Diff
+# `gomydump <cmd> --help` against this file and expect only those lines.
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.

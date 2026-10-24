@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -113,7 +114,10 @@ func (e *liveEnv) export(t *testing.T, opts exportOptions) {
 	cfg.Format = opts.format
 	cfg.Query = "SELECT * FROM `" + opts.table + "`"
 	cfg.Threads = opts.threads
-	cfg.Messages = opts.messages
+
+	if opts.messages != "" {
+		defer teeLogToFile(t, opts.messages)()
+	}
 
 	exp, err := export.NewExporter(cfg)
 	if err != nil {
@@ -150,7 +154,11 @@ func (e *liveEnv) importFileStats(t *testing.T, opts importOptions) common.Stats
 	cfg.Mode = opts.mode
 	cfg.Table = opts.table
 	cfg.Columns = opts.columns
-	cfg.Messages = opts.messages
+
+	if opts.messages != "" {
+		defer teeLogToFile(t, opts.messages)()
+	}
+
 	if opts.threads > 0 {
 		cfg.ImportThreads = opts.threads
 	}
@@ -288,8 +296,8 @@ func TestLive_RoundTripEveryFormat(t *testing.T) {
 			env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
 
 			file := filepath.Join(dir, "roundtrip."+format)
-			exportMsg := filepath.Join(dir, "export-"+format+".msg")
-			importMsg := filepath.Join(dir, "import-"+format+".msg")
+			exportMsg := filepath.Join(dir, "export-"+format+".log")
+			importMsg := filepath.Join(dir, "import-"+format+".log")
 
 			env.export(t, exportOptions{table: src, format: format, output: file, messages: exportMsg, threads: 1})
 			env.importFile(t, importOptions{
@@ -298,8 +306,8 @@ func TestLive_RoundTripEveryFormat(t *testing.T) {
 			})
 
 			assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
-			assertMessageFile(t, exportMsg, "# Export Messages", "SQL3104N", "SQL3110N")
-			assertMessageFile(t, importMsg, "# Import Messages", "SQL3109N", "SQL3110N")
+			assertMessageFile(t, exportMsg, "export config", "export completed")
+			assertMessageFile(t, importMsg, "import config", "import completed")
 		})
 	}
 }
@@ -462,6 +470,28 @@ func TestLive_ColumnMapping(t *testing.T) {
 	assertSameRows(t, []string{"1=one", "2=two"}, got)
 }
 
+// teeLogToFile points the --messages sink at path for the duration of a
+// library-level run. newLiveEnv leaves the global logger at ERROR to keep test
+// output readable, so the level has to come up for the file to hold the run's
+// records; the returned func closes the file and restores the harness level.
+func teeLogToFile(t *testing.T, path string) func() {
+	t.Helper()
+
+	if err := common.OpenLogFile(path); err != nil {
+		t.Fatalf("open log file: %v", err)
+	}
+	common.InitLogger(config.LogLevelInfo)
+	return func() {
+		if err := common.CloseLogFile(); err != nil {
+			t.Errorf("close log file: %v", err)
+		}
+		common.InitLogger(config.LogLevelError)
+	}
+}
+
+// assertMessageFile checks that a --messages file is exactly the run's command
+// log: the wanted records are present, no DB2-style report survives, and every
+// line is a log record in the default java layout.
 func assertMessageFile(t *testing.T, path string, wants ...string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -474,7 +504,23 @@ func assertMessageFile(t *testing.T, path string, wants ...string) {
 			t.Errorf("message file %s missing %q:\n%s", path, want, text)
 		}
 	}
+	if i := strings.Index(text, "SQL31"); i >= 0 {
+		end := i + 60
+		if end > len(text) {
+			end = len(text)
+		}
+		t.Errorf("message file %s still carries the DB2-style report: %s", path, text[i:end])
+	}
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if !logRecordLine.MatchString(line) {
+			t.Errorf("message file %s line is not a log record: %q", path, line)
+		}
+	}
 }
+
+// logRecordLine matches the java layout's fixed prefix:
+// "2026-01-02 15:04:05.123 [1234] INFO message ...".
+var logRecordLine = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[\d+\] [A-Z]+ `)
 
 // TestLive_ImportCounters asserts the inserted/updated/unchanged split against
 // a real server. Re-importing identical values used to be reported as

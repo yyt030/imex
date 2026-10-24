@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkg/errors"
+
 	"github.com/gomydump/internal/config"
 )
 
@@ -47,6 +49,74 @@ var (
 	// --log-format / GOMYDUMP_LOG_FORMAT.
 	LogFormat = "java"
 )
+
+// logSink is the single destination every log record goes through.
+var logSink = &sink{}
+
+// sink is the tee behind every log record: stderr always, plus the --messages
+// file while one is open.
+//
+// Both layouts hold this one value instead of an os.Stderr, so --messages can
+// add a file without rebuilding handlers that slog's text handler would pin to
+// a writer captured at construction. stderr itself is resolved inside Write
+// rather than stored, so reassigning os.Stderr — as the logger tests do — still
+// takes effect, exactly as it did when the handlers wrote os.Stderr directly.
+//
+// The mutex is needed in its own right: the progress monitor and the shard
+// producers log from different goroutines, and a record split across two
+// writers is a record lost.
+type sink struct {
+	mu sync.Mutex
+	f  *os.File // the --messages file, nil when the option was not given
+}
+
+func (s *sink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, err := os.Stderr.Write(p)
+	if err != nil || s.f == nil {
+		return n, err
+	}
+	if _, ferr := s.f.Write(p); ferr != nil {
+		return n, ferr
+	}
+	return n, nil
+}
+
+// OpenLogFile makes every subsequent log record go to path in addition to
+// stderr. The file is created and truncated, so the first record written after
+// this call is its first line — which is why the root command opens it before
+// printing the version banner. Opening a second file closes the first.
+func OpenLogFile(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return errors.Wrapf(err, "failed to create message file %s", path)
+	}
+	logSink.mu.Lock()
+	defer logSink.mu.Unlock()
+	if logSink.f != nil {
+		logSink.f.Close()
+	}
+	logSink.f = f
+	return nil
+}
+
+// CloseLogFile detaches and closes the message file. Detaching happens before
+// the close, so a record about a failed close still reaches the operator on
+// stderr instead of going into a handle that is already being torn down.
+func CloseLogFile() error {
+	logSink.mu.Lock()
+	f := logSink.f
+	logSink.f = nil
+	logSink.mu.Unlock()
+	if f == nil {
+		return nil
+	}
+	if err := f.Close(); err != nil {
+		return errors.Wrapf(err, "failed to close message file %s", f.Name())
+	}
+	return nil
+}
 
 func init() {
 	// Provide a usable default logger so early failures (before InitLogger runs
@@ -94,7 +164,7 @@ func newLogger(level config.LogLevel, format string) *slog.Logger {
 
 	opts := &slog.HandlerOptions{Level: slogLevel}
 	if format == LogFormatText {
-		return slog.New(slog.NewTextHandler(os.Stderr, opts))
+		return slog.New(slog.NewTextHandler(logSink, opts))
 	}
 	return slog.New(&javaHandler{level: slogLevel, pid: os.Getpid()})
 }
@@ -177,7 +247,7 @@ func (h *javaHandler) Handle(_ context.Context, r slog.Record) error {
 	})
 
 	buf.WriteByte('\n')
-	_, err := os.Stderr.Write(buf.Bytes())
+	_, err := logSink.Write(buf.Bytes())
 	buf.Reset()
 	return err
 }

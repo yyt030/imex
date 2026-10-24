@@ -41,8 +41,6 @@ type SQLWriter struct {
 	// up to statementSize.
 	singleRow      bool
 	oversizeWarned bool
-	// onWarning, when set, mirrors runtime warnings into the message file.
-	onWarning func(string)
 	// skipTableLocks suppresses LOCK TABLES/UNLOCK TABLES. Parallel export
 	// writes shard fragments that are concatenated later, and a lock statement
 	// per fragment would release the table lock in the middle of the dump.
@@ -269,18 +267,8 @@ func (s *SQLWriter) warnOversizedStatement(size int) {
 		return
 	}
 	s.oversizeWarned = true
-	msg := fmt.Sprintf("Single-row INSERT of %d bytes exceeds --statement-size %d and is written whole", size, s.statementSize)
 	common.Logger.Warn("single-row INSERT exceeds --statement-size and is written whole",
 		"statement_bytes", size, "statement_size", s.statementSize)
-	if s.onWarning != nil {
-		s.onWarning(msg)
-	}
-}
-
-// SetWarningFunc registers a callback used to mirror writer warnings into the
-// message file. It is optional; logging still happens regardless.
-func (s *SQLWriter) SetWarningFunc(fn func(string)) {
-	s.onWarning = fn
 }
 
 // flushBatch writes the current batch INSERT statement

@@ -47,7 +47,7 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.StringVarP(&exportCfg.Output, "output", "o", "", "Output file path (required)")
 	f.StringVarP(&exportCfg.Format, "format", "f", "del", "Output file format (del/sql/parquet)")
 	f.StringVarP(&exportCfg.Query, "query", "q", "", "SQL SELECT statement (required)")
-	f.StringVarP(&exportCfg.Messages, "messages", "m", "", "Message file path")
+	f.StringVarP(&messagesPath, "messages", "m", "", "Write every log record to this file as well as to stderr")
 	f.BoolVar(&exportCfg.NoReplace, "no-replace", false, "Refuse to overwrite an existing output file (default: overwrite)")
 
 	// DEL format modifiers

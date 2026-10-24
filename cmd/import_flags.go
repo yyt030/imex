@@ -47,7 +47,7 @@ func registerImportFlags(cmd *cobra.Command) {
 	f.StringVarP((*string)(&importCfg.Mode), "mode", "M", "insert", "Import mode (insert/insert_update/replace/create)")
 	f.StringVarP(&importCfg.Table, "table", "t", "", "Target table name")
 	f.StringVarP(&importCfg.Columns, "columns", "c", "", "Target column list (comma-separated) or mapping (file_col=table_col,...)")
-	f.StringVarP(&importCfg.Messages, "messages", "m", "", "Message file path")
+	f.StringVarP(&messagesPath, "messages", "m", "", "Write every log record to this file as well as to stderr")
 
 	// DEL format modifiers
 	f.StringVar(&importCfg.DelModifier.CharDel, "char-del", "\"", "String delimiter")

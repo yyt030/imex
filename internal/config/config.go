@@ -106,10 +106,9 @@ type Config struct {
 type ExportConfig struct {
 	Config
 
-	Output   string
-	Format   string // "del", "sql" or "parquet"
-	Query    string
-	Messages string
+	Output string
+	Format string // "del", "sql" or "parquet"
+	Query  string
 
 	// NoReplace refuses to overwrite an existing output file. The default is
 	// to overwrite (os.Create truncates).
@@ -143,12 +142,11 @@ type ExportConfig struct {
 type ImportConfig struct {
 	Config
 
-	Input    string
-	Format   string // "del", "sql" or "parquet"
-	Mode     ImportMode
-	Table    string
-	Columns  string // Target column list (comma-separated) or mapping (file_col=table_col,...)
-	Messages string
+	Input   string
+	Format  string // "del", "sql" or "parquet"
+	Mode    ImportMode
+	Table   string
+	Columns string // Target column list (comma-separated) or mapping (file_col=table_col,...)
 
 	DelModifier DelModifier
 

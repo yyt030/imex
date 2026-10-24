@@ -307,13 +307,14 @@ func TestOptionMatrixDELModifiers(t *testing.T) {
 // --no-col-names pair are not matched. The file cannot say whether its first
 // record is a header or data, so positional --columns keeps the header behaviour
 // for normal dumps and the tool's only safe move is to report the record it
-// dropped: a warning naming the fields, mirrored into the message file.
+// dropped: a WARN record naming the fields, which --messages now writes to
+// the log file like every other record.
 func TestOptionMatrixNoColNamesSymmetry(t *testing.T) {
 	env := newCLILive(t)
 	src, dst := env.makePair(t, "ncol")
 
 	file := env.cliExport(t, src, "del", "no_col_names.del", "--no-col-names")
-	msg := filepath.Join(env.dir, "no-col-names.msg")
+	msg := filepath.Join(env.dir, "no-col-names.log")
 	out, code := env.runImportCLI(t, "-i", file, "-t", dst, "-f", "del",
 		"--columns", "id,name,amount,note,created,payload,flag", "--messages", msg,
 		"--log-level", "warn")
@@ -710,46 +711,147 @@ func TestOptionMatrixSliceOptions(t *testing.T) {
 	}
 }
 
-// TestOptionMatrixMessages asserts that --messages produces a usable log for
-// every format and for the parallel path, not just the plain serial one.
+// TestOptionMatrixMessages pins what --messages/-m produces: the file is the
+// command log itself — the same records, in the same order, in the same layout
+// as stderr — and not the DB2-style SQL3xxxN report the option used to write.
 func TestOptionMatrixMessages(t *testing.T) {
 	env := newCLILive(t)
 	src, _ := env.makePair(t, "msg")
 
 	cases := []struct {
+		name   string
 		format string
 		flags  []string
-		name   string
+		done   string
 	}{
-		{"del", nil, "单线程 DEL"},
-		{"sql", nil, "单线程 SQL"},
-		{"parquet", nil, "单线程 Parquet"},
-		{"del", []string{"--threads", "4"}, "并行 DEL"},
-		{"sql", []string{"--threads", "4"}, "并行 SQL"},
+		{"单线程 DEL", "del", nil, "export completed"},
+		{"单线程 SQL", "sql", nil, "export completed"},
+		{"单线程 Parquet", "parquet", nil, "export completed"},
+		{"并行 DEL", "del", []string{"--threads", "4"}, "parallel export completed"},
+		{"并行 SQL", "sql", []string{"--threads", "4"}, "parallel export completed"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			slug := safeFileName(tc.name)
-			msg := filepath.Join(env.dir, "msg-"+slug+".msg")
-			out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`",
+			msg := filepath.Join(env.dir, "msg-"+slug+".log")
+			args := []string{"-q", "SELECT * FROM `" + src + "`",
 				"-f", tc.format, "-o", filepath.Join(env.dir, "msg-"+slug+"."+tc.format),
-				"--messages", msg)
+				"--messages", msg, "--log-level", "info"}
+			args = append(args, tc.flags...)
+			out, code := env.runExportCLI(t, args...)
 			if code != 0 {
 				t.Fatalf("export failed: exit %d\n%s", code, out)
 			}
+
 			text := readFile(t, msg)
-			// SQL3104N opens the run and SQL3110N closes it with the row count.
-			for _, want := range []string{"SQL3104N", "SQL3110N"} {
+			lines := splitLines(text)
+			if len(lines) == 0 {
+				t.Fatalf("message file is empty")
+			}
+			// The version banner is the first record of a run, so it must be the
+			// file's first line: the file starts where the run starts.
+			if !strings.Contains(lines[0], "gomydump starting") || !strings.Contains(lines[0], "command=export") {
+				t.Errorf("first line is not the banner: %q", lines[0])
+			}
+			for _, want := range []string{"export config", tc.done, "rows=10"} {
 				if !strings.Contains(text, want) {
-					t.Errorf("message file lacks %s:\n%s", want, text)
+					t.Errorf("message file lacks %q:\n%s", want, text)
 				}
 			}
-			if !strings.Contains(text, "\"10\"") {
-				t.Errorf("message file does not report the 10 exported rows:\n%s", text)
+			if strings.Contains(text, "SQL31") {
+				t.Errorf("the DB2-style report is still being written:\n%s", text)
+			}
+			// Every line is a log record in the default layout, and every one of
+			// them is also on the command line: the file is a copy of the run's
+			// log, not a second, different account of it.
+			for _, line := range lines {
+				if !logRecordLine.MatchString(line) {
+					t.Errorf("not a log record: %q", line)
+				}
+				if !strings.Contains(out, line) {
+					t.Errorf("message file line never appeared on the command line: %q", line)
+				}
 			}
 		})
 	}
+
+	t.Run("短选项-m", func(t *testing.T) {
+		msg := filepath.Join(env.dir, "shorthand.log")
+		out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`",
+			"-f", "del", "-o", filepath.Join(env.dir, "shorthand.del"),
+			"-m", msg, "--log-level", "info")
+		if code != 0 {
+			t.Fatalf("export failed: exit %d\n%s", code, out)
+		}
+		text := readFile(t, msg)
+		lines := splitLines(text)
+		if len(lines) == 0 || !strings.Contains(lines[0], "gomydump starting") {
+			t.Errorf("-m must open the log file before the banner: %q", text)
+		}
+	})
+
+	t.Run("布局跟随log-format", func(t *testing.T) {
+		msg := filepath.Join(env.dir, "textfmt.log")
+		out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`",
+			"-f", "del", "-o", filepath.Join(env.dir, "textfmt.del"),
+			"--messages", msg, "--log-level", "info", "--log-format", "text")
+		if code != 0 {
+			t.Fatalf("export failed: exit %d\n%s", code, out)
+		}
+		text := readFile(t, msg)
+		if !strings.Contains(text, `msg="gomydump starting"`) || !strings.Contains(text, "level=INFO") {
+			t.Errorf("--log-format text must reach the file:\n%s", text)
+		}
+		if strings.Contains(text, "SQL31") {
+			t.Errorf("the DB2-style report is still being written:\n%s", text)
+		}
+	})
+
+	t.Run("级别过滤同样生效", func(t *testing.T) {
+		msg := filepath.Join(env.dir, "quiet.log")
+		out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`",
+			"-f", "del", "-o", filepath.Join(env.dir, "quiet.del"),
+			"--messages", msg, "--log-level", "error")
+		if code != 0 {
+			t.Fatalf("export failed: exit %d\n%s", code, out)
+		}
+		// --log-level applies to the file as it does to stderr, and a successful
+		// run has no ERROR record. The one line left is the version banner: it is
+		// printed by the root hook before RunE applies --log-level, so it is the
+		// only INFO record any level can still see.
+		lines := splitLines(readFile(t, msg))
+		if len(lines) != 1 || !strings.Contains(lines[0], "gomydump starting") {
+			t.Errorf("--log-level error must leave only the banner, got: %#v", lines)
+		}
+	})
+
+	t.Run("失败记录进文件", func(t *testing.T) {
+		msg := filepath.Join(env.dir, "failed.log")
+		out, code := env.runExportCLI(t,
+			"-q", "SELECT * FROM `no_such_table_msg`",
+			"-f", "del", "-o", filepath.Join(env.dir, "failed.del"),
+			"-m", msg, "--log-level", "info")
+		if code == 0 {
+			t.Fatalf("export of a missing table must fail\n%s", out)
+		}
+		text := readFile(t, msg)
+		if !strings.Contains(text, "command failed") {
+			t.Errorf("the failure must be recorded in the file:\n%s", text)
+		}
+		if !strings.Contains(text, "no_such_table_msg") {
+			t.Errorf("the file must carry the real cause, not just the wrapper:\n%s", text)
+		}
+	})
+}
+
+// splitLines turns a log file into records, dropping the trailing newline.
+func splitLines(text string) []string {
+	text = strings.TrimRight(text, "\r\n")
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
 }
 
 // TestOptionMatrixNoReplace checks that refusing to overwrite leaves the old

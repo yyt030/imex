@@ -24,6 +24,12 @@ var (
 	noSQLTag      bool
 )
 
+// messagesPath is the --messages/-m value. The flag itself is registered on the
+// export and import subcommands (see registerExportFlags/registerImportFlags),
+// which both bind it here, so the root hook can open the log file before any
+// command runs.
+var messagesPath string
+
 var rootCmd = &cobra.Command{
 	Use:   "gomydump",
 	Short: "MySQL logical backup and restore tool",
@@ -35,7 +41,7 @@ Features:
   - Import data from DEL, SQL or Parquet format
   - Customizable delimiters and format options
   - Secure password encryption (AES-256-GCM)
-  - Message file logging
+  - Command log file (--messages)
   - Multiple import modes (insert, insert_update, replace, create)
   - Parallel export/import with pipeline optimization
   - Column mapping for flexible data import
@@ -77,7 +83,7 @@ func init() {
 		"Print full error call stack on failure (also enabled via GOMYDUMP_ERROR_STACK=1)")
 
 	rootCmd.PersistentFlags().BoolVar(&echoSQLValues, "echo-sql-values", false,
-		"On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.")
+		"On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr and to any --messages file.")
 
 	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false,
 		"Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via GOMYDUMP_QUIET=1)")
@@ -109,6 +115,16 @@ func init() {
 			return err
 		}
 		common.LogFormat = logFormat
+
+		// --messages/-m is the command log's file: with it, every record that
+		// goes to stderr goes to the file as well. Opened here — before the
+		// version banner, so the banner is the file's first line, and before
+		// RunE validation, so even a usage error is recorded.
+		if path := strings.TrimSpace(messagesPath); path != "" {
+			if err := common.OpenLogFile(path); err != nil {
+				return err
+			}
+		}
 
 		// Apply log format BEFORE any validation so errors use chosen style.
 		common.ApplyLogFormat()
@@ -147,6 +163,12 @@ func Execute() error {
 		} else {
 			common.Logger.Error("command failed", "error", err.Error())
 		}
+	}
+	// The run is what the --messages file records, so it is closed last, after
+	// the failure above has been logged. CloseLogFile restores stderr first, so
+	// this very record cannot be lost together with the file.
+	if cerr := common.CloseLogFile(); cerr != nil {
+		common.Logger.Error("failed to close message file", "error", cerr.Error())
 	}
 	return err
 }

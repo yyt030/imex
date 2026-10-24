@@ -2,7 +2,6 @@ package _import
 
 import (
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/gomydump/internal/common"
@@ -144,9 +143,6 @@ func (imp *Importer) batchBudget() int64 {
 		if err != nil {
 			common.Logger.Warn("could not read max_allowed_packet, assuming conservative batch limit",
 				"assumed_bytes", defaultMaxAllowedPacket, "error", err)
-			if imp.msg != nil {
-				imp.msg.WriteWarning(fmt.Sprintf("Could not read max_allowed_packet (%v); assuming %d bytes per batch", err, defaultMaxAllowedPacket))
-			}
 		}
 		imp.maxBatchBytes = batchByteLimit(packet)
 		common.Logger.Info("import batch byte cap resolved",
@@ -166,10 +162,6 @@ func (imp *Importer) resolveBatchSize(columns int) (int, int64) {
 			"requested", imp.cfg.BatchSize, "effective", batchSize, "columns", columns,
 			"limit", maxPlaceholders,
 		)
-		if imp.msg != nil {
-			imp.msg.WriteWarning(fmt.Sprintf("Lowering --batch-size from %d to %d: %d columns would exceed the %d-placeholder statement limit",
-				imp.cfg.BatchSize, batchSize, columns, maxPlaceholders))
-		}
 	}
 	return batchSize, imp.batchBudget()
 }

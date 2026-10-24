@@ -23,7 +23,6 @@ import (
 type Importer struct {
 	cfg   *config.ImportConfig
 	db    *sql.DB
-	msg   *common.MessageWriter
 	stats *common.Stats
 
 	// packetOnce resolves max_allowed_packet lazily on the first batched write,
@@ -57,28 +56,14 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 		return nil, errors.Wrap(pingErr, "failed to ping database after 3 attempts")
 	}
 
-	// Initialize message writer if configured
-	var msg *common.MessageWriter
-	if cfg.Messages != "" {
-		msg, err = common.NewMessageWriter(cfg.Messages, "Import")
-		if err != nil {
-			db.Close()
-			return nil, errors.Wrap(err, "failed to create message writer")
-		}
-	}
-
 	return &Importer{
 		cfg: cfg,
 		db:  db,
-		msg: msg,
 	}, nil
 }
 
 // Close closes the importer and releases resources
 func (imp *Importer) Close() error {
-	if imp.msg != nil {
-		imp.msg.Close()
-	}
 	if imp.db != nil {
 		return imp.db.Close()
 	}
@@ -90,8 +75,9 @@ func (imp *Importer) Import(ctx context.Context) error {
 	startTime := time.Now()
 	imp.stats = common.NewStats()
 	stopMon := common.StartMonitor(ctx, 5*time.Second, imp.stats, func(prev, curr common.StatsSnapshot) {
-		// --quiet suppresses the periodic progress log line but keeps the
-		// --messages file progress records (an explicit artifact).
+		// --quiet suppresses the periodic progress record. --messages mirrors the
+		// command log rather than keeping a report of its own, so the file is
+		// quiet as well.
 		if !common.Quiet {
 			common.Logger.Info("import progress",
 				"read", curr.Processed,
@@ -103,9 +89,6 @@ func (imp *Importer) Import(ctx context.Context) error {
 				"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
 				"elapsed", curr.Elapsed.Truncate(time.Second),
 			)
-		}
-		if imp.msg != nil {
-			imp.msg.WriteProgress(curr.Processed)
 		}
 	})
 	defer stopMon()
@@ -138,16 +121,9 @@ func (imp *Importer) Import(ctx context.Context) error {
 		"log_level", imp.cfg.LogLevel,
 	)
 
-	if imp.msg != nil {
-		imp.msg.WriteHeader(fmt.Sprintf("import -i %s -t %s", imp.cfg.Input, imp.cfg.Table))
-	}
-
 	// Open input file
 	file, err := os.Open(imp.cfg.Input)
 	if err != nil {
-		if imp.msg != nil {
-			imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to open input file: %v", err))
-		}
 		return errors.Wrap(err, "failed to open input file")
 	}
 	defer file.Close()
@@ -176,9 +152,6 @@ func (imp *Importer) Import(ctx context.Context) error {
 			// Reached end of file without finding any header row or INSERT:
 			// a plain EOF is meaningless to the user here.
 			err = errors.New("the input file contains no importable data: no header row (DEL), no INSERT statement (SQL) and no column schema (Parquet) were found")
-		}
-		if imp.msg != nil {
-			imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to read header: %v", err))
 		}
 		return errors.Wrap(err, "failed to read header")
 	}
@@ -220,9 +193,6 @@ func (imp *Importer) Import(ctx context.Context) error {
 						"none of them is a column of table %q, so if the file was exported with --no-col-names add --no-col-names to the import "+
 						"to load that record as data", strings.Join(fileColumns, ", "), imp.cfg.Table)
 					common.Logger.Warn(warn, "columns", imp.cfg.Columns)
-					if imp.msg != nil {
-						imp.msg.WriteWarning(warn)
-					}
 				}
 			}
 		}
@@ -264,9 +234,6 @@ func (imp *Importer) Import(ctx context.Context) error {
 		} else if n == 0 {
 			msg := fmt.Sprintf("table %q has no PRIMARY or UNIQUE key: insert_update mode degenerates to plain INSERT and repeated imports will duplicate rows", imp.cfg.Table)
 			common.Logger.Warn(msg)
-			if imp.msg != nil {
-				imp.msg.WriteMessage(fmt.Sprintf("SQL3107N  WARNING: %s", msg))
-			}
 		}
 	}
 
@@ -284,9 +251,6 @@ func (imp *Importer) Import(ctx context.Context) error {
 		}()
 
 		if err := imp.deleteTable(ctx); err != nil {
-			if imp.msg != nil {
-				imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to delete table data: %v", err))
-			}
 			return errors.Wrap(err, "failed to delete table data")
 		}
 	case config.ImportModeCreate:
@@ -318,19 +282,10 @@ func (imp *Importer) Import(ctx context.Context) error {
 				if _, err := imp.db.ExecContext(ctx, taggedStmt); err != nil {
 					preview := common.SQLPreview(taggedStmt, nil)
 					common.Logger.Error("create table failed", "error", err, "sql", preview)
-					if imp.msg != nil {
-						imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to execute CREATE TABLE: %v; SQL: %s", err, preview))
-					}
 					return errors.Wrapf(err, "failed to execute CREATE TABLE (SQL: %s)", preview)
 				}
 			}
 		}
-	}
-
-	// The create-mode table name is only known after the CREATE statements have
-	// been inspected, so the begin record is emitted once the mode has run.
-	if imp.msg != nil {
-		imp.msg.WriteBegin(imp.cfg.Table)
 	}
 
 	if structureOnly {
@@ -346,9 +301,6 @@ func (imp *Importer) Import(ctx context.Context) error {
 			"duration", time.Since(startTime).Truncate(time.Millisecond),
 			"note", "structure-only SQL file: table created, no data rows",
 		)
-		if imp.msg != nil {
-			imp.msg.WriteFooter(0)
-		}
 		return nil
 	}
 
@@ -656,9 +608,6 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 	// policy, idle commits and transient-error replay.
 	session := newWriteSession(imp, imp.db, ctx, int64(imp.cfg.CommitCount), "single-threaded")
 	if err := session.begin(); err != nil {
-		if imp.msg != nil {
-			imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to begin transaction: %v", err))
-		}
 		return errors.Wrap(err, "failed to begin transaction")
 	}
 	// Roll back whatever transaction is active when the function returns.
@@ -770,9 +719,6 @@ loop:
 			}
 		case <-idleTimer.C:
 			if err := session.idleCommit(); err != nil {
-				if imp.msg != nil {
-					imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to commit idle transaction: %v", err))
-				}
 				return errors.Wrap(err, "failed to commit idle transaction")
 			}
 			idleTimer.Reset(DefaultIdleCommitTimeout)
@@ -799,9 +745,6 @@ loop:
 			preview := common.FailingSQL(insertSQL, batchValues)
 			imp.stats.AddFailed(int64(len(batch.data)))
 			common.Logger.Error("insert batch failed", "error", err, "sql", preview)
-			if imp.msg != nil {
-				imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to insert batch at row %d: %v; SQL: %s", rowCount+1, err, preview))
-			}
 			return errors.Wrapf(err, "failed to insert batch (SQL: %s)", preview)
 		}
 
@@ -811,9 +754,6 @@ loop:
 		// the open transaction (a batch size that does not divide the commit
 		// count must not postpone the commit indefinitely).
 		if err := session.maybeCommit(); err != nil {
-			if imp.msg != nil {
-				imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to commit transaction: %v", err))
-			}
 			return errors.Wrap(err, "failed to commit transaction")
 		}
 		armIdleTimer(idleTimer, DefaultIdleCommitTimeout)
@@ -828,9 +768,6 @@ loop:
 
 	// Final commit
 	if err := session.commit(); err != nil {
-		if imp.msg != nil {
-			imp.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to commit final transaction: %v", err))
-		}
 		return errors.Wrap(err, "failed to commit final transaction")
 	}
 
@@ -848,10 +785,6 @@ loop:
 		"duration", duration.Truncate(time.Millisecond),
 		"rate", fmt.Sprintf("%.2f rows/sec", float64(total.Processed)/duration.Seconds()),
 	)
-
-	if imp.msg != nil {
-		imp.msg.WriteFooter(rowCount)
-	}
 
 	return nil
 }
@@ -1066,10 +999,6 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 		"duration", duration.Truncate(time.Millisecond),
 		"rate", fmt.Sprintf("%.2f rows/sec", float64(total.Processed)/duration.Seconds()),
 	)
-
-	if imp.msg != nil {
-		imp.msg.WriteFooter(total.Processed)
-	}
 
 	return nil
 }

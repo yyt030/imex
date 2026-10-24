@@ -18,7 +18,6 @@ import (
 type Exporter struct {
 	config    *config.ExportConfig
 	db        *sql.DB
-	msg       *common.MessageWriter
 	sqlParser *SQLParser
 	stats     *common.Stats
 }
@@ -66,29 +65,15 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 		common.Logger.Warn("failed to start consistent snapshot", "error", err)
 	}
 
-	// Initialize message writer if configured
-	var msg *common.MessageWriter
-	if cfg.Messages != "" {
-		msg, err = common.NewMessageWriter(cfg.Messages, "Export")
-		if err != nil {
-			db.Close()
-			return nil, errors.Wrap(err, "failed to create message writer")
-		}
-	}
-
 	return &Exporter{
 		config:    cfg,
 		db:        db,
-		msg:       msg,
 		sqlParser: NewSQLParser(),
 	}, nil
 }
 
 // Close closes the exporter and releases resources
 func (e *Exporter) Close() error {
-	if e.msg != nil {
-		e.msg.Close()
-	}
 	if e.db != nil {
 		return e.db.Close()
 	}
@@ -100,8 +85,9 @@ func (e *Exporter) Export(ctx context.Context) error {
 	startTime := time.Now()
 	e.stats = common.NewStats()
 	stopMon := common.StartMonitor(ctx, 5*time.Second, e.stats, func(prev, curr common.StatsSnapshot) {
-		// --quiet suppresses the periodic progress log line but keeps the
-		// --messages file progress records (an explicit artifact).
+		// --quiet suppresses the periodic progress record. --messages mirrors the
+		// command log rather than keeping a report of its own, so the file is
+		// quiet as well.
 		if !common.Quiet {
 			common.Logger.Info("export progress",
 				"rows", curr.Processed,
@@ -109,9 +95,6 @@ func (e *Exporter) Export(ctx context.Context) error {
 				"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
 				"elapsed", curr.Elapsed.Truncate(time.Second),
 			)
-		}
-		if e.msg != nil {
-			e.msg.WriteProgress(curr.Processed)
 		}
 	})
 	defer stopMon()
@@ -153,11 +136,6 @@ func (e *Exporter) Export(ctx context.Context) error {
 		}
 	}
 
-	if e.msg != nil {
-		e.msg.WriteHeader(fmt.Sprintf("export -o %s -q \"%s\"", e.config.Output, e.config.Query))
-		e.msg.WriteBegin(e.messageTableName())
-	}
-
 	// Check if output file exists and --no-replace is set
 	if e.config.NoReplace {
 		if _, err := os.Stat(e.config.Output); err == nil {
@@ -187,24 +165,6 @@ func (e *Exporter) removeIncompleteOutput() {
 	default:
 		common.Logger.Warn("failed to remove incomplete output file", "output", e.config.Output, "error", err)
 	}
-}
-
-// warningFunc returns a callback that mirrors writer warnings into the message
-// file, or nil when no message file was requested.
-func (e *Exporter) warningFunc() func(string) {
-	if e.msg == nil {
-		return nil
-	}
-	return func(msg string) { e.msg.WriteWarning(msg) }
-}
-
-// messageTableName returns the table named in the query for the message file,
-// or "" when it cannot be derived (joins still report their first table).
-func (e *Exporter) messageTableName() string {
-	if name, err := e.sqlParser.ExtractTableName(e.config.Query); err == nil {
-		return name
-	}
-	return ""
 }
 
 // exportSingle performs single-threaded export with pipeline optimization
@@ -237,9 +197,6 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	if err != nil {
 		preview := common.SQLPreview(e.config.Query, nil)
 		common.Logger.Error("query failed", "error", err, "sql", preview)
-		if e.msg != nil {
-			e.msg.WriteMessage(fmt.Sprintf("SQL3104N  Query failed: %v; SQL: %s", err, preview))
-		}
 		return errors.Wrapf(err, "failed to execute query (SQL: %s)", preview)
 	}
 	defer rows.Close()
@@ -247,9 +204,6 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	// Get column information
 	columns, err := rows.Columns()
 	if err != nil {
-		if e.msg != nil {
-			e.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to get columns: %v", err))
-		}
 		return errors.Wrap(err, "failed to get columns")
 	}
 
@@ -260,9 +214,6 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	// stable representation across all three formats (DEL, SQL, Parquet).
 	colTypes, err := rows.ColumnTypes()
 	if err != nil {
-		if e.msg != nil {
-			e.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to get column types: %v", err))
-		}
 		return errors.Wrap(err, "failed to get column types")
 	}
 	isYear := make([]bool, len(columns))
@@ -286,17 +237,11 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	if e.config.NoHexBlob && config.HexBlobForCharset(e.config.DefaultCharset) {
 		// Explicit --no-hex-blob with non-utf8mb4 charset: warn about potential corruption
 		common.Logger.Warn("hex-blob explicitly disabled with non-utf8mb4 charset; raw binary bytes may be corrupted by charset conversion", "charset", e.config.DefaultCharset)
-		if e.msg != nil {
-			e.msg.WriteWarning(fmt.Sprintf("hex-blob explicitly disabled with non-utf8mb4 charset %q; raw binary bytes may be corrupted by charset conversion", e.config.DefaultCharset))
-		}
 	}
 
 	// Create output file
 	outputFile, err := os.Create(e.config.Output)
 	if err != nil {
-		if e.msg != nil {
-			e.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to create output file: %v", err))
-		}
 		return errors.Wrap(err, "failed to create output file")
 	}
 	// A dump is either complete or absent. Once the output file exists, every
@@ -327,7 +272,6 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, !e.config.NoCreate, !e.config.NoData, serverType, createStmt, e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetSingleRowInsert(e.config.SingleRowInsert)
-		sqlWriter.SetWarningFunc(e.warningFunc())
 		writer = sqlWriter
 	case "parquet":
 		parquetWriter, err := NewParquetWriter(outputFile, columns, binaryFlags)
@@ -341,9 +285,6 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 
 	// Write header/columns
 	if err := writer.WriteHeader(columns); err != nil {
-		if e.msg != nil {
-			e.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to write header: %v", err))
-		}
 		return errors.Wrap(err, "failed to write header")
 	}
 
@@ -437,9 +378,6 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	for batch := range rowCh {
 		for _, rowData := range batch.data {
 			if err := writer.WriteRawRow(rowData); err != nil {
-				if e.msg != nil {
-					e.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to write row %d: %v", rowCount+1, err))
-				}
 				return errors.Wrap(err, "failed to write row")
 			}
 
@@ -457,19 +395,12 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 
 	// Write footer
 	if err := writer.WriteFooter(); err != nil {
-		if e.msg != nil {
-			e.msg.WriteMessage(fmt.Sprintf("SQL3104N  Failed to write footer: %v", err))
-		}
 		return errors.Wrap(err, "failed to write footer")
 	}
 
 	duration := time.Since(startTime)
 
 	common.Logger.Info("export completed", "rows", rowCount, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", float64(rowCount)/duration.Seconds()))
-
-	if e.msg != nil {
-		e.msg.WriteFooter(rowCount)
-	}
 
 	return nil
 }
@@ -594,10 +525,6 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	total := e.stats.Snapshot()
 	common.Logger.Info("parallel export completed", "rows", total.Processed, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "shards", len(shardRanges), "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", total.RatePerSec()))
 
-	if e.msg != nil {
-		e.msg.WriteFooter(totalRows)
-	}
-
 	return nil
 }
 
@@ -663,7 +590,6 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, false, !e.config.NoData, serverType, "", e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetSingleRowInsert(e.config.SingleRowInsert)
-		sqlWriter.SetWarningFunc(e.warningFunc())
 		// A fragment of a parallel dump must not lock or unlock the table on its
 		// own; the merge step wraps the concatenated result in one pair.
 		sqlWriter.SetSkipTableLocks(true)

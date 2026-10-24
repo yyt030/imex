@@ -3,10 +3,12 @@ package common
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gomydump/internal/config"
@@ -145,5 +147,203 @@ func TestLogVersionEmitsBanner(t *testing.T) {
 		if !strings.Contains(out, w) {
 			t.Errorf("banner %q missing %q", out, w)
 		}
+	}
+}
+
+// --messages is the command log's file: the sink is what makes that possible, so
+// its contract lives here. Everything the run prints must land in the file, byte
+// for byte, while it is open — and only stderr afterwards.
+func TestLogFileMirrorsStderr(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.log")
+	logger := newLogger(config.LogLevelInfo, LogFormatJava)
+
+	out := captureStderr(t, func() {
+		if err := OpenLogFile(path); err != nil {
+			t.Fatalf("open log file: %v", err)
+		}
+		defer func() {
+			if err := CloseLogFile(); err != nil {
+				t.Fatalf("close log file: %v", err)
+			}
+		}()
+		logger.Info("export started", "output", "/tmp/a.del")
+		logger.Warn("single-row INSERT exceeds --statement-size", "statement_bytes", 4096)
+		logger.Error("command failed", "error", "no such table")
+	})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if string(data) != out {
+		t.Errorf("log file must equal the command-line log byte for byte:\nfile=%q\nstderr=%q", string(data), out)
+	}
+
+	// Once closed, the file is detached: further records still reach stderr and
+	// the file stays as it was.
+	size := len(data)
+	after := captureStderr(t, func() { logger.Info("after close") })
+	if !strings.Contains(after, "after close") {
+		t.Errorf("record lost after CloseLogFile: %q", after)
+	}
+	data2, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-read log file: %v", err)
+	}
+	if len(data2) != size {
+		t.Errorf("file grew after it was closed: %q", string(data2[size:]))
+	}
+	// Closing twice (a run without --messages goes through the same path) is a
+	// no-op, not an error.
+	if err := CloseLogFile(); err != nil {
+		t.Errorf("second CloseLogFile: %v", err)
+	}
+}
+
+// The handlers are built once, when the process starts, and stay in place for the
+// whole run — slog's text handler would otherwise have pinned the writer it was
+// given. Opening --messages later must therefore still reach both layouts.
+func TestLogFileFollowsHandlersBuiltEarlier(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "text.log")
+	logger := newLogger(config.LogLevelInfo, LogFormatText)
+
+	out := captureStderr(t, func() {
+		if err := OpenLogFile(path); err != nil {
+			t.Fatalf("open log file: %v", err)
+		}
+		defer func() { _ = CloseLogFile() }()
+		logger.Info("import config", "table", "users")
+	})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if string(data) != out {
+		t.Errorf("text layout must also reach the file:\nfile=%q\nstderr=%q", string(data), out)
+	}
+	if !strings.Contains(string(data), `msg="import config"`) || !strings.Contains(string(data), "table=users") {
+		t.Errorf("unexpected text layout in the file: %q", string(data))
+	}
+}
+
+// The sink is shared by the progress monitor and the shard producers, so it also
+// owns serialization: a record must never be split between stderr and the file.
+func TestLogFileSerializesConcurrentRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent.log")
+	logger := newLogger(config.LogLevelInfo, LogFormatJava)
+
+	if err := OpenLogFile(path); err != nil {
+		t.Fatalf("open log file: %v", err)
+	}
+	t.Cleanup(func() { _ = CloseLogFile() })
+
+	const shards, perShard = 8, 25
+	var wg sync.WaitGroup
+	for i := 0; i < shards; i++ {
+		wg.Add(1)
+		go func(shard int) {
+			defer wg.Done()
+			for j := 0; j < perShard; j++ {
+				logger.Info("shard export completed", "shard", shard, "seq", j)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if err := CloseLogFile(); err != nil {
+		t.Fatalf("close log file: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != shards*perShard {
+		t.Fatalf("file holds %d lines, want %d records", len(lines), shards*perShard)
+	}
+	// Every record must be one complete line: a record split across the two
+	// destinations would show up here as a missing "shard=<i> seq=<j>" pair.
+	seen := map[string]bool{}
+	for _, line := range lines {
+		i := strings.Index(line, "shard=")
+		if i < 0 || strings.Count(line, "shard=") != 1 {
+			t.Errorf("record split or merged: %q", line)
+			continue
+		}
+		key := line[i:]
+		if seen[key] {
+			t.Errorf("duplicated record: %q", line)
+		}
+		seen[key] = true
+	}
+	if len(seen) != shards*perShard {
+		t.Errorf("%d distinct records, want %d", len(seen), shards*perShard)
+	}
+	for i := 0; i < shards; i++ {
+		for j := 0; j < perShard; j++ {
+			if !seen[fmt.Sprintf("shard=%d seq=%d", i, j)] {
+				t.Errorf("record shard=%d seq=%d missing or truncated", i, j)
+			}
+		}
+	}
+}
+
+// A second --messages path replaces the first rather than silently keeping both
+// attached (the live tests re-point the sink per case).
+func TestLogFileReplaceKeepsOnlyTheNewest(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "first.log")
+	second := filepath.Join(t.TempDir(), "second.log")
+	logger := newLogger(config.LogLevelInfo, LogFormatJava)
+
+	captureStderr(t, func() {
+		if err := OpenLogFile(first); err != nil {
+			t.Fatalf("open first: %v", err)
+		}
+		logger.Info("record for the first file")
+		if err := OpenLogFile(second); err != nil {
+			t.Fatalf("open second: %v", err)
+		}
+		logger.Info("record after the replacement")
+		if err := CloseLogFile(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	})
+
+	a, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("read first: %v", err)
+	}
+	b, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatalf("read second: %v", err)
+	}
+	if !strings.Contains(string(a), "record for the first file") {
+		t.Errorf("the first file missed its own record: %q", string(a))
+	}
+	if strings.Contains(string(a), "after the replacement") {
+		t.Errorf("the replaced file is still attached: %q", string(a))
+	}
+	if !strings.Contains(string(b), "record after the replacement") {
+		t.Errorf("the current file missed the record: %q", string(b))
+	}
+	if strings.Contains(string(b), "record for the first file") {
+		t.Errorf("opening the second file must not replay history: %q", string(b))
+	}
+}
+
+// A --messages path that cannot be created must fail with the path named, and
+// must leave the sink alone: the log keeps going to stderr by itself.
+func TestOpenLogFileRejectsBadPath(t *testing.T) {
+	t.Cleanup(func() { _ = CloseLogFile() })
+
+	before := captureStderr(t, func() { Logger.Info("before") })
+	err := OpenLogFile(filepath.Join(t.TempDir(), "missing-dir", "run.log"))
+	if err == nil || !strings.Contains(err.Error(), "missing-dir") {
+		t.Fatalf("want an error naming the path, got %v", err)
+	}
+	after := captureStderr(t, func() { Logger.Info("after") })
+	if !strings.Contains(before, "before") || !strings.Contains(after, "after") {
+		t.Errorf("a failed open must leave stderr working: %q / %q", before, after)
 	}
 }

@@ -16,7 +16,7 @@
 - **无包裹符模式**：支持导入导出不使用字符串定界符的纯分隔符文件
 - **OceanBase 兼容**：自动检测并适配 OceanBase MySQL 模式
 - **云环境连接加固**：驱动层 socket 超时 + 连接池 TTL + 事务空闲提交 + 瞬断自动重试，规避 LB/NAT 静默回收
-- **消息文件**：DB2 风格的操作日志记录
+- **日志文件**：`--messages` / `-m` 把本次运行的命令行日志逐行另存一份
 - **流式处理**：支持 GB 级大文件，不在内存中缓存全量数据
 - **批量优化**：导入使用批量 INSERT（1000 行/批次），提升写入性能
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
@@ -57,7 +57,7 @@ docker run -d --name gomydump-mysql -e MYSQL_ROOT_PASSWORD=secret \
 GOMYDUMP_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/gomydump_it' make test-live
 ```
 
-覆盖 DEL/SQL/Parquet 往返、insert/insert_update/replace/create 模式、列映射、并行导出与并行导入、消息文件。
+覆盖 DEL/SQL/Parquet 往返、insert/insert_update/replace/create 模式、列映射、并行导出与并行导入、日志文件。
 
 ### 交叉编译
 
@@ -234,7 +234,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--output` | `-o` | 输出文件路径 | 无（必填） |
 | `--format` | `-f` | 输出格式（del/sql/parquet） | `del` |
 | `--query` | `-q` | SQL SELECT 语句（支持 OceanBase / MySQL 优化器 hint） | 无（必填） |
-| `--messages` | `-m` | 消息文件路径 | 空 |
+| `--messages` | `-m` | 把全部日志记录同时写入该文件（内容与 stderr 逐行相同） | 空 |
 | `--no-replace` | | 拒绝覆盖已存在的输出文件（默认允许覆盖） | `false` |
 | `--threads` | | 并行导出任务数（1=不并行；上限 256） | `1` |
 | `--shard-key` | | 分片键列名（空=自动检测主键/唯一键） | 空 |
@@ -298,7 +298,7 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | `--mode` | `-M` | 导入模式 | `insert` |
 | `--table` | `-t` | 目标表名（insert/replace/insert_update 必填；create 模式可省略，自动取 SQL 文件中 CREATE 语句的表名，指定则作为新表名重写） | 无 |
 | `--columns` | `-c` | 列映射（见下方说明） | 空 |
-| `--messages` | `-m` | 消息文件路径 | 空 |
+| `--messages` | `-m` | 把全部日志记录同时写入该文件（内容与 stderr 逐行相同） | 空 |
 | `--threads` | | 并行导入任务数（1=不并行；上限 256） | `1` |
 | `--batch-size` | | 读→写交接每批的行数（单线程与并行导入均生效；实际还受字节上限与占位符上限约束，见下） | `1000` |
 | `--pipeline-buffer` | | 读→写交接队列深度（批数；0=同步；并行导入建议 ≥ `--threads`） | `10` |
@@ -336,7 +336,7 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | `--row-count` | 最多导入 n 行 | `0`（无限制） |
 | `--commit-count` | 每 n 行提交一次事务 | `1000` |
 | `--no-char-del` | 不使用字符串定界符（裸字段不转义：数据含列/行分隔符时导出报错） | `false` |
-| `--no-col-names` | 输入文件第一行不是列名。无表头时必须同时用 `-c/--columns` 指定目标列，否则报清晰错误；反过来，只给 `-c` 而不给 `--no-col-names` 时第一行仍按列名行处理并被丢弃（文件本身无法区分两种情况），此时若这些字段与目标表列名全不匹配，工具会发出 `the first record of the input file was treated as the column header and not imported` 警告并写入消息文件，提示补上 `--no-col-names` | `false` |
+| `--no-col-names` | 输入文件第一行不是列名。无表头时必须同时用 `-c/--columns` 指定目标列，否则报清晰错误；反过来，只给 `-c` 而不给 `--no-col-names` 时第一行仍按列名行处理并被丢弃（文件本身无法区分两种情况），此时若这些字段与目标表列名全不匹配，工具会发出 `the first record of the input file was treated as the column header and not imported` 的 WARN 日志（`--messages` 打开时同样进该文件），提示补上 `--no-col-names` | `false` |
 
 **全局选项：**
 
@@ -590,21 +590,21 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
   -t users
 ```
 
-### 消息文件
+### 日志文件
 
 ```bash
-# 导出时记录消息文件
+# 导出时把命令行日志同时写入文件
 gomydump export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.del \
-  -m /var/log/export_users.msg \
+  -m /var/log/gomydump_export.log \
   -q "SELECT * FROM users"
 ```
 
 导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`create`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 **5 秒**打印一次进度（已处理条数、总速率 `rate`、区间速率 `interval_rate`、`elapsed`），结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。
 
-版本横幅（`gomydump starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后才是命令启动与配置参数；唯一例外是 `gomydump version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `gomydump version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `started`/`config`/`progress`/`completed`/`aborted`/`failed`（如 `export started`、`export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `java` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `GOMYDUMP_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；此时 `--messages` 消息文件仍按 DB2 兼容格式记录行进度（`SQL3105N`）与统计，因为消息文件是显式产物不受静默影响。
+版本横幅（`gomydump starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后才是命令启动与配置参数；唯一例外是 `gomydump version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `gomydump version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `started`/`config`/`progress`/`completed`/`aborted`/`failed`（如 `export started`、`export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `java` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `GOMYDUMP_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；`--messages` 文件是 stderr 的同一份记录，因此同样没有进度行（早期版本让消息文件按 DB2 格式继续记 `SQL3105N`，该例外已随报告一起取消）。
 
-消息文件本身按 DB2 LOAD/EXPORT 风格记录全过程：任务开始一行（导出 `SQL3104N`、导入 `SQL3109N`，含表名），每 1000 行一条 `SQL3105N` 进度，运行中的告警逐条写成 `SQL3107N` 并在结束时追加一条 `SQL3107N At least one warning message was encountered.` 汇总，正常结束写 `SQL3110N` 行数统计与 `# Completed/# Duration/# Rate` 注释行。当前会写入 `SQL3107N` 的告警来源：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调。
+`--messages` / `-m` 的文件内容**就是本次运行的命令行日志**：同一条记录先写 stderr 再写文件，一条记录一个物理行，版本横幅是首行（文件在根命令打印横幅之前打开），`export/import config`、定时进度、WARN 告警、`completed` 统计与收尾的 `command failed` 都在里面；`--log-level`、`--log-format` 一样作用于文件。实测 `-m` 导出失败时文件与 stderr `diff` 逐字节一致。早期版本按 DB2 LOAD/EXPORT 风格另写一份 `SQL3104N/3105N/3107N/3109N/3110N` 报告，那份重复的记录与 `MessageWriter` 已整体删除，告警与失败只保留一条日志记录。会出现 WARN 的场景：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调、无表头文件被当作表头丢弃首行、`insert_update` 命中无唯一键的表。
 
 ### 错误堆栈开关
 
@@ -641,13 +641,13 @@ github.com/gomydump/cmd.init.func2
 
 ### 失败 SQL 回显与脱敏
 
-导入/导出语句在服务端执行失败时（列不存在、类型不符、数值超长、约束冲突等），错误信息、日志和消息文件都会附带失败 SQL 的结构回显，便于定位。为防止敏感数据泄露，**默认不内联真实行数据值**，`?` 占位符只以类型/长度标签呈现：
+导入/导出语句在服务端执行失败时（列不存在、类型不符、数值超长、约束冲突等），错误信息与日志（含 `--messages` 文件）都会附带失败 SQL 的结构回显，便于定位。为防止敏感数据泄露，**默认不内联真实行数据值**，`?` 占位符只以类型/长度标签呈现：
 
 ```
 Error: import failed: failed to insert batch (SQL: INSERT INTO `u` (`id`, `pw`) VALUES (?,?),(?,?) /* args: str(1), str(14), str(1), str(12) */): Error 1406 Data too long for column 'pw' at row 1
 ```
 
-标签足以判断"哪一列、什么类型、多长、是否 NULL"，而不会把密码/个人信息写进长期留存的日志与消息文件。回显超过 2048 字节自动截断。确需内联真实值排障时显式开启（警告：真实数据将出现在 stderr、日志与消息文件）：
+标签足以判断"哪一列、什么类型、多长、是否 NULL"，而不会把密码/个人信息写进长期留存的日志与日志文件。回显超过 2048 字节自动截断。确需内联真实值排障时显式开启（警告：真实数据将出现在 stderr 与 `--messages` 文件）：
 
 ```bash
 gomydump import --echo-sql-values ...
@@ -776,11 +776,12 @@ INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (2,'Bob','bob@exam
 | `--no-col-names` 不带 `-c` 报错晦涩 | 新增前置校验，给出清晰错误并提示使用 `--columns` |
 | Parquet 非 UTF-8 二进制回导失败 | 二进制列存为原始 BYTE_ARRAY（去 UTF-8 标注），非 UTF-8 内容完整往返 |
 | DEL/Parquet 导入未校验目标列，表达式列头（如 `SELECT 1` 产生的 `"1"`）报 `Unknown column '1' in 'field list'`；replace 模式还会先清空表再失败 | 导入前用 `information_schema` 校验目标列存在性（大小写不敏感），缺失时立即给出含修复建议的错误（起别名或用 `--columns`），表不存在同样明确报错；校验在 mode 处理之前执行，replace 模式不再发生"先清表后报错"的数据丢失 |
-| 语句执行失败时错误信息不含 SQL，难以定位 | 失败 SQL 随错误回显到 stderr/日志/消息文件；默认脱敏（占位符保留，值以 `str(14)/num/NULL/bytes(256)` 类型标签呈现），2048 字节截断并保持引号配平；`--echo-sql-values` / `GOMYDUMP_ECHO_SQL_VALUES=1` 可显式内联真实值 |
-| 失败时以裸 `Error:` 行输出、与其它日志格式不一致；版本信息不在首行；进度日志无法关闭 | 命令失败统一走 `level=ERROR msg="command failed"` 日志记录（`--error-stack` 追加调用栈）；版本横幅 `gomydump starting` 提前为运行首行；新增 `--quiet` / `GOMYDUMP_QUIET=1` 禁止定时进度日志（消息文件进度不受影响） |
+| 语句执行失败时错误信息不含 SQL，难以定位 | 失败 SQL 随错误回显到 stderr 与 `--messages` 文件；默认脱敏（占位符保留，值以 `str(14)/num/NULL/bytes(256)` 类型标签呈现），2048 字节截断并保持引号配平；`--echo-sql-values` / `GOMYDUMP_ECHO_SQL_VALUES=1` 可显式内联真实值 |
+| 失败时以裸 `Error:` 行输出、与其它日志格式不一致；版本信息不在首行；进度日志无法关闭 | 命令失败统一走 `level=ERROR msg="command failed"` 日志记录（`--error-stack` 追加调用栈）；版本横幅 `gomydump starting` 提前为运行首行；新增 `--quiet` / `GOMYDUMP_QUIET=1` 禁止定时进度日志（当时消息文件仍继续记进度，该例外已由后面的 `--messages` 改造取消） |
 | 导入行数统计把"写入相同值的行"当成新增（`insert_update` 重复导入同一文件时报 `inserted=N updated=0`）| 每批按服务端 affected 拆成互斥的 `inserted`/`updated`/`unchanged`，三者之和恒等于批行数；`replace` 模式（先清空目标表）仍全部计新增。实测：相同内容重导 → `inserted=0 updated=0 unchanged=4`，全部改动 → `updated=4`，删 2 行后重导 → `inserted=2 unchanged=2` |
 | 单线程导出失败只报错不清理，磁盘上留下半截产物（实测 20 万行表被 `--no-char-del` 拒于末行时残留 21 MB，文件名与成功导出一致）| 两条导出路径统一"要么完整、要么没有"：`exportSingle` 在创建输出文件之后注册与并行路径共用的 `removeIncompleteOutput`，任何后续失败都删除该文件；注册点保证创建之前的失败（查询报错、`--no-replace` 命中已有文件）不会误删既有文件 |
-| `--no-col-names` 导出的文件只用 `-c` 导入时静默丢掉首行（3 行只进 2 行、退出码 0）| 文件本身无法区分"有表头 + 位置映射"与"无表头"，两种情形都必须能导入，因此不改结果、只补可见性：被当作表头丢弃的那一行若与目标表列名全不匹配，记 warn 并写入消息文件，提示补 `--no-col-names`；`--no-col-names` 是成对选项，导出加了导入也要加 |
+| `--no-col-names` 导出的文件只用 `-c` 导入时静默丢掉首行（3 行只进 2 行、退出码 0）| 文件本身无法区分"有表头 + 位置映射"与"无表头"，两种情形都必须能导入，因此不改结果、只补可见性：被当作表头丢弃的那一行若与目标表列名全不匹配，记 WARN 日志（`--messages` 文件同样收到），提示补 `--no-col-names`；`--no-col-names` 是成对选项，导出加了导入也要加 |
+| `--messages` 写的是另成一套的 DB2 风格报告（`SQL3104N/3105N/3107N/3109N/3110N` 与 `# Completed/# Duration/# Rate`），既与命令行日志重复，又漏掉日志里的多数记录 | `--messages` / `-m` 改为**命令行日志的文件副本**：`internal/common/log.go` 里加带锁的日志 sink（两种布局都经它，`os.Stderr` 在写入时解析），根命令在打印版本横幅之前打开文件、`cmd.Execute()` 在记完 `command failed` 之后关闭，因此文件首行是横幅、失败收尾也在文件里；`MessageWriter` 与导出/导入侧 35 处消息调用整体删除（告警与失败本来就各有一条日志记录，只去掉重复的第二份）；`--log-level`、`--log-format`、`--quiet` 一并作用于文件。实测 `-m` 导出失败时文件与 stderr `diff` 逐字节一致 |
 
 ## 项目结构
 
@@ -813,7 +814,6 @@ gomydump/
 │   │   ├── usage.go             # 用法错误分类（退出码 2）
 │   │   ├── log.go               # 日志模块（java/text 两种格式、版本信息、启动日志）
 │   │   ├── stats.go             # 吞吐统计与速率计算
-│   │   ├── message.go           # 消息文件处理
 │   │   ├── password.go          # 密码加密/解密（AES-256-GCM）
 │   │   └── detect.go            # 服务器类型检测
 │   ├── export/
@@ -834,7 +834,8 @@ gomydump/
 ├── test/
 │   └── integration/             # 集成测试
 │       ├── roundtrip_test.go    # 离线往返（导出写入器→导入读取器：转义/换行/0x/NULL 与空串/单行 INSERT/DEL 修饰符）
-│       └── live_mysql_test.go   # 真实 MySQL 端到端（默认跳过，需 GOMYDUMP_TEST_DSN）
+│       ├── live_mysql_test.go   # 真实 MySQL 端到端（默认跳过，需 GOMYDUMP_TEST_DSN）
+│       └── option_matrix_test.go # 真实 CLI 交叉选项矩阵（argv 驱动编译出的二进制，同上门控）
 ├── docs/
 │   ├── requirements.md          # 需求文档
 │   └── cli-oracle.txt           # 已发布二进制的 --help 契约快照（回归基线）
