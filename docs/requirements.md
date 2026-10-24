@@ -310,6 +310,8 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 
 **位置映射的数量校验：** 位置映射按索引配对，因此 `--columns` 的条目数必须等于文件的列数（列名行给出的列数），条目本身不得为空。数量不符时工具在写入任何数据前报错，提示改用名称映射导入子集。使用 `--no-col-names`（文件无表头）时列数无从得知，只校验条目非空，列数是否匹配交由服务端报错。
 
+**无表头文件与 `-c` 的配对（交叉测试暴露的歧义）：** DEL 读取器总是先调用 `ReadHeader`，只有同时给出 `--no-col-names` 才跳过这一步。于是"文件由 `--no-col-names` 导出、导入时只给 `-c`"的组合会把**首条数据行当成列名行丢掉**，且行数少一并不报错（实测 3 行文件只导入 2 行）；同一组合用于带表头的普通导出文件时行为又是对的。文件本身无法区分这两种情况，改名导入（表头列名与目标表列名不同）也走同一条位置映射路径，因此不做任何猜测、不改变导入结果，只把被丢弃的记录说出来：位置 `-c` + DEL + 未加 `--no-col-names` 时，若被当作表头的那一行字段与目标表列名**全不匹配**（目标表列名取自 `information_schema`），记一条 warn 并写入消息文件——`the first record of the input file was treated as the column header and not imported (fields: …); none of them is a column of table "…", so if the file was exported with --no-col-names add --no-col-names to the import to load that record as data`。字段名能对上目标表列时（正常表头）不产生任何噪声，改名导入仍然成功、只是多一条提醒。结论：**`--no-col-names` 是成对选项，导出加了、导入也必须加**（`-c` 只补列名，不补"没有表头"这一事实）。
+
 **目标列前置校验（DEL/Parquet 格式）：** 导入开始前，工具通过 `information_schema` 校验目标表存在以及每个目标列名在表中存在（大小写不敏感）。DEL/Parquet 文件的列头取自导出查询的结果集列名，若 `--query` 含未起别名的表达式列（如 `SELECT 1, COUNT(*)`），列头（`1`、`COUNT(*)`）在目标表中不存在，工具会在写入任何数据前立即报错并提示修复方式（为表达式列起别名，或使用 `--columns` 按位置指定目标列），替代原先晦涩的服务端错误 1054（`Unknown column ... in 'field list'`）。校验位于模式处理之前，replace 模式不再出现"先清空表、后报列错误"的数据丢失。SQL 格式不做该校验：create 模式在表建立前执行属正常流程，且其列名来自文件自身的 INSERT 语句。
 
 **失败 SQL 回显（脱敏）：** 导入/导出语句在服务端执行失败时，错误信息、日志与消息文件会附带失败 SQL 的结构回显（表名、列名、占位符完整保留）。数据值默认**不**内联：仅以 `/* args: str(14), num, NULL, bytes(256) */` 形式的类型/长度标签呈现（可定位"哪一列、什么类型、是否超长"，但不泄露密码、个人信息等真实数据）。回显在 2048 字节处截断且保持引号配平。需要内联真实值时显式开启 `--echo-sql-values` 或 `GOMYDUMP_ECHO_SQL_VALUES=1`（警告：真实数据将写入 stderr、日志与消息文件）。`--query` SELECT 与 CREATE TABLE 语句不含行数据，失败时原文回显。
@@ -340,7 +342,7 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | `--row-count` | 最多导入 n 行（≥0） | `0`（无限制） | - |
 | `--commit-count` | 每 n 行提交一次事务（≥1） | `1000` | - |
 | `--no-char-del` | 不使用字符串定界符（裸字段不转义：数据含列/行分隔符时导出报错） | `false` | - |
-| `--no-col-names` | 输入文件第一行不是列名 | `false` | - |
+| `--no-col-names` | 输入文件第一行不是列名。与导出侧同名选项**成对使用**：只给 `-c` 而不给本选项时第一行仍按列名行丢弃，字段与目标表列名全不匹配会给出 warn（见上文"无表头文件与 `-c` 的配对"） | `false` | - |
 
 **格式适用性与行选择：** `--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 只描述 DEL 文件的解析方式，`--format sql`/`parquet` 下显式传入会报用法错误并退出 2；`--skip-count`/`--row-count`/`--commit-count` 与格式无关，三种格式都生效。
 
@@ -578,7 +580,7 @@ GOMYDUMP_LOG_FORMAT=text gomydump import -h 127.0.0.1 -u root -p pass -D mydb -i
 | `session variables will be set on every connection` | 传入了 `--session-var` |
 | `export progress` / `import progress` | 每 5 秒定时进度（`--quiet` 抑制） |
 | `parallel export detected` / `shard export completed` / `parallel export completed` | 并行导出：分片计划、每个分片、汇总 |
-| `shard stream failed` / `incomplete output file removed` | 并行导出写输出文件失败（如 `ENOSPC`）：前者 `error` 带具体错误，后者 `warn` 带被删除的 `output=`；其余分片此时以 `shard export failed error="... shard output consumer stopped"` 结束 |
+| `shard stream failed` / `incomplete output file removed` | 导出写出失败（如 `ENOSPC`、写入被拒）：前者 `error` 仅并行路径出现，带具体错误；后者 `warn` 带被删除的 `output=`，并行与单线程两条路径都会在失败时删除已写出的半截产物（单线程此前不会删除，实测留下 21 MB 残留文件），其余仍在队列上等待的分片此时以 `shard output consumer stopped` 结束 |
 | `worker completed` / `parallel import completed` | 并行导入：每个工作线程、汇总 |
 | `export completed` / `import completed` / `import aborted` | 结束统计（中止时仍给出已达进度与 `failed`） |
 | `query failed` / `insert batch failed` / `create table failed` / `shard query failed` / `shard export failed` | 语句级失败，附 `sql` 预览（默认脱敏） |
@@ -876,7 +878,7 @@ SHOW VARIABLES LIKE 'version_comment';
 
 队列深度不是细节：单个输出 goroutine 一旦偶尔落后，分片就会填满队列并停下，而它停下的时候其他分片的数据库读取仍在推进，整体变成"读一批、写一批"的停顿。同一台 4 核机器上以 SQL 格式实测（每组 7 次交替、取中位数，消除温漂）：旧实现 1.09 s；每分片 2.5 MiB 前瞻为 1.31 s、8 MiB 为 1.24 s（慢 14~20%）；16 MiB 为 1.09 s，与旧实现持平——写入量减半不再牺牲时间。因此 `shardStreamQueueBlocks` 用一个固定的 64 MiB 总预算按分片数均分，上界 64 块（16 MiB）、下界 2 块，与 `--pipeline-buffer`（按行数计）无关。代价是这部分在途字节从磁盘移到堆上：4 分片并行导出的进程峰值 RSS 由约 33 MB 升到约 111 MB（DEL）、114 MB 升到 215 MB（SQL），8 分片 DEL 为 36→118 MB；`--threads 8` 的产物同样与旧实现逐字节一致、写入量同样是恰好一半。
 
-**并行导出的失败与中断语义：** 流式写法意味着失败时输出文件已经存在并写了部分内容。任一分片报错或写文件报错（如 `ENOSPC`）时，导出整体报错、把已写出的输出文件删除并记一条 `incomplete output file removed` 警告，其余仍在队列上等待的分片由 `shard output consumer stopped` 立即解除阻塞（不会挂死），实测 32 MB tmpfs 目标下 4 分片导出在第 1 个分片写满后整体失败且不留任何文件。旧实现在分片失败时是"不产生输出文件"，在合并阶段失败时同样会留下半截输出，因此新语义在两种情况下都只留一种结果：**要么完整、要么没有**。注意：程序未安装信号处理器，`SIGINT`/`SIGTERM` 仍是直接终止进程，此时流式写法会留下一个不完整的输出文件（旧实现留下的是等量的分片临时文件），需要用户自行删除。
+**导出的失败与中断语义（两条路径一致）：** 并行导出的流式写法意味着失败时输出文件已经存在并写了部分内容。任一分片报错或写文件报错（如 `ENOSPC`）时，导出整体报错、把已写出的输出文件删除并记一条 `incomplete output file removed` 警告，其余仍在队列上等待的分片由 `shard output consumer stopped` 立即解除阻塞（不会挂死），实测 32 MB tmpfs 目标下 4 分片导出在第 1 个分片写满后整体失败且不留任何文件。旧实现在分片失败时是"不产生输出文件"，在合并阶段失败时同样会留下半截输出，因此新语义在两种情况下都只留一种结果：**要么完整、要么没有**。单线程路径过去并不遵守这一条：`os.Create` 之后的任何失败只报错、不清理，交叉测试实测 20 万行表在末行被 `--no-char-del` 拒绝后留下 21,233,664 字节的半截 DEL 文件（文件名为导出名，看起来像成功产物）。现在 `exportSingle` 在创建输出文件之后注册同一份 `removeIncompleteOutput`，任何后续失败都删除该文件，并行路径改为复用同一个方法；删除只在文件确已创建之后注册，因此创建前的失败（查询报错、`--no-replace` 命中已有文件）不会误删用户原有文件，实测 `--threads 1/4` 两种失败都只留日志不留文件。注意：程序未安装信号处理器，`SIGINT`/`SIGTERM` 仍是直接终止进程，此时会留下一个不完整的输出文件（旧实现留下的是等量的分片临时文件），需要用户自行删除。
 
 **并行导出的结果语义：**
 
@@ -1115,7 +1117,8 @@ gomydump/
 ├── test/
 │   └── integration/
 │       ├── roundtrip_test.go  # 离线往返（写入器→读取器，无需数据库）
-│       └── live_mysql_test.go # 真实 MySQL/OceanBase 端到端，需 GOMYDUMP_TEST_DSN，未设置则跳过
+│       ├── live_mysql_test.go # 真实 MySQL/OceanBase 库级端到端，需 GOMYDUMP_TEST_DSN，未设置则跳过
+│       └── option_matrix_test.go # 真实 CLI 交叉选项矩阵（argv 驱动编译出的二进制），同上门控
 ├── docs/
 │   ├── requirements.md        # 本文件
 │   └── cli-oracle.txt         # 已发布二进制 --help 契约快照（回归基线）
@@ -1126,7 +1129,7 @@ gomydump/
 └── README.md
 ```
 
-另有 23 个包内 `*_test.go`（`internal/common` 7、`internal/export` 7、`internal/import` 9），加上 `cmd` 3、仓库根 1、集成 2，全仓库共 29 个测试文件，清单见十一节。
+另有 23 个包内 `*_test.go`（`internal/common` 7、`internal/export` 7、`internal/import` 9），加上 `cmd` 3、仓库根 1、集成 3，全仓库共 30 个测试文件，清单见十一节。
 
 ---
 
@@ -1294,7 +1297,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 
 ### 11.1 测试资产清单
 
-上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 29 个 `_test.go`、149 个 `Test*`、5 个 `Fuzz*`、8 个 `Benchmark*`）。
+上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 30 个 `_test.go`、161 个 `Test*`（另有 1 个 `TestMain` 负责一次性构建被 CLI 测试调用的二进制）、5 个 `Fuzz*`、8 个 `Benchmark*`）。
 
 | 文件 | 用例数 | 覆盖点 | 运行方式 |
 |------|--------|--------|----------|
@@ -1307,6 +1310,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | `main_test.go` | 1 | go/ast 静态守卫：全部 logger 调用消息首字母小写且单行（防日志词汇回归）| `make test` |
 | `test/integration/roundtrip_test.go` | 10 | 离线往返（写入器→读取器）：转义文本、每条语句一个物理行、`--statement-size` 攒批、`0x` 二进制字面量、MySQL 文本值与 HEX 一致、DEL 引号/反斜杠两种模式、看似十六进制的文本不被误解码、单行 INSERT | `make test` |
 | `test/integration/live_mysql_test.go` | 5 | 真实 MySQL 端到端：三种格式往返、并行导出与并行导入、四种导入模式、列映射、导入行数拆分对真实服务端 `RowsAffected` 的断言；消息文件路径随用例参数一起断言 | `GOMYDUMP_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/db' make test-live`，未设置该变量时自动跳过 |
+| `test/integration/option_matrix_test.go` | 12 | 编译出真实二进制后用 argv 跑交叉矩阵：DEL 布局修饰符的导出/导入成对性、`--no-col-names` 无表头配对歧义、逐字写入模式的拒绝与残留文件清理、SQL 攒批/单行 INSERT 与 `--statement-size` 上界、并行 DEL 逐字节等于串行而并行 SQL 只多分片边界的语句头（按头数与字节差精确断言）、日期时间格式的对称性与精度截断、`--no-data`/`--no-create` × `--mode create`、`--skip-count`/`--row-count` × 线程/批量/提交、`--messages` 在三格式与并行路径下的编码、`--no-replace` 哨兵文件存活、`--default-charset` 与二进制列 0x 自动切换 | 同上（`TestMain` 先 `go build` 一次，全部用例复用该二进制） |
 
 `make test` 与 `make test-live` 固定 `CGO_ENABLED=1 go test -race`，这是 `-race` 的要求，与发布构建的 `CGO_ENABLED=0` 无关。
 
@@ -1420,3 +1424,4 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 |---|--------|------|
 | 40 | DEL 导入解析改为全程 `[]byte`、去掉无效字节↔字符串转换 | 性能分析（pprof CPU + heap，4 核 / 本地 MariaDB，`bench` 表 50 万行 DEL 125 MB）显示导入 CPU 的约 60% 落在 DEL 分帧与字段解析上，堆分配量 1392 MB 是输入体积的 11 倍，其中 `parseLine` 479 MB + `recordReader.Text()` 121 MB。改写 `internal/import/del_reader.go`：① 四个定界符在 `NewDelReader` 里预计算成 `delSpec`（`[]byte` + 长度 + 首字节），`scanRows`/`parseLine` 逐位置比较改为定长比较；② `ReadHeader`/`ReadRow` 用 `recordReader.Bytes()` 取代 `Text()`，取消整行 `string()` 物化；③ 无转义字段直接一次 `string(line[start:end])`，含转义字段用复用的 `scratch` 拼装，`fields`/`quoted`/`scratch` 在 reader 内跨行复用；④ 门控空 `--col-del` 分支（`hasCol`）——CLI 已拒绝空定界符，但库内直接构造 `DelReader` 时旧实现会因空前缀恒命中而不返回，新实现把整行作为单个字段返回。值类型仍保持 `string`——装箱到 `driver.Value` 对 `[]byte` 同样分配且更宽（`convTslice` 24 B vs `convTstring` 16 B），换类型不会减少分配。改写过程由差分测试暴露并修复两个引号边界缺陷：闭合定界符被留在值末尾（`TestDelReader_LargeRecord` 长度 +1）、双写转义后未把干净片段并入 `scratch` 导致 `Alice ""The Great""` 解析为 `Alice ""`。新增 `del_reader_equiv_test.go`（保留改写前的 `parseLine`/`scanRows` 作参考实现，28 个手写用例 + 4000 行随机语料 × 6 套定界符配置逐字段比对 + `FuzzDelReaderParse` 差分模糊，25 s 246,417 次执行无发现）与 `del_reader_bench_test.go`（2 万行贴近导出器真实产物的确定性语料，`ReadRow`/分帧/纯解析三段基准）。实测：微基准 89.4→31.4 ms（2.8×）、31.6→9.3 ms（3.4×）、45.8→18.5 ms（2.5×），`ReadRow` 分配 757,137→440,256 次/操作、驻留 26.8→10.5 MB/操作（同一语料在 HEAD 工作树与新树上背靠背各测两轮，取其一）；端到端 `--threads 1` 6.81→5.70 s、客户端 CPU 8.02→3.76 s，t4 5.61→3.64 s，t1→t4 加速比 1.21×→1.87×。6 组定界符/转义/十六进制标志组合的真实往返逐行一致（其中一组暴露上表的 `--escape "''"` 既有缺陷）。`make test`（`-race`）、`make test-live`、`go vet ./internal/...`、`gofmt -l` 全通过。新增测试资产使全仓库规模升至 28 文件 / 139 `Test*` / 5 `Fuzz*` / 8 `Benchmark*`，11.1、11.2、九节、十二节的计数同步更新，7.5 增补「DEL 解析路径」小节 |
 | 41 | 并行导出去掉分片临时文件，改为流式写出 | 承接 40 之后的性能分析：并行导出每个分片先写 `<output>.shard_<i>.tmp`，全部分片结束后再 `io.Copy` 拼接，**每个字节落盘两次**（实测 DEL 输出 124,903,023 B 对应写入量 487,920×512 B ≈ 238 MB，SQL 131,872,590 B 对应 515,152 块 ≈ 251 MB），并行导出因此需要两倍输出的空闲空间，且被信号打断时输出目录残留整批临时文件（实测 4 个共 33 MB）。新增 `internal/export/shard_stream.go`：每个分片序列化到自己的 `shardPipe`（256 KiB 块，块深由 64 MiB 总预算按分片数均分、上界 64 块下界 2 块），`exporter.go` 的 `mergeShardFiles` 改为 `writeShardStream`，在分片仍在产出时按分片序号依次消费并写进最终文件，不再创建任何临时文件；分片失败或写文件失败（如 `ENOSPC`）时删除已写出的不完整输出并警告 `incomplete output file removed`，其余阻塞在队列上的分片由 `shard output consumer stopped` 解除（不会挂死，ctx 取消同路径）。队列深度实测是关键：SQL 格式每分片 2.5 MiB 时墙钟 1.31 s、8 MiB 时 1.24 s，对旧实现 1.09 s（慢 14~20%，写合并 goroutine 反复等已经停下的生产端），16 MiB 回到 1.09 s 持平，故取预算值而非常数；代价是在途字节从磁盘移到堆上，4 分片峰值 RSS 约 33→111 MB（DEL）、114→215 MB（SQL）。验收：与旧二进制在同一库同一时刻并行导出的产物**逐字节一致**（DEL/SQL），写入量减半（DEL 487,920→243,952 块、SQL 515,152→257,568 块），单线程导出产物不变，导入回读的行数与顺序无关 CRC 和与原表一致，32 MB tmpfs 上的 ENOSPC 用例失败后不留任何文件，7 次交替 A/B 取中位数。测试侧 `exporter_merge_test.go` 改为 `exporter_stream_test.go`（同一组 header/LOCK/前导断言改走队列）并新增分块顺序用例，`shard_stream_test.go` 以 9 个用例覆盖队列与流式语义；全仓库测试资产升至 29 文件 / 149 `Test*` / 5 `Fuzz*` / 8 `Benchmark*`，九节项目结构、11.1 计数同步，7.2 并行导出流程改写并新增失败与中断语义段落，README「并行导出」补充说明 |
+| 42 | 交叉选项 / 交叉命令行为矩阵，并修复它暴露的两个数据完整性缺陷 | 此前 CLI 侧只有 `cmd/cli_matrix_test.go` 钉住"哪些组合被接受或被拒"，库侧只有 `live_mysql_test.go` 走 API；**"选项被接受之后是否真的生效、导出与导入两侧是否对称"没有覆盖**。新增 `test/integration/option_matrix_test.go`（12 个测试入口、`TestMain` 一次性 `go build` 出真实二进制后用 argv 驱动，故 flag 解析、校验、config 装配、写入器、读取器全程在链路上）：DEL 布局修饰符成对往返（`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-char-del`/`--no-escape`/`--no-col-names`，含 `\t`、`\r\n` 转义写法）、逐字写入模式对不可表示数据的拒绝、SQL 攒批与单行 INSERT 的语句数/字节上界、`--threads` 的输出确定性、`--date-fmt`/`--timestamp-fmt`、`--no-data`/`--no-create` × `--mode create`、`--skip-count`/`--row-count` × 线程/`--batch-size`/`--commit-count`、`--messages` 在三格式与并行路径下的 SQL3104N/SQL3110N、`--no-replace` 哨兵存活、`--default-charset` × 二进制列 0x 自动切换。矩阵首轮跑出 3 个真缺陷：① **单线程导出失败留下半截产物**（20 万行表被 `--no-char-del` 拒于末行时残留 21,233,664 B 文件，并行路径早已删除），修复为 `exportSingle` 在 `os.Create` 之后注册共用的 `removeIncompleteOutput`（`exportParallel` 改为复用同一方法），注册点在处理之后保证创建前失败不会误删既有文件；② **无表头文件配位置 `-c` 静默丢首行**（`--no-col-names` 导出 + 只给 `-c` 导入时 3 行只进 2 行且退出 0，同一命令用于带表头文件又是对的），因文件自身无法区分两者、改名导入也走同一路径，故不改结果只补齐可见性：被当表头丢弃的那行若与目标表列名全不匹配，记 warn 并写入消息文件，说明加 `--no-col-names` 才不漏行；③ `--columns` 缺失时的报错只提示 `-c`，未说明无表头需成对使用，已在 7.4 与 README 的标志表补"成对使用"。同时确认三项**属既有行为而非缺陷**并写进文档：并行 SQL 输出在分片边界多出 `threads-1` 个 INSERT 头（数据一致，DEL 则逐字节一致，已按头数与字节差精确钉住）、`--timestamp-fmt` 省略 `ss` 会把秒截为 00（用户选定的精度，现固定其余字段不得变动）、非 utf8mb4 连接字符集对不可映射字符由服务端替换为 `?`（文本有损、二进制因 0x 自动切换无损）。另记录两项待用户定级的可用性问题：认证/字符集/库名这类永久错误被 ping 重试 3 次并 6 s 才失败，且错误前缀 `failed to ping database after 3 attempts` 掩盖真实原因；`--no-create` 文件配 `--mode create` 直接撞服务端 1146 而非事先提示文件不含建表语句。`make test`（`-race`）与真实库 `go test -race -count=1 ./test/integration` 全通过，测试资产升至 30 文件 / 161 `Test*`（+1 `TestMain`）/ 5 `Fuzz*` / 8 `Benchmark*`，九节项目结构、11.1 清单、7.2 失败与中断语义、7.4 位置映射、5.3 日志表、README 并行导出与 `--no-col-names` 说明同步 |

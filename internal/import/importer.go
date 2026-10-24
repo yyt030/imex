@@ -206,6 +206,25 @@ func (imp *Importer) Import(ctx context.Context) error {
 			if err := validatePositionalColumns(targetColumns, fileColumns); err != nil {
 				return err
 			}
+			if imp.cfg.Format == "del" && !imp.cfg.DelModifier.NoColNames && len(fileColumns) > 0 {
+				// Positional --columns consumes the first record as a header. That is
+				// right for a normal dump and silently drops a row for a
+				// --no-col-names one, and the file alone cannot tell the two apart.
+				// The one decisive signal is the target table: if none of the consumed
+				// fields is one of its columns, the "header" is probably data, so the
+				// user has to be told which record was dropped and how to keep it.
+				if ambiguous, err := imp.headerLooksLikeData(ctx, fileColumns); err != nil {
+					common.Logger.Warn("header check failed", "error", err)
+				} else if ambiguous {
+					warn := fmt.Sprintf("the first record of the input file was treated as the column header and not imported (fields: %s); "+
+						"none of them is a column of table %q, so if the file was exported with --no-col-names add --no-col-names to the import "+
+						"to load that record as data", strings.Join(fileColumns, ", "), imp.cfg.Table)
+					common.Logger.Warn(warn, "columns", imp.cfg.Columns)
+					if imp.msg != nil {
+						imp.msg.WriteWarning(warn)
+					}
+				}
+			}
 		}
 	} else {
 		targetColumns = fileColumns
@@ -476,6 +495,47 @@ WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND (NON_UNIQUE = 0 OR INDEX_NAME = 'P
 		return 0, errors.Wrap(err, "failed to inspect unique indexes")
 	}
 	return n, nil
+}
+
+// headerLooksLikeData reports whether the fields ReadHeader consumed as a
+// column header are more likely to be a data row. A header written by the tool
+// carries the table's own column names, so when none of the consumed fields is a
+// column of the target table the record is probably data: a --no-col-names dump
+// imported with positional --columns lands exactly there. An unknown table or an
+// empty column list is not evidence of anything, so it reports false and leaves
+// the import alone.
+func (imp *Importer) headerLooksLikeData(ctx context.Context, fields []string) (bool, error) {
+	if imp.cfg.Table == "" {
+		return false, nil
+	}
+	rows, err := imp.db.QueryContext(ctx,
+		common.TagSQL("SELECT UPPER(COLUMN_NAME) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"),
+		imp.cfg.Database, imp.cfg.Table)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to list target table columns")
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool, len(fields))
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, errors.Wrap(err, "failed to scan target table column")
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, errors.Wrap(err, "target table column iteration error")
+	}
+	if len(columns) == 0 {
+		return false, nil
+	}
+	for _, f := range fields {
+		if columns[strings.ToUpper(strings.TrimSpace(f))] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // columnInfoFor resolves the ColumnKind of each target column (by name) from

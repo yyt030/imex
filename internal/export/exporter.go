@@ -174,6 +174,21 @@ func (e *Exporter) Export(ctx context.Context) error {
 	return e.exportSingle(ctx, startTime)
 }
 
+// removeIncompleteOutput drops the output file a failed run left behind, so that
+// both export paths keep the same promise: the file either holds the whole dump
+// or is not there. It is only called after the output file has been created, so
+// a failure before that point cannot delete a pre-existing file.
+func (e *Exporter) removeIncompleteOutput() {
+	switch err := os.Remove(e.config.Output); {
+	case err == nil:
+		common.Logger.Warn("incomplete output file removed", "output", e.config.Output)
+	case os.IsNotExist(err):
+		// Already gone: nothing to clean up.
+	default:
+		common.Logger.Warn("failed to remove incomplete output file", "output", e.config.Output, "error", err)
+	}
+}
+
 // warningFunc returns a callback that mirrors writer warnings into the message
 // file, or nil when no message file was requested.
 func (e *Exporter) warningFunc() func(string) {
@@ -193,7 +208,7 @@ func (e *Exporter) messageTableName() string {
 }
 
 // exportSingle performs single-threaded export with pipeline optimization
-func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) error {
+func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err error) {
 	// Detect server type BEFORE opening the streaming cursor: the single
 	// export connection (MaxOpenConns=1) is held for the whole result set,
 	// so any metadata query issued after this point would deadlock.
@@ -284,6 +299,17 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) error 
 		}
 		return errors.Wrap(err, "failed to create output file")
 	}
+	// A dump is either complete or absent. Once the output file exists, every
+	// later failure has to take it along, exactly as the parallel path already
+	// does: a truncated file carries the dump's name and looks finished. This
+	// defer is registered before the Close below so that Close runs first, which
+	// is what lets the removal succeed on Windows as well.
+	defer func() {
+		if err != nil {
+			e.removeIncompleteOutput()
+		}
+	}()
+
 	defer outputFile.Close()
 
 	// Create appropriate writer based on format
@@ -559,11 +585,7 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	// drop it and say so. (Temporary files used to hide this by leaving the
 	// previous output untouched.)
 	if exportErr != nil {
-		if err := os.Remove(e.config.Output); err != nil && !os.IsNotExist(err) {
-			common.Logger.Warn("failed to remove incomplete output file", "output", e.config.Output, "error", err)
-		} else {
-			common.Logger.Warn("incomplete output file removed", "output", e.config.Output)
-		}
+		e.removeIncompleteOutput()
 		return exportErr
 	}
 

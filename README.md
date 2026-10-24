@@ -336,7 +336,7 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | `--row-count` | 最多导入 n 行 | `0`（无限制） |
 | `--commit-count` | 每 n 行提交一次事务 | `1000` |
 | `--no-char-del` | 不使用字符串定界符（裸字段不转义：数据含列/行分隔符时导出报错） | `false` |
-| `--no-col-names` | 输入文件第一行不是列名（无表头时须用 `-c/--columns` 指定目标列，否则报清晰错误） | `false` |
+| `--no-col-names` | 输入文件第一行不是列名。无表头时必须同时用 `-c/--columns` 指定目标列，否则报清晰错误；反过来，只给 `-c` 而不给 `--no-col-names` 时第一行仍按列名行处理并被丢弃（文件本身无法区分两种情况），此时若这些字段与目标表列名全不匹配，工具会发出 `the first record of the input file was treated as the column header and not imported` 警告并写入消息文件，提示补上 `--no-col-names` | `false` |
 
 **全局选项：**
 
@@ -416,7 +416,7 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 >
 > 并行导出**不产生临时文件**：分片把序列化结果写进自己的字节队列，另一个 goroutine 按分片序号依次消费并直接写最终文件，因此磁盘写入量等于输出体积（旧实现先写 `<output>.shard_N.tmp` 再拼接，每个字节落盘两次：实测 125 MB 的 DEL 导出写入 238 MB）。队列是固定 64 MiB 预算按分片数均分，`--threads 4` 时每分片 16 MiB 在途，进程峰值内存相应上浮约 100 MB；深度调浅会明显拖慢导出（实测每分片 2.5 MiB 时 SQL 格式慢约 20%），所以这个值是量出来的，不是猜的。
 >
-> 失败时（分片报错、磁盘写满等）不保留半截产物：已写出的输出文件会被删除并记一条 `incomplete output file removed` 警告，其余分片立即解除阻塞。未安装信号处理器，`Ctrl-C` 仍会直接终止进程并留下一个不完整的输出文件，需要自行删除。
+> 失败时（分片报错、磁盘写满等）不保留半截产物：已写出的输出文件会被删除并记一条 `incomplete output file removed` 警告，其余分片立即解除阻塞。单线程导出同样如此——此前它只在报错信息里承认失败，磁盘上仍留着已经写出的部分（实测 20 万行表在第 20 万零一行被拒时留下 21 MB），现在两条路径统一为**要么完整、要么没有**。未安装信号处理器，`Ctrl-C` 仍会直接终止进程并留下一个不完整的输出文件，需要自行删除。
 
 ### 流水线与内存控制
 
@@ -779,6 +779,8 @@ INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (2,'Bob','bob@exam
 | 语句执行失败时错误信息不含 SQL，难以定位 | 失败 SQL 随错误回显到 stderr/日志/消息文件；默认脱敏（占位符保留，值以 `str(14)/num/NULL/bytes(256)` 类型标签呈现），2048 字节截断并保持引号配平；`--echo-sql-values` / `GOMYDUMP_ECHO_SQL_VALUES=1` 可显式内联真实值 |
 | 失败时以裸 `Error:` 行输出、与其它日志格式不一致；版本信息不在首行；进度日志无法关闭 | 命令失败统一走 `level=ERROR msg="command failed"` 日志记录（`--error-stack` 追加调用栈）；版本横幅 `gomydump starting` 提前为运行首行；新增 `--quiet` / `GOMYDUMP_QUIET=1` 禁止定时进度日志（消息文件进度不受影响） |
 | 导入行数统计把"写入相同值的行"当成新增（`insert_update` 重复导入同一文件时报 `inserted=N updated=0`）| 每批按服务端 affected 拆成互斥的 `inserted`/`updated`/`unchanged`，三者之和恒等于批行数；`replace` 模式（先清空目标表）仍全部计新增。实测：相同内容重导 → `inserted=0 updated=0 unchanged=4`，全部改动 → `updated=4`，删 2 行后重导 → `inserted=2 unchanged=2` |
+| 单线程导出失败只报错不清理，磁盘上留下半截产物（实测 20 万行表被 `--no-char-del` 拒于末行时残留 21 MB，文件名与成功导出一致）| 两条导出路径统一"要么完整、要么没有"：`exportSingle` 在创建输出文件之后注册与并行路径共用的 `removeIncompleteOutput`，任何后续失败都删除该文件；注册点保证创建之前的失败（查询报错、`--no-replace` 命中已有文件）不会误删既有文件 |
+| `--no-col-names` 导出的文件只用 `-c` 导入时静默丢掉首行（3 行只进 2 行、退出码 0）| 文件本身无法区分"有表头 + 位置映射"与"无表头"，两种情形都必须能导入，因此不改结果、只补可见性：被当作表头丢弃的那一行若与目标表列名全不匹配，记 warn 并写入消息文件，提示补 `--no-col-names`；`--no-col-names` 是成对选项，导出加了导入也要加 |
 
 ## 项目结构
 
