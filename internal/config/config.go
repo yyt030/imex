@@ -127,10 +127,15 @@ type ExportConfig struct {
 	DelModifier DelModifier
 
 	// SQL format options
-	StatementSize   int  // max bytes per generated INSERT statement
-	SingleRowInsert bool // emit one INSERT statement per row
-	NoCreate        bool // skip CREATE TABLE
-	NoData          bool // skip INSERT statements
+	StatementSize int // max bytes per generated INSERT statement
+	// ExtendedInsert merges rows into multi-row INSERT statements bounded by
+	// StatementSize. The default is false: one row is one INSERT statement, because
+	// the import side re-batches rows by BatchSize whatever the file looks like
+	// (verified against the server's general log), so merging on the export side
+	// only inflates the file and makes the reader materialise a whole statement.
+	ExtendedInsert bool
+	NoCreate       bool // skip CREATE TABLE
+	NoData         bool // skip INSERT statements
 
 	// Binary column encoding. HexBlob forces 0x literals; NoHexBlob forces raw
 	// passthrough. Both false means "automatic": hex is enabled whenever

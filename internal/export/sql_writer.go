@@ -133,10 +133,12 @@ func (s *SQLWriter) WriteHeader(columns []string) error {
 	return nil
 }
 
-// SetSingleRowInsert switches to one INSERT statement per row (the mysqldump
-// --skip-extended-insert layout). Batching by --statement-size stops, so the
-// size option degrades into a warning threshold: a row whose own statement is
-// larger than it is still written whole, because a row cannot be split.
+// SetSingleRowInsert selects the layout the exporter uses by default: one INSERT
+// statement per row (the mysqldump --skip-extended-insert layout). Batching by
+// --statement-size stops, so the size option degrades into a warning threshold:
+// a row whose own statement is larger than it is still written whole, because a
+// row cannot be split. The exporter turns this off only when --extended-insert
+// is given, since the import side re-batches rows whatever the file looks like.
 func (s *SQLWriter) SetSingleRowInsert(on bool) {
 	s.singleRow = on
 }

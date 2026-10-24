@@ -450,27 +450,46 @@ func TestOptionMatrixPartialOutputCleanup(t *testing.T) {
 	}
 }
 
-// TestOptionMatrixSQLBatching asserts that the batching options change the file
-// layout as documented and still round-trip to the same rows.
+// statementCapSlack is how far a completed multi-row INSERT may exceed
+// --statement-size. The writer tests the cap before appending a tuple, counting
+// the pending VALUES and the column list but not the ", " that joins the new
+// tuple or the ";\n" that closes the statement, so four bytes is the ceiling.
+const statementCapSlack = 4
+
+// TestOptionMatrixSQLBatching asserts the SQL layout contract from both sides:
+// the default writes one INSERT per row, --extended-insert merges them (bounded
+// by --statement-size), the deprecated --single-row-insert is now just the
+// default, and every layout still round-trips to the same rows.
 func TestOptionMatrixSQLBatching(t *testing.T) {
 	env := newCLILive(t)
 	src, _ := env.makePair(t, "sqlbatch")
 
+	// One row per INSERT is the default layout, so the baseline is the statement
+	// count to beat: any merging option must produce strictly fewer.
 	baseline := env.cliExport(t, src, "sql", "baseline.sql")
 	baseText := readFile(t, baseline)
 	baseInserts := strings.Count(baseText, "INSERT INTO ")
+	if baseInserts != 10 {
+		t.Fatalf("default SQL layout is %d statements for a 10-row table, want one per row:\n%s", baseInserts, firstLines(baseText, 12))
+	}
 
 	cases := []struct {
 		name  string
 		flags []string
-		// wantInserts is the exact statement count the layout option must produce.
+		// wantInserts is the exact statement count; a negative value means "merged,
+		// so fewer than the one-row-per-statement baseline".
 		wantInserts int
 		// maxStmtBytes bounds every generated statement when the option is a size cap.
 		maxStmtBytes int
 	}{
-		{"小批量攒批", []string{"--statement-size", "128"}, 0, 128},
-		{"单行 INSERT", []string{"--single-row-insert"}, 10, 0},
-		{"攒批叠加单行 INSERT", []string{"--statement-size", "128", "--single-row-insert"}, 10, 0},
+		// The narrowest row statement here is over 160 bytes and the widest is near
+		// 800, so a 512-byte cap has to be compared against those: it merges the
+		// narrow rows and still leaves the wide row on its own line. A smaller cap
+		// would sit below every row and merge nothing, which proves nothing.
+		{"旧单行选项仍是默认布局", []string{"--single-row-insert"}, 10, 0},
+		{"--extended-insert 合并成多行语句", []string{"--extended-insert"}, -1, 0},
+		{"--extended-insert 按 512 字节攒批", []string{"--extended-insert", "--statement-size", "512"}, -1, 512},
+		{"单给 --statement-size 不改变默认布局", []string{"--statement-size", "512"}, 10, 0},
 	}
 
 	for _, tc := range cases {
@@ -479,11 +498,11 @@ func TestOptionMatrixSQLBatching(t *testing.T) {
 			text := readFile(t, file)
 
 			n := strings.Count(text, "INSERT INTO ")
-			if tc.wantInserts != 0 && n != tc.wantInserts {
-				t.Errorf("generated %d INSERT statements, want %d", n, tc.wantInserts)
-			}
-			if n <= baseInserts && tc.maxStmtBytes == 0 {
-				t.Errorf("layout option produced %d statements, no more than the %d of the baseline", n, baseInserts)
+			switch {
+			case tc.wantInserts > 0 && n != tc.wantInserts:
+				t.Errorf("generated %d INSERT statements, want exactly %d", n, tc.wantInserts)
+			case tc.wantInserts < 0 && n >= baseInserts:
+				t.Errorf("--extended-insert merged nothing: %d statements, baseline is %d", n, baseInserts)
 			}
 			if tc.maxStmtBytes > 0 {
 				for _, line := range strings.Split(text, "\n") {
@@ -492,7 +511,10 @@ func TestOptionMatrixSQLBatching(t *testing.T) {
 					}
 					// A single row larger than the cap must still be emitted whole
 					// (graceful degradation), so only multi-row statements are bound.
-					if strings.Count(line, "), (") > 0 && len(line) > tc.maxStmtBytes {
+					// The cap is checked as "pending VALUES + new tuple + column list",
+					// so the ", " join and the ";\n" terminator land on top of it: four
+					// bytes is the most a completed statement can run over.
+					if strings.Count(line, "), (") > 0 && len(line) > tc.maxStmtBytes+statementCapSlack {
 						t.Errorf("multi-row statement is %d bytes, over the %d-byte --statement-size: %s",
 							len(line), tc.maxStmtBytes, firstLines(line, 1))
 					}
@@ -509,20 +531,27 @@ func TestOptionMatrixSQLBatching(t *testing.T) {
 
 // TestOptionMatrixParallelOutput pins what --threads must and must not change.
 // A parallel DEL dump is byte-identical to a serial one, because the shard pipes
-// are drained in shard order by a single writer. A parallel SQL dump cannot be:
-// every shard flushes its own open INSERT when it ends, so shard boundaries turn
-// into extra statement headers. The invariant is therefore bounded and exact --
-// at most threads-1 additional statements, and the byte difference is precisely
-// the size of those headers -- so neither rows nor escaping can drift.
+// are drained in shard order by a single writer. The default SQL layout is
+// byte-identical for the same reason plus one more: a row is a whole statement,
+// so a shard boundary never leaves an open INSERT to flush. With
+// --extended-insert the boundary does cost something, and the invariant is
+// bounded and exact -- at most threads-1 additional statements, and the byte
+// difference is precisely the size of those headers -- so neither rows nor
+// escaping can drift.
 func TestOptionMatrixParallelOutput(t *testing.T) {
 	env := newCLILive(t)
 	src, _ := env.makePair(t, "parout")
 
 	serialDEL := readFile(t, env.cliExport(t, src, "del", "serial.del"))
 	serialSQLText := readFile(t, env.cliExport(t, src, "sql", "serial.sql"))
-	header := insertHeader(serialSQLText)
+	mergedText := readFile(t, env.cliExport(t, src, "sql", "serial_merged.sql", "--extended-insert"))
+	header := insertHeader(mergedText)
 	if header == "" {
 		t.Fatal("serial SQL dump has no INSERT header to measure against")
+	}
+	if strings.Count(serialSQLText, header) != 10 {
+		t.Fatalf("serial default dump has %d INSERT headers for a 10-row table, want one per row",
+			strings.Count(serialSQLText, header))
 	}
 
 	for _, threads := range []string{"2", "4"} {
@@ -533,9 +562,16 @@ func TestOptionMatrixParallelOutput(t *testing.T) {
 			}
 
 			sqlFile := env.cliExport(t, src, "sql", "parallel_"+threads+".sql", "--threads", threads)
-			got := readFile(t, sqlFile)
+			if got := readFile(t, sqlFile); got != serialSQLText {
+				t.Errorf("parallel single-row SQL dump is not byte-identical to serial (%d vs %d bytes)",
+					len(got), len(serialSQLText))
+			}
 
-			nSerial := strings.Count(serialSQLText, header)
+			mergedFile := env.cliExport(t, src, "sql", "parallel_merged_"+threads+".sql",
+				"--threads", threads, "--extended-insert")
+			got := readFile(t, mergedFile)
+
+			nSerial := strings.Count(mergedText, header)
 			nParallel := strings.Count(got, header)
 			extra := nParallel - nSerial
 			if extra < 0 || extra > 4 { // 4 shards => at most 3 boundaries, 1 to spare
@@ -544,7 +580,7 @@ func TestOptionMatrixParallelOutput(t *testing.T) {
 			}
 			// Each extra statement costs exactly one header: the row separator ", "
 			// and the statement terminator + newline ";\n" are the same width.
-			if delta := len(got) - len(serialSQLText); delta != extra*len(header) {
+			if delta := len(got) - len(mergedText); delta != extra*len(header) {
 				t.Errorf("parallel dump is %d bytes larger than serial for %d extra statements (header %d bytes)",
 					delta, extra, len(header))
 			}

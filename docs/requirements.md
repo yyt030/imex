@@ -18,6 +18,7 @@ gomydump encrypt   # 加密密码
 - **导出基于 SQL**：通过 `--query` 传入 SELECT 语句，用户完全控制导出什么数据
 - **导入多种模式**：通过 `--mode` 指定 INSERT / INSERT_UPDATE / REPLACE / CREATE
 - **定界文件格式**：默认使用 DEL（定界 ASCII）格式，支持自定义分隔符
+- **单行 SQL 布局**：`--format sql` 默认每行一条 INSERT（文件逐行可切分），攒批统一由导入侧按 `--batch-size` 完成；`--extended-insert` 保留 mysqldump 的合并布局，只用于换取更小的文件体积
 - **Parquet 列式格式**：支持 Parquet 二进制列式存储，普通列存储为可空 UTF-8 字符串，二进制列存储为原始 BYTE_ARRAY
 - **文件类型修饰符**：DB2 的 `MODIFIED BY` 拆分为独立命令行选项
 - **日志文件**：`--messages` / `-m` 把本次运行的命令行日志整体交给该文件（终端因此不再打印，文件内容是标准日志记录而非 DB2 风格报告）
@@ -140,16 +141,18 @@ gomydump export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQ
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
-| `--statement-size` | 单条 INSERT 语句最大字节数（范围 1–268435456） | `8388608`（8 MiB） |
-| `--single-row-insert` | 每行一条 INSERT 语句（禁用 VALUES 攒批，等价 mysqldump `--skip-extended-insert`）；SQL 格式专属，此时 `--statement-size` 不再参与攒批，仅在单行语句超限时告警一次（一行无法再拆分） | `false` |
+| `--statement-size` | 单条 INSERT 语句最大字节数（范围 1–268435456）。仅在使用 `--extended-insert` 时参与分组；默认单行布局下一行无法再拆分，它退化为告警阈值 | `8388608`（8 MiB） |
+| `--extended-insert` | 把多行合并进一条 INSERT（等价 mysqldump 的默认布局），按 `--statement-size` 的字节预算分组 | `false` |
+| `--single-row-insert` | **已废弃**：每行一条 INSERT 现在是默认布局，该选项保留以兼容既有脚本，传入后不改变任何行为（与 `--extended-insert` 同时给出为用法错误） | `false` |
 | `--no-create` | 不输出 CREATE TABLE 语句 | `false` |
 | `--no-data` | 不输出 INSERT 语句（仅导出表结构） | `false` |
 
-**`--single-row-insert` 说明：**
+**SQL 布局默认值说明：**
 
-- 仅 `--format sql` 时可用；在非 SQL 格式下显式传入会报错。
-- 开启后每条 INSERT 恰好占一个物理行（文件可按行切分），与 mysqldump `--skip-extended-insert` 布局等价。
-- `--statement-size` 在单行模式下退化为告警阈值：当单行 INSERT 字节数超过该值时打印一次警告，但语句仍然完整写出（因为单行无法拆分）。
+- 默认布局是每行一条 INSERT（mysqldump `--skip-extended-insert` 的形态），每条语句恰好占一个物理行，文件可按行切分。
+- 攒批改由导入侧承担：导入器把语句拆成行后按 `--batch-size` 重新组批，与文件布局无关。实测 20,000 行、`--batch-size 1000`，单行文件（20,000 条语句）与合并文件（1 条语句）在目标库 general log 里都是 20 条服务端 INSERT。
+- `--extended-insert` 换到的是体积而非速度：100 万行窄表实测单行 2.5 s / 峰值内存 33 MB / 278,790,434 B（gzip 28,247,005 B），合并 2.7 s / 70 MB / 153,792,809 B（gzip 27,050,101 B，19 条语句）。导入侧要一次性解析整条语句，同一份数据在 `--batch-size 1000` 下单线程峰值内存为 44 MB（单行文件）对 216 MB（合并文件）。
+- 三个选项均仅 `--format sql` 可用；在非 SQL 格式下显式传入会报错。`--single-row-insert` 与 `--extended-insert` 互斥，同时给出报 `--single-row-insert and --extended-insert cannot be used together`（退出码 2）。
 
 **SQL 格式转义规则：**
 
@@ -590,7 +593,7 @@ GOMYDUMP_LOG_FORMAT=text gomydump import -h 127.0.0.1 -u root -p pass -D mydb -i
 | 记录 | 触发时机 |
 |------|----------|
 | `gomydump starting` | 每次真实运行的首行（version/build_time/git_commit/go_version/command）；`version` 子命令本身不产生任何日志记录 |
-| `export config` / `import config` | 完整生效参数快照（含 DEL 定界符、字符集、批/管道参数、`progress_interval`），由 `NewExporter`/`NewImporter` 在**建连接之前**打印，因此连接失败时也看得到参数；紧随横幅之后（原先重复它的 `export started`/`import started` 已删除） |
+| `export config` / `import config` | 完整生效参数快照（含 DEL 定界符、字符集、批/管道参数、SQL 语句布局 `statement_size`/`extended_insert`、`progress_interval`），由 `NewExporter`/`NewImporter` 在**建连接之前**打印，因此连接失败时也看得到参数；紧随横幅之后（原先重复它的 `export started`/`import started` 已删除） |
 | `session variables will be set on every connection` | 传入了 `--session-var` |
 | `export progress` / `import progress` | 每 `--progress-interval`（默认 5 秒）一条定时进度（`--quiet` 抑制；运行短于间隔时一条也不打印） |
 | `parallel export detected` / `shard export completed` / `parallel export completed` | 并行导出：分片计划、每个分片、汇总 |
@@ -681,13 +684,14 @@ GOMYDUMP_ECHO_SQL_VALUES=1 gomydump import ...
 | `MODIFIED BY NOCHARDEL` | `--no-char-del` |
 | `MODIFIED BY NOCOLNAMES` | `--no-col-names` |
 | `MODIFIED BY REPLACE` | 默认覆盖（`os.Create` 截断）；`--no-replace` 改为拒绝覆盖 |
-| `MODIFIED BY STATEMENTSIZE=<n>` | `--statement-size <n>` |
+| `MODIFIED BY STATEMENTSIZE=<n>` | `--statement-size <n>`（默认单行布局下退化为告警阈值，只有 `--extended-insert` 时参与语句合并） |
 | `MODIFIED BY NOCREATE` | `--no-create` |
 | `MODIFIED BY NODATA` | `--no-data` |
 | `MODIFIED BY SKIPCOUNT <n>` | `--skip-count <n>` |
 | `MODIFIED BY ROWCOUNT <n>` | `--row-count <n>` |
 | `MODIFIED BY COMMITCOUNT <n>` | `--commit-count <n>` |
 | —（DB2 无对应） | `--progress-interval <dur>`：定时进度日志的间隔，默认 5 秒（本工具自有选项） |
+| —（DB2 无对应） | `--extended-insert` 与已废弃的 `--single-row-insert`：SQL 文件的语句布局开关（本工具自有选项，mysqldump 用 `--extended-insert`/`--skip-extended-insert` 表达同一对语义） |
 
 **已移除的 DB2 映射选项（代码中不再存在）：**
 
@@ -727,7 +731,7 @@ GOMYDUMP_ECHO_SQL_VALUES=1 gomydump import ...
 
 ### 5.2 SQL 格式
 
-**文件结构：**
+**文件结构（默认，每行一条 INSERT）：**
 ```sql
 /*!40101 SET NAMES utf8mb4 */;
 LOCK TABLES `users` WRITE;
@@ -741,11 +745,13 @@ CREATE TABLE `users` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Data for users
-INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (1,'Alice','alice@example.com','2026-01-01 10:00:00'),(2,'Bob','bob@example.com','2026-01-02 11:00:00'),(3,'Charlie','charlie@example.com','2026-01-03 12:00:00');
+INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (1,'Alice','alice@example.com','2026-01-01 10:00:00');
+INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (2,'Bob','bob@example.com','2026-01-02 11:00:00');
+INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (3,'Charlie','charlie@example.com','2026-01-03 12:00:00');
 UNLOCK TABLES;
 ```
 
-**`--single-row-insert` 模式下的文件结构：**
+**`--extended-insert` 模式下的文件结构：**
 ```sql
 /*!40101 SET NAMES utf8mb4 */;
 LOCK TABLES `users` WRITE;
@@ -753,20 +759,18 @@ LOCK TABLES `users` WRITE;
 CREATE TABLE `users` (...);
 
 -- Data for users
-INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (1,'Alice','alice@example.com','2026-01-01 10:00:00');
-INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (2,'Bob','bob@example.com','2026-01-02 11:00:00');
-INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (3,'Charlie','charlie@example.com','2026-01-03 12:00:00');
+INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (1,'Alice','alice@example.com','2026-01-01 10:00:00'),(2,'Bob','bob@example.com','2026-01-02 11:00:00'),(3,'Charlie','charlie@example.com','2026-01-03 12:00:00');
 UNLOCK TABLES;
 ```
 
 **特点：**
 - 包含 CREATE TABLE 语句（可通过 `--no-create` 跳过）
-- 默认模式：多条 VALUES 合并为一条 INSERT 语句，由 `--statement-size`（默认 8 MiB）控制攒批上限
-- 单行模式（`--single-row-insert`）：每行一条 INSERT，文件可按行切分
+- 默认模式：每行一条 INSERT，文件可按行切分（mysqldump `--skip-extended-insert` 的布局）
+- `--extended-insert`：多条 VALUES 合并为一条 INSERT，合并上限由 `--statement-size`（默认 8 MiB）控制。合并只改变文件体积，不改变导入侧打给服务端的语句——导入器把语句拆成行后按 `--batch-size` 重新攒批（见 2.1.6 实测）
 - 字符串值按转义规则处理（见 2.1.6），确保每条 INSERT 恰好占一个物理行
 - 文件首行包含 `/*!40101 SET NAMES <charset> */;`
 - MySQL 下数据段带 LOCK TABLES/UNLOCK TABLES 一对；OceanBase 下不带
-- 可直接用 MySQL 客户端执行
+- gomydump 自身的导入路径跳过 `SET NAMES`/`LOCK TABLES`/`UNLOCK TABLES` 这些前导语句，不受布局影响。**但用标准 `mysql` 客户端回放空库要注意**：`LOCK TABLES` 写在 `CREATE TABLE` 之前，实测对不存在的表执行该文件在第 2 行就 `ERROR 1146 (42S02) Table doesn't exist` 中止，需先建表或剥掉这对锁语句（该顺序问题已在变更记录 47 行登记，待用户定级）
 
 ### 5.3 Parquet 格式
 
@@ -867,7 +871,7 @@ SHOW VARIABLES LIKE 'version_comment';
 3. 执行 --query 中的 SELECT 语句获取结果集
 4. 根据 --format 选择输出格式：
    - del：流式写入定界 ASCII 文件
-   - sql：生成 CREATE TABLE + INSERT 语句
+   - sql：生成 CREATE TABLE + INSERT 语句（默认每行一条 INSERT；`--extended-insert` 才按 `--statement-size` 把多行合并进一条语句）
    - parquet：列式写入 Parquet 文件（普通列为可空 UTF-8 字符串，二进制列为原始 BYTE_ARRAY）
 5. 应用修饰选项（--char-del, --col-del, --default-charset 等）
 6. 输出配置参数快照（在建立连接之前，见 NewExporter/NewImporter）
@@ -932,7 +936,7 @@ SHOW VARIABLES LIKE 'version_comment';
    - create：执行 CREATE TABLE（表名重写为 --table）+ INSERT（仅 SQL 格式）
 4. 根据 --format 选择输入格式：
    - del：解析定界 ASCII 文件
-   - sql：解析并执行 SQL 语句
+   - sql：拆出语句里的行值，按 `--batch-size` 重新组批后写入（文件的语句布局只影响体积，不影响下发的语句）
    - parquet：读取 Parquet 列式数据
 5. 应用修饰选项（--skip-count, --row-count, --commit-count 等）
 6. 输出配置参数快照（在建立连接之前，见 NewExporter/NewImporter）
@@ -950,7 +954,7 @@ SHOW VARIABLES LIKE 'version_comment';
 
 ### 7.4 导入攒批字节上限（`batchcap.go`）
 
-导入侧按 `--batch-size`（行数）攒批重建参数化 INSERT，现追加两道保护：
+导入侧按 `--batch-size`（行数）攒批重建参数化 INSERT，攒批规模与文件的语句布局无关（导出默认为每行一条 INSERT，见 2.1.6），现追加两道保护：
 
 **1) 占位符上限：**
 
@@ -1118,7 +1122,7 @@ gomydump/
 │   ├── export/
 │   │   ├── exporter.go        # 导出调度器（Pipeline 模式、并行分片、writeShardStream 流式写出）
 │   │   ├── del_writer.go      # DEL 格式写入器
-│   │   ├── sql_writer.go      # SQL 格式写入器（INSERT 合并/转义/单行模式/LOCK 抑制）
+│   │   ├── sql_writer.go      # SQL 格式写入器（默认每行一条 INSERT、`--extended-insert` 才按字节合并/转义/LOCK 抑制）
 │   │   ├── parquet_writer.go  # Parquet 格式写入器（列式存储）
 │   │   ├── shard.go           # 分片逻辑（主键/唯一键检测）
 │   │   ├── shard_stream.go    # 分片到输出文件的字节队列（并行导出流式写出，免临时文件）
@@ -1302,7 +1306,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 日志文件 | 验证 `--messages` / `-m` 下 stdout 与 stderr 均为空、文件即命令行日志（与不带该选项的 stderr 去掉时间戳/PID 后逐行相同）、首行为版本横幅、`--log-level` 与 `--log-format` 生效、不再出现 `SQL3xxxN` |
 | 错误堆栈 | 验证 `--error-stack` 和 `GOMYDUMP_ERROR_STACK=1` 输出完整堆栈 |
 | OceanBase | 在 OceanBase 上执行上述场景 |
-| `--single-row-insert` | 导出为 SQL + `--single-row-insert` → 验证每行一条 INSERT → 导入 → 数据校验 |
+| SQL 语句布局 | 默认导出为 SQL → 验证每行一条 INSERT；`--extended-insert` → 验证语句数严格减少且合并后的语句不超 `--statement-size`；`--single-row-insert` → 验证它仍是默认布局；三种布局各自导入 → 数据校验一致，且服务端收到的语句数相同 |
 | 导入字节上限 | 宽表/BLOB 大行导入 → 验证不触发 error 1153（`Packet too large`） |
 | 巨型 INSERT 导入 | 导入含超长 INSERT 语句的 SQL 文件 → 验证 `recordReader` 无上限读取 |
 | 导出/导入转义往返 | 含 `\n`/`\r`/`\t`/`'`/`\`/`\0`/`\x1a` 的数据 → 导出 SQL → 导入 → 数据一致 |
@@ -1314,11 +1318,11 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 
 ### 11.1 测试资产清单
 
-上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 30 个 `_test.go`、161 个 `Test*`（另有 1 个 `TestMain` 负责一次性构建被 CLI 测试调用的二进制）、5 个 `Fuzz*`、8 个 `Benchmark*`）。
+上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 31 个 `_test.go`、168 个 `Test*`（另有 1 个 `TestMain` 负责一次性构建被 CLI 测试调用的二进制）、5 个 `Fuzz*`、8 个 `Benchmark*`）。
 
 | 文件 | 用例数 | 覆盖点 | 运行方式 |
 |------|--------|--------|----------|
-| `cmd/cli_matrix_test.go` | 7 | 参数组合矩阵与退出码契约：DEL/SQL/parquet 专属选项互斥、`--log-format` 标志与环境变量、必填项缺失、`encrypt` 位置参数个数（越界为用法错误 2、密钥缺失仍为运行时 1）、`--progress-interval` 的默认值与取值边界（0 与负值均为用法错误 2）| `make test` |
+| `cmd/cli_matrix_test.go` | 8 | 参数组合矩阵与退出码契约：DEL/SQL/parquet 专属选项互斥、`--log-format` 标志与环境变量、必填项缺失、`encrypt` 位置参数个数（越界为用法错误 2、密钥缺失仍为运行时 1）、`--progress-interval` 的默认值与取值边界（0 与负值均为用法错误 2）、SQL 语句布局标志（缺省 `ExtendedInsert=false`、`--extended-insert` 落到 config、`--single-row-insert` 与 `--extended-insert` 同时给出为用法错误 2、`--extended-insert` 配 `--format del` 被拒）| `make test` |
 | `cmd/validate_fuzz_test.go` | 4 fuzz | 边界校验函数（batch-size、pipeline-buffer、statement-size、threads）对畸形输入不 panic | `make test` |
 | `cmd/version_log_test.go` | 2 | `version` 子命令不写日志记录（stdout/stderr 捕获后断言），`run` 横幅仍照常记录 | `make test` |
 | `internal/common/*_test.go`（7 个文件）| 29 | 瞬态错误判定、日志单行与切布局保持级别、日志文件 sink（挂载后接管 stderr、关闭后归还、并发写入不交叉、替换与失败路径）、进度计时器 stop 排空在飞的记录且二次 stop 不死锁、间隔未到不产出任何进度记录且 stop 不空等一个间隔、重试退避与取消、会话变量解析与 DSN 注入、失败 SQL 脱敏回显、DSN 构建 | `make test` |
@@ -1328,7 +1332,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | `main_test.go` | 1 | go/ast 静态守卫：全部 logger 调用消息首字母小写且单行（防日志词汇回归）| `make test` |
 | `test/integration/roundtrip_test.go` | 10 | 离线往返（写入器→读取器）：转义文本、每条语句一个物理行、`--statement-size` 攒批、`0x` 二进制字面量、MySQL 文本值与 HEX 一致、DEL 引号/反斜杠两种模式、看似十六进制的文本不被误解码、单行 INSERT | `make test` |
 | `test/integration/live_mysql_test.go` | 6 | 真实 MySQL 端到端：三种格式往返、并行导出与并行导入、四种导入模式、列映射、导入行数拆分对真实服务端 `RowsAffected` 的断言；`--messages` 日志文件随用例断言（记录齐全、无 `SQL3xxxN`、每行都是日志）；进度记录不得晚于结束汇总（单线程与并行 × 导出与导入，计时器压到 1 ms；末段走真实二进制，断言 `--progress-interval 1ms` 生效、配置回显带 `progress_interval`、不再有 `started` 记录） | `GOMYDUMP_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/db' make test-live`，未设置该变量时自动跳过 |
-| `test/integration/option_matrix_test.go` | 12 | 编译出真实二进制后用 argv 跑交叉矩阵：DEL 布局修饰符的导出/导入成对性、`--no-col-names` 无表头配对歧义、逐字写入模式的拒绝与残留文件清理、SQL 攒批/单行 INSERT 与 `--statement-size` 上界、并行 DEL 逐字节等于串行而并行 SQL 只多分片边界的语句头（按头数与字节差精确断言）、日期时间格式的对称性与精度截断、`--no-data`/`--no-create` × `--mode create`、`--skip-count`/`--row-count` × 线程/批量/提交、`--messages`/`-m` 在三格式与并行路径下等于命令行日志且终端静默（含 `-m` 短选项、`--log-format text`、`--log-level error`、失败记录）、`--no-replace` 哨兵文件存活、`--default-charset` 与二进制列 0x 自动切换 | 同上（`TestMain` 先 `go build` 一次，全部用例复用该二进制） |
+| `test/integration/option_matrix_test.go` | 12 | 编译出真实二进制后用 argv 跑交叉矩阵：DEL 布局修饰符的导出/导入成对性、`--no-col-names` 无表头配对歧义、逐字写入模式的拒绝与残留文件清理、SQL 语句布局（默认 10 行 10 条语句、`--single-row-insert` 仍是默认、`--extended-insert` 严格减少语句数、`--extended-insert --statement-size 512` 的合并语句不超上限+4 字节、单给 `--statement-size` 不改布局，每种布局都逐行往返校验）、并行导出：DEL 与默认 SQL 逐字节等于串行，`--extended-insert` 时只多分片边界的语句头（按头数与字节差精确断言）、日期时间格式的对称性与精度截断、`--no-data`/`--no-create` × `--mode create`、`--skip-count`/`--row-count` × 线程/批量/提交、`--messages`/`-m` 在三格式与并行路径下等于命令行日志且终端静默（含 `-m` 短选项、`--log-format text`、`--log-level error`、失败记录）、`--no-replace` 哨兵文件存活、`--default-charset` 与二进制列 0x 自动切换 | 同上（`TestMain` 先 `go build` 一次，全部用例复用该二进制） |
 
 `make test` 与 `make test-live` 固定 `CGO_ENABLED=1 go test -race`，这是 `-race` 的要求，与发布构建的 `CGO_ENABLED=0` 无关。
 
@@ -1382,7 +1386,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 1 | `--statement-size` 默认值调整 | 从 16 MiB（16777216 字节）降为 **8 MiB（8388608 字节）**，更贴近典型 `max_allowed_packet` 设置，降低导入侧重建语句时的内存峰值 |
 | 2 | 导入攒批新增字节上限 | 新增 `batchcap.go`：导入侧按 `max_allowed_packet` 的 9/10 设定每批字节预算（下限 64 KiB），同时按 `rows × columns ≤ 65535` 下调有效 `batch-size`。补上了宽表/BLOB 大行在导入侧可能触发 error 1153 的缺口 |
 | 3 | 补齐导出/导入转义与换行往返测试 | SQL 格式转义规则完整覆盖 `\n`/`\r`/`\t`/`\\`/`\0`/`\x1a`/`''`，确保每条 INSERT 恰好占一个物理行；导入侧 `recordReader` 替代 `bufio.Scanner`，无 token 长度上限 |
-| 4 | 新增 `--single-row-insert` | SQL 格式专属选项，开启后每行一条 INSERT 语句（等价 mysqldump `--skip-extended-insert`），`--statement-size` 退化为告警阈值 |
+| 4 | 新增 `--single-row-insert` | SQL 格式专属选项，开启后每行一条 INSERT 语句（等价 mysqldump `--skip-extended-insert`），`--statement-size` 退化为告警阈值。**注：第 47 行把这一布局改为 `--format sql` 的默认值，该选项降级为兼容别名，合并改由 `--extended-insert` 显式开启。** |
 | 5 | 并行导出 header/footer 统一 | `mergeShardFiles` 由 SQLWriter 统一写出 SET NAMES、CREATE TABLE、LOCK/UNLOCK TABLES；各分片片段设置 `SetSkipTableLocks(true)` 且 `writeCreate=false`，不再各自写 LOCK/UNLOCK |
 | 6 | DEL 导入解码 `0x` 二进制字面量 | 此前 DEL 导出在 `--hex-blob`（或非 utf8mb4 自动开启）下写出 `0x…`，但 DEL 读取端无列类型信息，按原文返回字符串，往返不还原字节。现由 `columnInfoFor` 在同一次 `information_schema` 查询中同时取回列类型与二进制标记，`DelReader.SetBinaryColumns` 据此解码；判定要求"无引号 + 目标列二进制 + 合法偶数长度十六进制"，因此文本列中的 `0xdead` 保持原样 |
 | 7 | 补齐连接加固三件套 | 新增 `common/dberr.go`（瞬态错误判定）、`common/retry.go`（3 次尝试、1s→2s 退避、上限 4s、20% 抖动）、`common/pool.go`（导入池 1m 空闲 / 5m 生存；导出池不做老化以免快照被回收）、`import/session.go`（事务、重连回放、30s 空闲提交）。修复单线程导入 `rowCount % commitCount` 在批大小不能整除时永不提交的缺陷，改为按事务内累计行数判断；重连后回放整个未提交事务而非仅失败批次，避免丢行；`COMMIT` 永不重试 |
@@ -1429,7 +1433,7 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 
 | # | 改动项 | 说明 |
 |---|--------|------|
-| 34 | 需求文档按实现全量核对后修订 | 以 `--help` 输出、`cmd/validate.go`、`internal/*` 常量与 `main.go` 的退出码分派为准逐项核对：全部 49 个选项在本文与 README 均有落点（无遗漏、无废弃选项），数值边界（port 1–65535、threads 1–256、batch-size 1–100000、pipeline-buffer 0–1024、statement-size ≤268435456、commit-count ≥1、skip/row-count ≥0）与 `docs/cli-oracle.txt` 快照一致。据此修订：1.3 技术栈补齐真实版本（`go.mod` 的 `go 1.26.9`、mysql v1.9.3、cobra v1.10.2、vitess v0.24.5、parquet-go v0.26.4、pkg/errors v0.9.1）并说明超时经驱动字段注入；二节开头补子命令别名 `exp`/`imp`、`-?` 帮助短选项与 completion 禁用；新增 2.4 `encrypt`（`ENC:` + AES-256-GCM + `GOMYDUMP_KEY`，含解密调用点与失败退出码实测）；3.3.4 退出码补判定口径（含环境变量失败的分流与位置参数个数的归类）；九节项目结构补 `main.go`、`main_test.go`、`usage.go`、`stats.go`、`test/`、`docs/`、`go.sum`；十一节新增 11.1 测试资产清单（24 文件 / 127 `Test*` / 4 `Fuzz*` / 5 `Benchmark*`）与 11.2 未自动化覆盖场景；十二节交付物改为三平台二进制 + 源码包 + SHA256 清单，并显式声明不再提供 macOS 预编译产物。README 另修两处遗留目录名 `mysql-backup-tool` → `gomydump` |
+| 34 | 需求文档按实现全量核对后修订 | 以 `--help` 输出、`cmd/validate.go`、`internal/*` 常量与 `main.go` 的退出码分派为准逐项核对：全部 49 个选项在本文与 README 均有落点（无遗漏、无废弃选项）。**注：此后新增 `--progress-interval`（第 46 行）与 `--extended-insert`（第 47 行），按同一口径实测当前选项并集为 51 个（export 43、import 39、全局 6）**，数值边界（port 1–65535、threads 1–256、batch-size 1–100000、pipeline-buffer 0–1024、statement-size ≤268435456、commit-count ≥1、skip/row-count ≥0）与 `docs/cli-oracle.txt` 快照一致。据此修订：1.3 技术栈补齐真实版本（`go.mod` 的 `go 1.26.9`、mysql v1.9.3、cobra v1.10.2、vitess v0.24.5、parquet-go v0.26.4、pkg/errors v0.9.1）并说明超时经驱动字段注入；二节开头补子命令别名 `exp`/`imp`、`-?` 帮助短选项与 completion 禁用；新增 2.4 `encrypt`（`ENC:` + AES-256-GCM + `GOMYDUMP_KEY`，含解密调用点与失败退出码实测）；3.3.4 退出码补判定口径（含环境变量失败的分流与位置参数个数的归类）；九节项目结构补 `main.go`、`main_test.go`、`usage.go`、`stats.go`、`test/`、`docs/`、`go.sum`；十一节新增 11.1 测试资产清单（24 文件 / 127 `Test*` / 4 `Fuzz*` / 5 `Benchmark*`）与 11.2 未自动化覆盖场景；十二节交付物改为三平台二进制 + 源码包 + SHA256 清单，并显式声明不再提供 macOS 预编译产物。README 另修两处遗留目录名 `mysql-backup-tool` → `gomydump` |
 | 35 | `encrypt` 位置参数个数错误改为退出 2 | `gomydump encrypt`（缺参数）与 `encrypt a b`（多参数）此前由 cobra `ExactArgs(1)` 拦截，返回普通 error，实测退出 1，违反"用法错误 → 2"的契约（同类的未知选项、未知子命令、缺必填项都是 2）。`cmd/validate.go` 新增 `exactArgs`，用 `common.Usagef` 报 `gomydump encrypt accepts 1 argument(s), received N`，`cmd/encrypt.go` 换用它；新增 `cmd/cli_matrix_test.go:TestCLIEncryptArgsCountIsUsageError`，除两种越界外还断言正确参数下密钥缺失仍是运行时错误 1，避免把两类错误合并。实测：无参/两参 → 2，正常加密 → 0，空 `GOMYDUMP_KEY` → 1 |
 | 36 | 补齐值处理与并行降级两处长年缺失的说明 | 新增 5.4「三种格式共有的值处理」：`YEAR(0000)` 归一化为 `0000`（文本协议回裸 `0`，回导会被两位 YEAR 规则解释为 2000）、NULL 与空字符串在 DEL/SQL/Parquet 下的表示、`--no-char-del` 时二者不可区分且回读一律为 NULL（均已在 MariaDB 上实测确认）。7.2 补「并行导出的降级触发点」表（4 个 warn 触发点 + parquet 的 info 分支，附实际日志文本与代码行号）与复合键/非数值首列语义。同时修正一处过期引用：十四节边界表里 parquet 降级的消息仍写作大写 `Parallel export is not supported for parquet format`，实际已是小写且级别为 `info`。README 对应补：无包裹符模式的 NULL/空串注意、并行导出的降级触发点与复合键说明、格式示例后的「三类格式共有的值处理」小节，并把遗留的 `见 3.6` 引用改为需求文档 3.3.4 |
 | 37 | 发布矩阵收窄为 amd64 | 按要求，预编译产物只保留 Linux amd64 与 Windows amd64。`Makefile` 的 `linux` 目标去掉 `GOARCH=arm64` 那行（`build-all` 由 3 个二进制降为 2 个），注释同步；README 构建说明与本文 §8.5「跨平台」、§12 交付物改为两平台，并给出 Linux arm64 的单平台编译命令。本批次的 `*-bin-SHA256SUMS.txt` 相应只列 2 个二进制 |
@@ -1447,3 +1451,4 @@ gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
 | 44 | `--messages` 改为独占：带 `-m` 时终端不再打印 | 第 43 行留下的选择题有了答案——用户要求"带 `-m` 就只进文件、终端不再打印"。改动只在 `internal/common/log.go` 的 `sink.Write`：文件挂载时**只写文件**、不再写 stderr，未挂载时照旧写 stderr（`os.Stderr` 仍在写入时解析，logger 的重定向测试不受影响），互斥锁保留（并行路径的两个协程仍会同时写同一个文件，交叉写入会毁掉记录）。`CloseLogFile` 先脱钩再关闭，因此"关闭失败"这条 ERROR 是唯一回到 stderr、不落进文件的记录，不会丢。帮助文本由「Write every log record to this file as well as to stderr」改为「Redirect the command log to this file; with it, nothing is printed to stderr」，`--echo-sql-values` 的告警措辞改为"写入 stderr 或 `--messages` 文件"，导出/导入两处进度注释同步。实测（真实二进制 + 本地 MariaDB）：带 `-m` 的成功导出 stdout 与 stderr 均 0 字节、文件 4 条记录、退出 0；带 `-m` 的失败导出同样 0 字节、文件 5 条含 `query failed` 与 `command failed`、退出码仍为 1；同一条失败命令去掉 `-m` 的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同；`--log-level error` 下文件只剩横幅且横幅不回终端；`--log-format text` 同样只进文件。两类例外如实记录并在文档中说明：未知选项在 `PersistentPreRunE` **之前**失败，文件尚未打开，错误只上 stderr 且不建文件；`-m` 路径无法创建时报 `failed to create message file <path>: ...`（stderr，退出 1）。测试：`TestLogFileMirrorsStderr` 改名 `TestLogFileTakesOverFromStderr`，断言 stderr 为空、文件恰有 3 条、关闭后记录回到 stderr 且文件不再增长；text 布局用例改为"处理器早于挂载也只得写文件"；矩阵 `--messages` 用例把"每一行都出现在 stderr"换成"stdout+stderr 为空"（5 种格式/并行组合 + `-m` 短选项 + 失败记录 + 级别过滤四处各加一条静默断言）；`--no-col-names` 对称用例的 WARN 断言从输出移到文件，并加终端必须为空的断言。测试资产数量不变（29 文件 / 161 `Test*` / 1 `TestMain` / 5 `Fuzz*` / 8 `Benchmark*`）。文档：1.2 特性、导出/导入标志表、2.3 引言与行为约定（新增"终端"与"例外"两行）、3.3.1 静默、4 节 DB2 映射、6/7 节流程步骤、5.3 两处功能表、11.1/11.2 清单，README 同步 |
 | 45 | 进度记录不再晚于结束汇总出现，并澄清 `rate` 与 `interval_rate` | 用户实测发现 `completed` 之后还会打印 `progress`，即日志以一个"还没跑完"的记录收尾。根因在计时器的停止方式：`common.StartMonitor` 返回的是 `context.CancelFunc`，`defer stopMon()` 只发出取消信号，goroutine 里**已经开始的那次 report 收不回来**；而汇总在 `Export`/`Import` 返回之前写好，于是"取消之后才落笔"的进度行必然排在 `completed`/`aborted` 之后。两处一起修：① `internal/common/stats.go` 的 stop 改为**排空**——`once.Do(cancel)` 后等待 monitor goroutine 退出（`done` channel），并二次确认 `monCtx.Err()`，避免 select 同时就绪时随机挑到 `ticker.C` 再写一条；stop 幂等，可"汇总前停一次 + defer 兜底一次"。② 五个终点汇总（`export completed`、`parallel export completed`、结构-only `import completed`、`import completed`、`parallel import completed`）与 `import aborted` 之前显式 `stopMonitor()`，停止句柄从 `Export`/`Import` 的局部变量提升为 `Exporter.stopMonitor`/`Importer.stopMonitor` 字段（汇总写在子方法里）。③ 间隔由硬编码 `5*time.Second` 改为 `common.MonitorInterval` 变量（默认值不变，测试压到 1 ms 才能反复触发计时器）。**注：该变量在第 46 行升级为命令行选项 `--progress-interval`，配置字段取代了包级变量。**同一提交顺带澄清两个速率的口径并写进 5.3：`rate` 是自开始以来的**总速率**（已处理 ÷ 已用时长，平滑），`interval_rate` 是**相邻两个进度点之间的区间速率**（两次快照之差，反映当前吞吐与抖动），二者无倍率关系，长跑时以 `interval_rate` 判断"此刻快不快"、以 `rate` 判断"整体多少"。测试：新增 `internal/common/stats_test.go`（2 用例）——把一次 report 钉在"正在写"的状态再 stop，断言汇总之后没有任何记录追加、最后一条是汇总、二次 stop 不死锁；该用例在旧实现下**必然失败**（实测输出 `[completed progress progress]`），是这一缺陷的回归钉子。`test/integration/live_mysql_test.go` 新增 `TestLive_ProgressNeverOutlivesCompletion`：8192 行表（`growTable` 服务端翻倍造数）在 1 ms 间隔下跑单线程导出、并行导出、单线程导入、并行导入四段，断言日志里确有进度记录且最后一条是对应汇总。`make test`（`-race`）与真实库 `go test -race -count=1 ./test/integration` 全通过，测试资产 30 文件 / 164 `Test*`（+1 `TestMain`）/ 5 `Fuzz*` / 8 `Benchmark*`（`internal/common` 7 文件 29 个、live 6 个），九节结构与计数、5.3 进度行、6/7 节流程步骤同步，README 补进度段落与修复记录 |
 | 46 | 删除与配置回显重复的 `export started`/`import started`，进度间隔改为 `--progress-interval` | 用户确认了这一去重方案并要求间隔可由命令行调整。① 两条 `started` 记录的字段（output/input、format、host、port、database）是紧随其后的 `export config`/`import config` 的子集，重复源于早期"命令启动"与"参数快照"分开的历史。现删除这两条记录，并把配置回显从 `Export`/`Import` 上移到 `NewExporter`/`NewImporter` 的第一句，即**建立连接之前**——原先它打在连接之后，连接失败时反而一个参数都看不到。实测：3 行小表导出共 3 条记录（横幅、`export config`、`export completed`，已无 started）、耗时 6 ms；`-q "SELECT * FROM no_such_table_x"` 的失败导出文件 4 行（横幅、config、`query failed`、`command failed`）、退出 1；密码写错那次 6 行（横幅、config、3 条 `database ping failed, retrying`、`command failed`）、退出 1 且输出文件根本没有创建。② 间隔改为命令行选项：`config.Config.ProgressInterval`（导出与导入共用）+ `config.DefaultProgressInterval = 5s` + `EffectiveProgressInterval()`（零值与负值回落默认值，因为库调用方可直接构造结构体，而 `time.NewTicker` 对非正间隔会 panic）；`export`、`import` 两侧各注册 `--progress-interval`，`cmd/validate.go` 复用既有的 `validatePositiveDuration`，`--progress-interval 0` 报 `invalid --progress-interval 0s: must be > 0` 并退出 2（0 不解释成"关闭进度"，那是 `--quiet` 的语义，一个概念只留一个开关）；第 45 行引入的包级变量 `common.MonitorInterval` 删除，导出器与导入器改用 `cfg.EffectiveProgressInterval()`，配置回显增加 `progress_interval` 字段。口径同时写进 5.3：首个 tick 要等满一个间隔，所以运行短于间隔时**一条进度也不打印**，`stop()` 只等在写的记录落笔、不空等剩余间隔（实测 3 行表 6 ms 结束、日志无 progress 行）；`--progress-interval 200ms` 跑 100 万行导出得 29 条进度记录，最后一条仍是 `export completed`。测试：新增 `internal/config/config_test.go`（2 用例：默认值与取值解析，导出/导入两侧各测）、`cmd/cli_matrix_test.go:TestCLIProgressInterval`（缺省为 5s、1ms/30s 原样生效、0 与 -1s 均为用法错误退出 2）、`internal/common/stats_test.go:TestMonitorSilentBeforeFirstTick`（取代原默认值用例：1 小时间隔下回调 0 次、stop 立即返回）；`TestLive_ProgressNeverOutlivesCompletion` 的四段改由配置的 `progressInterval` 字段驱动（不再改包级变量），并追加第五段用编译出的真实二进制跑 `--log-level info --progress-interval 1ms --messages`，断言汇总仍是最后一条、日志中不含 ` started ` 记录、config 带 `progress_interval=1ms`。`make test`（`-race`）与真实库 `go test -race -count=1 ./test/integration` 全通过，测试资产 31 文件 / 167 `Test*`（+1 `TestMain`）/ 5 `Fuzz*` / 8 `Benchmark*`。文档：1.2 特性、导出与导入标志表、四节 DB2 映射（标注无对应）、2.3 实测文件改为 4 行并补连接失败一例、记录来源表（删 `started` 行、config 行注明建连接之前打印）、3.3.1 静默、5.3 进度输出与日志顺序、6/7 节流程步骤、九节与 11.1 计数，README 同步 |
+| 47 | `--format sql` 默认改为每行一条 INSERT，攒批交给导入侧 | 用户选定方案：攒批在导入侧实现，导出默认只出单条单行 SQL。① `config.Config` 的 `SingleRowInsert` 字段换成 `ExtendedInsert`（默认 `false`），`NewExporter` 的两条路径改为 `SetSingleRowInsert(!cfg.ExtendedInsert)`；写入器自身语义不变（`NewSQLWriter` 仍默认合并，供库调用方使用），只是导出器反过来在给了 `--extended-insert` 时才关掉单行。`--statement-size` 在默认布局下退化为告警阈值：一行无法再拆分，超过它只记一次 WARN 并完整写出。② CLI 新增 `--extended-insert`（help：`Merge rows into multi-row INSERT statements bounded by --statement-size`），`--single-row-insert` 保留为已废弃兼容项（help：`Deprecated: one INSERT statement per row is now the default`，传入后不改行为），二者同时给出由新增的 `validateInsertLayout` 报 `--single-row-insert and --extended-insert cannot be used together` 并退出 2；`--extended-insert` 并入 `validateSQLOnlyOptions`，非 SQL 格式照旧拒绝。③ 配置回显在 `statement_size` 之后新增 `extended_insert` 字段。**实测**（本地 MariaDB，`bench_narrow` 100 万行，热缓存，`/usr/bin/time -v` 取峰值 RSS）：导出默认单行 2.43–2.57 s / 35.5–38.5 MB / 278,790,434 B（gzip 28,247,005 B）/ 1,000,000 条语句；`--extended-insert` 2.65–2.69 s / 71.3–74.1 MB / 153,792,809 B（gzip 27,050,101 B）/ 19 条语句，且产物与旧默认**逐字节一致**（md5 `61e8b0714b262972dac8b66dbedb2f90`）；DEL 参考 1.76 s / 25.6 MB / 141,218,462 B（gzip 26,795,207 B）。导入同一份数据：`--batch-size 1000` 单线程下 20,000 条语句的单行文件 12.49–12.87 s / 42–44 MB，1 条语句的合并文件 12.96–13.19 s / 215–224 MB；`--threads 4 --batch-size 20000` 单行 10.00–10.22 s / 67–69 MB，合并 8.90–8.91 s / 273–276 MB；DEL 参考 11.01 s / 35 MB（t1）、7.42 s / 166 MB（t4）。目标库 general log 复核（20,000 行、`--batch-size 1000`）：两种布局都只产生 20 条服务端 INSERT，即文件布局不改变下发的语句。结论：**内存差是结构性的**（导出峰值减半、导入峰值降到 1/5～1/2，因为合并布局要把整条语句物化），**速度不是**（±10% 内，t1 单行略快、t4 大批量合并略快），代价是文件体积 +81%（gzip 后 +4.4%）。测试：`cmd/cli_matrix_test.go` 新增 `TestCLIInsertLayout`（缺省 `ExtendedInsert=false`、`--extended-insert` 落到 config、废弃项解析但不启用合并）与 3 条矩阵用例（`--extended-insert` 合法、配 `--format del` 被拒、与 `--single-row-insert` 互斥）；`test/integration/option_matrix_test.go:TestOptionMatrixSQLBatching` 以“10 行 10 条语句”为新默认基线重写，覆盖旧选项、合并、`--extended-insert --statement-size 512` 的字节上界、单给 `--statement-size` 不改布局四种布局并逐一往返校验（上限放宽 4 字节，新增 `statementCapSlack` 常量说明写入器是先判上限后加 `, ` 与 `;\n`，原 128 字节用例小于任何单行语句因而合并必然为 0，改为 512）；`TestOptionMatrixParallelOutput` 增加“默认 SQL 布局的并行产物逐字节等于串行”，把分片边界头数与字节差的检查移到 `--extended-insert` 路径。文档：1.2 特性、2.1.6 标志表与布局说明、4 节 DB2 映射（`MODIFIED BY STATEMENTSIZE` 语义收窄并新增“无对应”一行）、5.2 文件结构（默认与 `--extended-insert` 两例互换，顺带记录 `LOCK TABLES` 早于 `CREATE TABLE` 使 `mysql < file` 进空库在第 2 行 `ERROR 1146 (42S02)` 中止的既有缺陷，**待用户定级**）、5.3 记录来源表、6/7 节流程步骤、7.4 攒批前提、10 节测试场景行、11.1 计数（31 文件 / 168 `Test*`，此前该行的 30/161 已与逐文件实测不符，一并更正），README 特性、SQL 标志表、导入攒批章节、参数校验表、SQL 格式示例说明、项目结构注释与修复记录同步。`make test`（`-race`）与真实库 `go test -race -count=1 ./test/integration` 全通过 |

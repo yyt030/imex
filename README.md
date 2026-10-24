@@ -20,6 +20,7 @@
 - **可调进度节奏**：`--progress-interval` 控制定时进度日志的间隔（默认 5 秒），`--quiet` 则完全不打印进度记录
 - **流式处理**：支持 GB 级大文件，不在内存中缓存全量数据
 - **批量优化**：导入使用批量 INSERT（1000 行/批次），提升写入性能
+- **单行 SQL 布局**：`--format sql` 默认每行一条 INSERT，文件逐行可切分；攒批统一由导入侧按 `--batch-size` 完成，导出侧的 `--extended-insert` 只用于换取更小的文件体积
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：支持 AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
@@ -276,8 +277,9 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
-| `--statement-size` | 单条 INSERT 语句最大字节数（超出则另起一条语句） | `8388608`（8MiB） |
-| `--single-row-insert` | 每行一条 INSERT（等价 mysqldump `--skip-extended-insert`）；开启后 `--statement-size` 不再参与攒批，仅在单行语句超限时告警一次 | `false` |
+| `--statement-size` | 单条 INSERT 语句最大字节数（仅攒批时参与分组；默认单行布局下退化为告警阈值） | `8388608`（8MiB） |
+| `--extended-insert` | 把多行合并进一条 INSERT（按 `--statement-size` 分组，等价 mysqldump 默认行为） | `false` |
+| `--single-row-insert` | 已废弃：每行一条 INSERT 现在是默认布局，该选项保留但不再改变任何行为（与 `--extended-insert` 同时给出报用法错误） | `false` |
 | `--no-create` | 不输出 CREATE TABLE 语句 | `false` |
 | `--no-data` | 不输出 INSERT 语句 | `false` |
 
@@ -428,11 +430,11 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 - 在途行数 ≈ `batch-size × (pipeline-buffer + 线程数)`，峰值内存 ≈ 在途行数 × 平均行字节。宽表/BLOB 大字段时，调小两者即可压低峰值。
 - 这是**比例控制，不是字节硬上限**：Go 堆、数据库驱动的读缓冲（≈ `max_allowed_packet`）以及每条巨型 INSERT 的解析，都在本参数之外。因此**无法**用它对任意输入保证「进程 RSS ≤ 某值」。
 - 需要进程级内存天花板时，用 Go 运行时软上限：`GOMEMLIMIT=6GiB gomydump import ...`（配合 `GOGC` 调整回收力度）。这才是真正约束 Go 进程占用的杠杆。
-- 生效范围：`--batch-size/--pipeline-buffer` 作用于**单线程导出**、**单线程与并行导入**；**并行导出**是分片内同步流式 `scan→write`，内存几乎不随数据量增长，不受这两个参数影响。SQL 导入会把单条语句一次性解析，其规模由 `--statement-size` 约束。
+- 生效范围：`--batch-size/--pipeline-buffer` 作用于**单线程导出**、**单线程与并行导入**；**并行导出**是分片内同步流式 `scan→write`，内存几乎不随数据量增长，不受这两个参数影响。SQL 导入会把单条语句一次性解析，默认布局下一条语句就是一行，规模由行本身决定；只有 `--extended-insert` 导出的文件才由 `--statement-size` 约束单条语句的大小。
 
 ### 导入攒批的两道硬上限
 
-导出侧按**字节**拼语句（`--statement-size`），而导入侧把语句拆成行后按**行数**（`--batch-size`）重新攒批，两者并不对称：宽表或含大字段的表，几百行就可能在导入侧拼出一个超过服务端 `max_allowed_packet` 的包，在事务中途报 `error 1153 (Packet for query is too large)`。因此导入攒批额外受两道协议层上限约束，与 `--batch-size` 取最小值生效：
+导出侧默认**每行一条 INSERT**（只有 `--extended-insert` 才按 `--statement-size` 的**字节**预算合并），而导入侧把语句拆成行后按**行数**（`--batch-size`）重新攒批——攒批因此只发生在导入侧，实测两种布局打给服务端的语句完全相同（20,000 行、`--batch-size 1000`：单行文件 20,000 条语句与合并文件 1 条语句都只产生 20 条服务端 INSERT）。按字节和按行数并不对称：宽表或含大字段的表，几百行就可能在导入侧拼出一个超过服务端 `max_allowed_packet` 的包，在事务中途报 `error 1153 (Packet for query is too large)`。因此导入攒批额外受两道协议层上限约束，与 `--batch-size` 取最小值生效：
 
 - **字节上限**：首次攒批前读取目标库 `SHOW VARIABLES LIKE 'max_allowed_packet'`，每批预算取该值的 9/10，下限 64 KiB；读不到（权限受限或代理屏蔽 `SHOW VARIABLES`）时按 4 MiB 保守值并打印告警。字节按值的实际宽度估算——字符串/二进制按含转义后的宽度精确计，其余标量按其最宽文本形式界定。行数或字节任一触顶即提交一批；单行自身就超过预算时独立成批（一行无法再拆分，不丢弃）。
 - **占位符上限**：MySQL 预处理语句的参数个数是 2 字节无符号整数，故 `行数 × 列数 ≤ 65535`。超出时自动下调有效批大小并打印一次告警（例如 2000 列的表，批大小被压到 32 行）。
@@ -552,11 +554,12 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 | `--format` / `--mode` | 各自枚举白名单 | 退出码 2 |
 | `--default-charset` | 字符集白名单；非 `utf8mb4` 不可用于 `parquet`；`gbk`/`gb18030` 不可用于 `sql`（按字节转义不安全） | `invalid --default-charset` / 格式冲突，退出码 2 |
 | `--hex-blob` + `--no-hex-blob` | 二者互斥 | `mutually exclusive`，退出码 2 |
+| `--single-row-insert` + `--extended-insert` | 二者互斥（前者只是默认布局的旧名，同时给出无法判定要哪种布局） | `--single-row-insert and --extended-insert cannot be used together`，退出码 2 |
 | `--char-del` `--col-del` `--row-del` `--escape` `--no-escape` `--timestamp-fmt` `--date-fmt` `--no-char-del` `--no-col-names` | 仅 `--format del` 生效（SQL/Parquet 写端不使用这些修饰） | `--xxx can only be used with --format del`，退出码 2 |
 | `--hex-blob` / `--no-hex-blob` + `--format parquet` | Parquet 二进制列原生按 `binary` 存储，两个开关都不改变输出 | `--hex-blob cannot be used with --format parquet`，退出码 2 |
 | `encrypt` 的位置参数 | 恰好 1 个（密码明文） | `gomydump encrypt accepts 1 argument(s), received N`，退出码 2 |
 
-关联校验：`--no-create`/`--no-data`/`--statement-size`/`--single-row-insert` 仅对 `--format sql` 生效，`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
+关联校验：`--no-create`/`--no-data`/`--statement-size`/`--extended-insert`/`--single-row-insert` 仅对 `--format sql` 生效，`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
 
 ### OceanBase 租户连接
 
@@ -761,6 +764,8 @@ INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (1,'Alice','alice@
 INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (2,'Bob','bob@example.com','2026-01-02 11:00:00');
 ```
 
+SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended-insert` 的布局），`--extended-insert` 才把多行合并进一条语句。攒批交给导入侧是刻意的分工：导入器把语句拆成行后按 `--batch-size` 重新组批，文件是单行还是合并布局，服务端收到的语句一模一样（实测 20,000 行、`--batch-size 1000`：单行文件 20,000 条语句与合并文件 1 条语句都只产生 20 条服务端 INSERT）。合并布局在导出侧换到的只有体积——100 万行窄表实测：单行 2.5 s / 峰值内存 33 MB / 278,790,434 B（gzip 28,247,005 B），合并 2.7 s / 70 MB / 153,792,809 B（gzip 27,050,101 B，19 条语句）；代价是导入侧要一次性解析整条语句，同一份数据在 `--batch-size 1000` 下峰值内存 44 MB（单行）对 216 MB（合并）。
+
 ### 三类格式共有的值处理
 
 - **`YEAR` 零值**：MySQL/MariaDB 文本协议把 `YEAR(0000)` 发回裸字符串 `0`，直接回导会被服务端两位 YEAR 规则解释成 2000。导出时识别 YEAR 列并统一写成 `0000`，DEL/SQL/Parquet 一致（实测 `--format del` 得 `"1","0000",`，`--format sql` 得 `'0000'`）。
@@ -789,6 +794,7 @@ INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (2,'Bob','bob@exam
 | 带 `--messages` 时终端与文件各打一份，`-m` 语义仍像“另存一份”而不是“交给文件” | `sink.Write` 改为单一目的地：文件挂载期间**只写文件**，未挂载时照旧写 stderr，因此带 `-m` 的运行终端完全静默，文件是这次运行唯一的记录，退出码不变（实测失败导出：stdout/stderr 各 0 字节、文件 5 条、退出 1；同一命令不带 `-m` 的 stderr 与该文件去掉时间戳/PID 后逐行相同）。`CloseLogFile` 先脱钩再关闭，所以“关闭失败”这条 ERROR 是唯一回到 stderr、不落进文件的记录。帮助文本改为「Redirect the command log to this file; with it, nothing is printed to stderr」；未知选项在 `PersistentPreRunE` 之前失败，文件尚未打开，故只上 stderr 且不建文件，`--help` 与 `-m` 同时给也不建文件。测试同步改为断言终端为空：`internal/common/log_test.go` 的镜像用例改名 `TestLogFileTakesOverFromStderr`（stderr 0 字节、文件恰 3 条、关闭后记录回 stderr），CLI 矩阵的 5 种格式/并行组合 + `-m` 短选项 + 失败记录 + 级别过滤各加“stdout+stderr 为空”断言，`--no-col-names` 对称用例的 WARN 断言移进文件 |
 | 长跑到结束时日志最后一行是 `export progress`，读起来像任务还没完 | 计时器的停止方式导致：`StartMonitor` 返回的 cancel 只发信号，goroutine 里已开始的那次 report 收不回来，而汇总先写好、`defer stopMon()` 在函数返回后才执行。现 stop 改为**排空**（等待 monitor goroutine 退出，并在 tick 与 cancel 同时就绪时再确认一次取消），导出/导入的 6 处终点汇总（`export completed`、`parallel export completed`、结构-only 与常规 `import completed`、`parallel import completed`、`import aborted`）在写汇总**之前**显式停止，停止句柄提为结构体字段；间隔从硬编码 5 s 改为 `common.MonitorInterval` 变量（默认值不变），使回归测试能把计时器压到毫秒级。**注：该变量下一行升级为命令行选项 `--progress-interval`。**回归：`internal/common/stats_test.go` 把一条 report 钉在"正在写"的状态再 stop，旧实现必然产出 `[completed progress progress]`；`TestLive_ProgressNeverOutlivesCompletion` 以 8192 行表在 1 ms 间隔下跑单线程/并行 × 导出/导入四段，断言日志里确有进度记录且最后一条是对应汇总 |
 | `export started` 与紧随其后的 `export config` 字段重复（output/input、format、host、port、database 两个都打），而配置回显打在连接之后，连接失败时一个参数都看不到 | 删掉两侧 `started` 记录，并把 `export/import config` 上移到 `NewExporter`/`NewImporter` 的**建连接之前**，回显同时补 `progress_interval`。实测：3 行小表导出 3 条记录、6 ms 结束；查不存在的表失败导出文件 4 行（横幅、config、`query failed`、`command failed`）退出 1；密码写错那次 6 行（横幅、config、3 条 ping WARN、`command failed`）退出 1 且不创建输出文件。同时新增 `--progress-interval`（默认 5s，必须 > 0，`0`/负值为用法错误退出 2；不解释为"关闭进度"，那是 `--quiet`），包级变量 `common.MonitorInterval` 删除、改由 `config.Config.ProgressInterval` + `EffectiveProgressInterval()` 承担（零值与负值回落默认值，避免库调用方把非正间隔传给会 panic 的 `time.NewTicker`）。测试：`internal/config/config_test.go`（2 用例）、`cmd/cli_matrix_test.go:TestCLIProgressInterval`、`internal/common/stats_test.go:TestMonitorSilentBeforeFirstTick`（间隔未到不产出记录且 stop 立即返回），`TestLive_ProgressNeverOutlivesCompletion` 增加一段真实二进制 `--progress-interval 1ms --messages` 的端到端断言 |
+| SQL 文件默认把多行合并进一条 INSERT，而导入侧无视文件布局按 `--batch-size` 重新攒批——合并只在导出侧换来体积，代价是导出与导入都要把整条语句留在内存 | `--format sql` 的默认布局改为**每行一条 INSERT**（mysqldump `--skip-extended-insert` 的形态），攒批统一交给导入侧；新增 `--extended-insert` 显式恢复合并，`--single-row-insert` 保留为已废弃别名（与 `--extended-insert` 同时给出为用法错误，退出码 2），`--statement-size` 在默认布局下退化为告警阈值，配置回显补 `extended_insert`。实测（本地 MariaDB，100 万行窄表，热缓存，`/usr/bin/time -v` 峰值 RSS）：导出单行 2.43–2.57 s / 35.5–38.5 MB / 278,790,434 B（gzip 28,247,005 B）/ 1,000,000 条语句，合并 2.65–2.69 s / 71.3–74.1 MB / 153,792,809 B（gzip 27,050,101 B）/ 19 条语句，且 `--extended-insert` 的产物与旧默认**逐字节一致**；导入同一份数据（`--batch-size 1000` 单线程）单行 12.49–12.87 s / 42–44 MB，合并 12.96–13.19 s / 215–224 MB（`--threads 4 --batch-size 20000`：10.0–10.2 s / 67–69 MB 对 8.9 s / 273–276 MB）。目标库 general log 复核（20,000 行、`--batch-size 1000`）：20,000 条语句的单行文件与 1 条语句的合并文件都只产生 20 条服务端 INSERT。结论：内存差是结构性的（导出减半、导入降到约 1/5），速度差在 ±10% 以内，代价是文件体积 +81%（gzip 后 +4.4%）。顺带登记一处既有缺陷（待用户定级）：SQL 文件把 `LOCK TABLES` 写在 `CREATE TABLE` 之前，用标准 `mysql` 客户端回放空库会在第 2 行 `ERROR 1146 (42S02)` 中止，gomydump 自身导入会跳过这些前导语句故不受影响 |
 
 ## 项目结构
 
@@ -826,7 +832,7 @@ gomydump/
 │   ├── export/
 │   │   ├── exporter.go          # 导出调度器（单线程流水线、并行分片与合并、hex-blob 判定）
 │   │   ├── del_writer.go        # DEL 格式写入器（双写/反斜杠转义、字段缓存优化）
-│   │   ├── sql_writer.go        # SQL 格式写入器（按字节攒批、单行模式、快速路径优化）
+│   │   ├── sql_writer.go        # SQL 格式写入器（默认每行一条 INSERT、`--extended-insert` 才按字节攒批、快速路径优化）
 │   │   ├── parquet_writer.go    # Parquet 格式写入器（列式存储）
 │   │   ├── shard.go             # 分片逻辑（主键/唯一键检测）
 │   │   └── sql_parser.go        # SQL 解析器（JOIN 检测）

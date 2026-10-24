@@ -44,6 +44,7 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 		"threads", cfg.Threads,
 		"shard_key", cfg.ShardKey,
 		"statement_size", cfg.StatementSize,
+		"extended_insert", cfg.ExtendedInsert,
 		"no_create", cfg.NoCreate,
 		"no_data", cfg.NoData,
 		"no_replace", cfg.NoReplace,
@@ -280,7 +281,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		}
 		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, !e.config.NoCreate, !e.config.NoData, serverType, createStmt, e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
-		sqlWriter.SetSingleRowInsert(e.config.SingleRowInsert)
+		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		writer = sqlWriter
 	case "parquet":
 		parquetWriter, err := NewParquetWriter(outputFile, columns, binaryFlags)
@@ -608,7 +609,7 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 		}
 		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, false, !e.config.NoData, serverType, "", e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
-		sqlWriter.SetSingleRowInsert(e.config.SingleRowInsert)
+		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		// A fragment of a parallel dump must not lock or unlock the table on its
 		// own; the merge step wraps the concatenated result in one pair.
 		sqlWriter.SetSkipTableLocks(true)

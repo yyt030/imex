@@ -144,6 +144,23 @@ func TestCLIMatrix(t *testing.T) {
 			errSubstr: "--single-row-insert can only be used with --format sql",
 		},
 		{
+			name:    "valid export with extended-insert and format sql",
+			args:    []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql", "--extended-insert"},
+			wantErr: false,
+		},
+		{
+			name:      "format del with extended-insert rejected",
+			args:      []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.del", "-q", "SELECT 1", "-f", "del", "--extended-insert"},
+			wantErr:   true,
+			errSubstr: "--extended-insert can only be used with --format sql",
+		},
+		{
+			name:      "single-row-insert with extended-insert rejected",
+			args:      []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql", "--single-row-insert", "--extended-insert"},
+			wantErr:   true,
+			errSubstr: "cannot be used together",
+		},
+		{
 			name:      "format parquet with single-row-insert rejected",
 			args:      []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.parquet", "-q", "SELECT 1", "-f", "parquet", "--single-row-insert"},
 			wantErr:   true,
@@ -359,6 +376,36 @@ func TestCLILogFormatEnvOverrideRejected(t *testing.T) {
 	}
 	if !common.IsUsageError(err) {
 		t.Errorf("error %q must be a usage error (exit code 2)", err)
+	}
+}
+
+// TestCLIInsertLayout pins the flipped SQL default: nothing given means one row
+// per INSERT (ExtendedInsert false), --extended-insert opts back into merged
+// statements, and the deprecated --single-row-insert parses without changing the
+// default it now merely restates.
+func TestCLIInsertLayout(t *testing.T) {
+	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb",
+		"-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql"}
+
+	if err := validateOnly(t, "export", base); err != nil {
+		t.Fatalf("default layout: %v", err)
+	}
+	if exportCfg.ExtendedInsert {
+		t.Error("default ExtendedInsert = true, one row per INSERT must be the default")
+	}
+
+	if err := validateOnly(t, "export", append(append([]string{}, base...), "--extended-insert")); err != nil {
+		t.Fatalf("--extended-insert: %v", err)
+	}
+	if !exportCfg.ExtendedInsert {
+		t.Error("--extended-insert did not reach the config")
+	}
+
+	if err := validateOnly(t, "export", append(append([]string{}, base...), "--single-row-insert")); err != nil {
+		t.Fatalf("deprecated --single-row-insert must still parse: %v", err)
+	}
+	if exportCfg.ExtendedInsert {
+		t.Error("--single-row-insert must not enable merged statements")
 	}
 }
 

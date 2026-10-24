@@ -163,6 +163,18 @@ func validateHexBlob(hexBlob, noHexBlob bool) error {
 	return nil
 }
 
+// validateInsertLayout keeps the two spellings of the SQL statement layout from
+// asking for different things at once. One row per INSERT is the default now, so
+// --single-row-insert is accepted and inert; --extended-insert opts back into
+// merged statements. Passing both would leave the layout to flag order, which is
+// exactly the kind of silent disagreement that a usage error exists to prevent.
+func validateInsertLayout(cmd *cobra.Command) error {
+	if cmd.Flags().Changed("single-row-insert") && cmd.Flags().Changed("extended-insert") {
+		return common.Usagef("--single-row-insert and --extended-insert cannot be used together")
+	}
+	return nil
+}
+
 // validateSQLOnlyOptions checks that SQL-only options are not used with non-SQL formats.
 func validateSQLOnlyOptions(cmd *cobra.Command, format string) error {
 	if format == "sql" {
@@ -179,6 +191,9 @@ func validateSQLOnlyOptions(cmd *cobra.Command, format string) error {
 	}
 	if cmd.Flags().Changed("single-row-insert") {
 		return common.Usagef("--single-row-insert can only be used with --format sql")
+	}
+	if cmd.Flags().Changed("extended-insert") {
+		return common.Usagef("--extended-insert can only be used with --format sql")
 	}
 	return nil
 }
@@ -304,6 +319,9 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 		return err
 	}
 	if err := validateHexBlob(cfg.HexBlob, cfg.NoHexBlob); err != nil {
+		return err
+	}
+	if err := validateInsertLayout(cmd); err != nil {
 		return err
 	}
 	if err := validateSQLOnlyOptions(cmd, cfg.Format); err != nil {
