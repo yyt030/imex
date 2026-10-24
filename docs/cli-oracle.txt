@@ -2,8 +2,10 @@
 # Frozen baseline, kept verbatim as a regression reference. Three intentional
 # deltas vs the current tree: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --single-row-insert, and --messages/-m changed meaning (help is
-# now "Write every log record to this file as well as to stderr"; the option no
-# longer writes a DB2-style SQL3xxxN report, it receives the command log). Diff
+# now "Redirect the command log to this file; with it, nothing is printed to
+# stderr"; the option no longer writes a DB2-style SQL3xxxN report — it receives
+# the run's command log and takes it away from the terminal). --echo-sql-values
+# likewise now warns about "stderr, or the --messages file". Diff
 # `gomydump <cmd> --help` against this file and expect only those lines.
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),

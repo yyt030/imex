@@ -75,9 +75,9 @@ func (imp *Importer) Import(ctx context.Context) error {
 	startTime := time.Now()
 	imp.stats = common.NewStats()
 	stopMon := common.StartMonitor(ctx, 5*time.Second, imp.stats, func(prev, curr common.StatsSnapshot) {
-		// --quiet suppresses the periodic progress record. --messages mirrors the
-		// command log rather than keeping a report of its own, so the file is
-		// quiet as well.
+		// --quiet suppresses the periodic progress record. --messages receives the
+		// command log itself rather than a report of its own, so a suppressed
+		// record is absent from the file as well.
 		if !common.Quiet {
 			common.Logger.Info("import progress",
 				"read", curr.Processed,

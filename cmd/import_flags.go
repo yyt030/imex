@@ -13,7 +13,8 @@ import (
 var importDefaultCharset string
 
 // registerImportFlags registers all flags for the import subcommand.
-// Descriptions and defaults match docs/cli-oracle.txt exactly.
+// Descriptions and defaults follow docs/cli-oracle.txt apart from the
+// deltas registered in that file's header.
 func registerImportFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
 
@@ -47,7 +48,7 @@ func registerImportFlags(cmd *cobra.Command) {
 	f.StringVarP((*string)(&importCfg.Mode), "mode", "M", "insert", "Import mode (insert/insert_update/replace/create)")
 	f.StringVarP(&importCfg.Table, "table", "t", "", "Target table name")
 	f.StringVarP(&importCfg.Columns, "columns", "c", "", "Target column list (comma-separated) or mapping (file_col=table_col,...)")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Write every log record to this file as well as to stderr")
+	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")
 
 	// DEL format modifiers
 	f.StringVar(&importCfg.DelModifier.CharDel, "char-del", "\"", "String delimiter")

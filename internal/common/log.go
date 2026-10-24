@@ -53,14 +53,17 @@ var (
 // logSink is the single destination every log record goes through.
 var logSink = &sink{}
 
-// sink is the tee behind every log record: stderr always, plus the --messages
-// file while one is open.
+// sink is the one destination every log record goes through: the --messages file
+// while one is open, stderr otherwise. The file takes the run over instead of
+// copying it, so a run with -m prints nothing on the terminal — the way DB2's
+// MESSAGES keeps its report to itself.
 //
 // Both layouts hold this one value instead of an os.Stderr, so --messages can
-// add a file without rebuilding handlers that slog's text handler would pin to
-// a writer captured at construction. stderr itself is resolved inside Write
-// rather than stored, so reassigning os.Stderr — as the logger tests do — still
-// takes effect, exactly as it did when the handlers wrote os.Stderr directly.
+// take the log over without rebuilding handlers that slog's text handler would
+// pin to a writer captured at construction. stderr itself is resolved inside
+// Write rather than stored, so reassigning os.Stderr — as the logger tests do —
+// still takes effect, exactly as it did when the handlers wrote os.Stderr
+// directly.
 //
 // The mutex is needed in its own right: the progress monitor and the shard
 // producers log from different goroutines, and a record split across two
@@ -73,20 +76,17 @@ type sink struct {
 func (s *sink) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n, err := os.Stderr.Write(p)
-	if err != nil || s.f == nil {
-		return n, err
+	if s.f != nil {
+		return s.f.Write(p)
 	}
-	if _, ferr := s.f.Write(p); ferr != nil {
-		return n, ferr
-	}
-	return n, nil
+	return os.Stderr.Write(p)
 }
 
-// OpenLogFile makes every subsequent log record go to path in addition to
-// stderr. The file is created and truncated, so the first record written after
-// this call is its first line — which is why the root command opens it before
-// printing the version banner. Opening a second file closes the first.
+// OpenLogFile hands the command log over to path: every subsequent record goes
+// to the file instead of to stderr, until CloseLogFile gives it back. The file is
+// created and truncated, so the first record written after this call is its first
+// line — which is why the root command opens it before printing the version
+// banner. Opening a second file closes the first.
 func OpenLogFile(path string) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -101,9 +101,10 @@ func OpenLogFile(path string) error {
 	return nil
 }
 
-// CloseLogFile detaches and closes the message file. Detaching happens before
-// the close, so a record about a failed close still reaches the operator on
-// stderr instead of going into a handle that is already being torn down.
+// CloseLogFile detaches and closes the message file, returning the log to stderr.
+// Detaching happens before the close, so a record about a failed close still
+// reaches the operator on stderr instead of going into a handle that is already
+// being torn down — with the file attached, stderr would otherwise be silent.
 func CloseLogFile() error {
 	logSink.mu.Lock()
 	f := logSink.f

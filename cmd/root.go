@@ -83,7 +83,7 @@ func init() {
 		"Print full error call stack on failure (also enabled via GOMYDUMP_ERROR_STACK=1)")
 
 	rootCmd.PersistentFlags().BoolVar(&echoSQLValues, "echo-sql-values", false,
-		"On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr and to any --messages file.")
+		"On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, or to the --messages file when one is given.")
 
 	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false,
 		"Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via GOMYDUMP_QUIET=1)")
@@ -116,10 +116,13 @@ func init() {
 		}
 		common.LogFormat = logFormat
 
-		// --messages/-m is the command log's file: with it, every record that
-		// goes to stderr goes to the file as well. Opened here — before the
-		// version banner, so the banner is the file's first line, and before
-		// RunE validation, so even a usage error is recorded.
+		// --messages/-m hands the command log over to a file: with it, every
+		// record goes to the file instead of to stderr, so the terminal stays
+		// silent and the file is the run's only account. Opened here — before the
+		// version banner, so the banner is the file's first line, and before RunE
+		// validation, so even a usage error is recorded. The exit code is
+		// unaffected, so a script can still tell success from failure without
+		// reading the file.
 		if path := strings.TrimSpace(messagesPath); path != "" {
 			if err := common.OpenLogFile(path); err != nil {
 				return err

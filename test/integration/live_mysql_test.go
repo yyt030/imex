@@ -470,10 +470,11 @@ func TestLive_ColumnMapping(t *testing.T) {
 	assertSameRows(t, []string{"1=one", "2=two"}, got)
 }
 
-// teeLogToFile points the --messages sink at path for the duration of a
+// teeLogToFile hands the --messages sink over to path for the duration of a
 // library-level run. newLiveEnv leaves the global logger at ERROR to keep test
 // output readable, so the level has to come up for the file to hold the run's
-// records; the returned func closes the file and restores the harness level.
+// records — they go to the file only, so the harness output stays clean either
+// way. The returned func closes the file and restores the harness level.
 func teeLogToFile(t *testing.T, path string) func() {
 	t.Helper()
 

@@ -307,8 +307,8 @@ func TestOptionMatrixDELModifiers(t *testing.T) {
 // --no-col-names pair are not matched. The file cannot say whether its first
 // record is a header or data, so positional --columns keeps the header behaviour
 // for normal dumps and the tool's only safe move is to report the record it
-// dropped: a WARN record naming the fields, which --messages now writes to
-// the log file like every other record.
+// dropped: a WARN record naming the fields, which --messages writes to the log
+// file — and, with the option given, to nothing else.
 func TestOptionMatrixNoColNamesSymmetry(t *testing.T) {
 	env := newCLILive(t)
 	src, dst := env.makePair(t, "ncol")
@@ -322,11 +322,12 @@ func TestOptionMatrixNoColNamesSymmetry(t *testing.T) {
 		t.Fatalf("import failed: exit %d\n%s", code, out)
 	}
 
-	if !strings.Contains(out, "was treated as the column header") {
-		t.Errorf("the dropped record must be reported, got:\n%s", out)
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("with --messages the warning belongs to the file, not the terminal:\n%s", out)
 	}
-	if text := readFile(t, msg); !strings.Contains(text, "was treated as the column header") {
-		t.Errorf("the message file must carry the same warning:\n%s", text)
+	text := readFile(t, msg)
+	if !strings.Contains(text, "was treated as the column header") {
+		t.Errorf("the message file must carry the warning:\n%s", text)
 	}
 	if n := env.rowCount(t, dst); n != 9 {
 		t.Errorf("imported %d rows, want 9: the first record is consumed as a header, which is the ambiguity the warning reports", n)
@@ -712,8 +713,9 @@ func TestOptionMatrixSliceOptions(t *testing.T) {
 }
 
 // TestOptionMatrixMessages pins what --messages/-m produces: the file is the
-// command log itself — the same records, in the same order, in the same layout
-// as stderr — and not the DB2-style SQL3xxxN report the option used to write.
+// command log itself, in the same records, order and layout the run would have
+// printed — not the DB2-style SQL3xxxN report the option used to write — and it
+// is the log's only destination, so the terminal stays silent for the whole run.
 func TestOptionMatrixMessages(t *testing.T) {
 	env := newCLILive(t)
 	src, _ := env.makePair(t, "msg")
@@ -762,16 +764,15 @@ func TestOptionMatrixMessages(t *testing.T) {
 			if strings.Contains(text, "SQL31") {
 				t.Errorf("the DB2-style report is still being written:\n%s", text)
 			}
-			// Every line is a log record in the default layout, and every one of
-			// them is also on the command line: the file is a copy of the run's
-			// log, not a second, different account of it.
+			// Every line is a log record in the default layout, and the file is
+			// the run's only account of it: nothing is left on the command line.
 			for _, line := range lines {
 				if !logRecordLine.MatchString(line) {
 					t.Errorf("not a log record: %q", line)
 				}
-				if !strings.Contains(out, line) {
-					t.Errorf("message file line never appeared on the command line: %q", line)
-				}
+			}
+			if strings.TrimSpace(out) != "" {
+				t.Errorf("--messages must keep the terminal silent, got:\n%s", out)
 			}
 		})
 	}
@@ -788,6 +789,9 @@ func TestOptionMatrixMessages(t *testing.T) {
 		lines := splitLines(text)
 		if len(lines) == 0 || !strings.Contains(lines[0], "gomydump starting") {
 			t.Errorf("-m must open the log file before the banner: %q", text)
+		}
+		if strings.TrimSpace(out) != "" {
+			t.Errorf("-m must keep the terminal silent, got:\n%s", out)
 		}
 	})
 
@@ -824,6 +828,12 @@ func TestOptionMatrixMessages(t *testing.T) {
 		if len(lines) != 1 || !strings.Contains(lines[0], "gomydump starting") {
 			t.Errorf("--log-level error must leave only the banner, got: %#v", lines)
 		}
+		// The banner is an INFO record and the run asked for ERROR only, yet it is
+		// in the file — the level did not send it to stderr instead. The file is
+		// the destination, the level is the filter, and the two are independent.
+		if strings.TrimSpace(out) != "" {
+			t.Errorf("the file's single line must not also be on the terminal, got:\n%s", out)
+		}
 	})
 
 	t.Run("失败记录进文件", func(t *testing.T) {
@@ -841,6 +851,11 @@ func TestOptionMatrixMessages(t *testing.T) {
 		}
 		if !strings.Contains(text, "no_such_table_msg") {
 			t.Errorf("the file must carry the real cause, not just the wrapper:\n%s", text)
+		}
+		// A failing run is silent too: the exit code is what the operator sees,
+		// the file is what the operator reads.
+		if strings.TrimSpace(out) != "" {
+			t.Errorf("a failed run with -m must still keep the terminal silent, got:\n%s", out)
 		}
 	})
 }

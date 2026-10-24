@@ -151,9 +151,10 @@ func TestLogVersionEmitsBanner(t *testing.T) {
 }
 
 // --messages is the command log's file: the sink is what makes that possible, so
-// its contract lives here. Everything the run prints must land in the file, byte
-// for byte, while it is open — and only stderr afterwards.
-func TestLogFileMirrorsStderr(t *testing.T) {
+// its contract lives here. While the file is open it receives every record and
+// stderr receives none — the terminal is silent for the whole run — and closing
+// it hands the log back.
+func TestLogFileTakesOverFromStderr(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.log")
 	logger := newLogger(config.LogLevelInfo, LogFormatJava)
 
@@ -171,16 +172,25 @@ func TestLogFileMirrorsStderr(t *testing.T) {
 		logger.Error("command failed", "error", "no such table")
 	})
 
+	if out != "" {
+		t.Errorf("a run with --messages must print nothing to stderr: %q", out)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read log file: %v", err)
 	}
-	if string(data) != out {
-		t.Errorf("log file must equal the command-line log byte for byte:\nfile=%q\nstderr=%q", string(data), out)
+	if n := strings.Count(string(data), "\n"); n != 3 {
+		t.Fatalf("log file holds %d records, want all 3:\n%s", n, string(data))
+	}
+	for _, want := range []string{"export started", "single-row INSERT", "command failed"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("log file missing %q:\n%s", want, string(data))
+		}
 	}
 
-	// Once closed, the file is detached: further records still reach stderr and
-	// the file stays as it was.
+	// Once closed, the file is detached: further records go back to stderr and the
+	// file stays as it was.
 	size := len(data)
 	after := captureStderr(t, func() { logger.Info("after close") })
 	if !strings.Contains(after, "after close") {
@@ -219,8 +229,8 @@ func TestLogFileFollowsHandlersBuiltEarlier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read log file: %v", err)
 	}
-	if string(data) != out {
-		t.Errorf("text layout must also reach the file:\nfile=%q\nstderr=%q", string(data), out)
+	if out != "" {
+		t.Errorf("a handler built before the open must hand its records to the file, not to stderr: %q", out)
 	}
 	if !strings.Contains(string(data), `msg="import config"`) || !strings.Contains(string(data), "table=users") {
 		t.Errorf("unexpected text layout in the file: %q", string(data))
@@ -228,7 +238,7 @@ func TestLogFileFollowsHandlersBuiltEarlier(t *testing.T) {
 }
 
 // The sink is shared by the progress monitor and the shard producers, so it also
-// owns serialization: a record must never be split between stderr and the file.
+// owns serialization: concurrent writers must never interleave two records.
 func TestLogFileSerializesConcurrentRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "concurrent.log")
 	logger := newLogger(config.LogLevelInfo, LogFormatJava)
@@ -262,8 +272,8 @@ func TestLogFileSerializesConcurrentRecords(t *testing.T) {
 	if len(lines) != shards*perShard {
 		t.Fatalf("file holds %d lines, want %d records", len(lines), shards*perShard)
 	}
-	// Every record must be one complete line: a record split across the two
-	// destinations would show up here as a missing "shard=<i> seq=<j>" pair.
+	// Every record must be one complete line: an interleaved write would show up
+	// here as a missing "shard=<i> seq=<j>" pair or a broken token.
 	seen := map[string]bool{}
 	for _, line := range lines {
 		i := strings.Index(line, "shard=")
