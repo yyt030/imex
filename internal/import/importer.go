@@ -1081,14 +1081,60 @@ func (imp *Importer) applyColumnMapping(fileColumns []string) (*ColumnMapping, e
 }
 
 func (imp *Importer) buildBatchInsertSQL(columns []string, rowCount int) string {
-	var sb strings.Builder
-
 	// Trim whitespace from column names
 	targetColumns := make([]string, len(columns))
 	for i, col := range columns {
 		targetColumns[i] = strings.TrimSpace(col)
 	}
 
+	// One placeholder group per row: "(?,?,?)" for a three-column table. Building
+	// it once lets the batch write rowCount copies of a single string instead of
+	// rowCount*columns writes of one byte.
+	group := "(" + strings.TrimSuffix(strings.Repeat("?,", len(targetColumns)), ",") + ")"
+	separators := 0
+	if rowCount > 0 {
+		separators = rowCount - 1
+	}
+
+	// For insert_update mode, append ON DUPLICATE KEY UPDATE
+	var onDup string
+	if imp.cfg.Mode == config.ImportModeInsertUpdate {
+		var od strings.Builder
+		od.WriteString(" ON DUPLICATE KEY UPDATE ")
+		for i, col := range targetColumns {
+			if i > 0 {
+				od.WriteString(", ")
+			}
+			od.WriteString("`")
+			od.WriteString(col)
+			od.WriteString("` = VALUES(`")
+			od.WriteString(col)
+			od.WriteString("`)")
+		}
+		onDup = od.String()
+	}
+
+	// The statement is assembled once, in a buffer sized up front: the
+	// attribution comment goes in as the first bytes instead of being
+	// concatenated onto the finished text (that copied the whole batch again),
+	// and Grow stops the builder from doubling its way up to the batch size
+	// (that copied it a third time, plus the discarded halves).
+	tag := common.SQLTag()
+	colListLen := 0
+	for _, col := range targetColumns {
+		colListLen += len(col) + 2 // the backticks around each name
+	}
+	if len(targetColumns) > 1 {
+		colListLen += 2 * (len(targetColumns) - 1) // ", " between names
+	}
+
+	var sb strings.Builder
+	sb.Grow(len(tag) + 1 + len("INSERT INTO `") + len(imp.cfg.Table) + len("` (") +
+		colListLen + len(") VALUES ") + rowCount*len(group) + separators + len(onDup))
+	if tag != "" {
+		sb.WriteString(tag)
+		sb.WriteByte(' ')
+	}
 	sb.WriteString("INSERT INTO `")
 	sb.WriteString(imp.cfg.Table)
 	sb.WriteString("` (")
@@ -1104,37 +1150,15 @@ func (imp *Importer) buildBatchInsertSQL(columns []string, rowCount int) string 
 
 	sb.WriteString(") VALUES ")
 
-	// Build placeholder groups: (?,?,?),(?,?,?),(?,?,?) — one per row
 	for i := 0; i < rowCount; i++ {
 		if i > 0 {
-			sb.WriteString(",")
+			sb.WriteByte(',')
 		}
-		sb.WriteString("(")
-		for j := range targetColumns {
-			if j > 0 {
-				sb.WriteString(",")
-			}
-			sb.WriteString("?")
-		}
-		sb.WriteString(")")
+		sb.WriteString(group)
 	}
+	sb.WriteString(onDup)
 
-	// For insert_update mode, append ON DUPLICATE KEY UPDATE
-	if imp.cfg.Mode == config.ImportModeInsertUpdate {
-		sb.WriteString(" ON DUPLICATE KEY UPDATE ")
-		for i, col := range targetColumns {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("`")
-			sb.WriteString(col)
-			sb.WriteString("` = VALUES(`")
-			sb.WriteString(col)
-			sb.WriteString("`)")
-		}
-	}
-
-	return common.TagSQL(sb.String())
+	return sb.String()
 }
 
 // createTableNameRe matches the table-name token that follows

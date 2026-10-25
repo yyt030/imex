@@ -230,3 +230,94 @@ func TestDecodeHexField(t *testing.T) {
 		}
 	}
 }
+
+// drainRows reads every row after ReadHeader and returns their first column,
+// rendering NULL as an empty string so a case can assert on all of them at once.
+func drainRows(t *testing.T, sr *SQLReader) []string {
+	t.Helper()
+	var got []string
+	for {
+		row, err := sr.ReadRow()
+		if err == io.EOF {
+			return got
+		}
+		if err != nil {
+			t.Fatalf("ReadRow: %v", err)
+		}
+		switch v := row[0].(type) {
+		case nil:
+			got = append(got, "")
+		case string:
+			got = append(got, v)
+		case []byte:
+			got = append(got, string(v))
+		default:
+			t.Fatalf("unexpected value type %T (%v)", row[0], row[0])
+		}
+	}
+}
+
+func TestSQLReader_MultiLineStatement(t *testing.T) {
+	// One statement spread over many physical lines: the tuple separators of a
+	// wrapped multi-row INSERT, plus the cases that make line reassembly hard —
+	// a real newline inside a literal, a ';' inside a literal, and a doubled
+	// quote. The quoting state has to survive every line break, and each tuple
+	// must still come out as its own row with its content intact.
+	input := "CREATE TABLE `t` (`v` VARCHAR(64));\n" +
+		"INSERT INTO `t` (`v`)\n" +
+		"VALUES\n" +
+		"('first'),\n" +
+		"('two\nlines'),\n" +
+		"('semi;colon'),\n" +
+		"('dbl''quote')\n" +
+		";\n" +
+		"INSERT INTO `t` (`v`) VALUES ('after');\n"
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+
+	cols, err := sr.ReadHeader()
+	if err != nil {
+		t.Fatalf("ReadHeader: %v", err)
+	}
+	if len(cols) != 1 || cols[0] != "v" {
+		t.Fatalf("columns: %v", cols)
+	}
+
+	want := []string{"first", "two\nlines", "semi;colon", "dbl'quote", "after"}
+	got := drainRows(t, sr)
+	if len(got) != len(want) {
+		t.Fatalf("rows = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSQLReader_KeywordCaseAndNonASCII(t *testing.T) {
+	// Keywords are matched case-insensitively on bytes, and folding must stay in
+	// the ASCII range: a value holding a code point whose upper-case form has a
+	// different byte length (U+0131 dotless i) must not shift the parser.
+	// Quoted "null" stays data; only the bare NULL token is nil.
+	input := "insert into `t` (`v`) values ('ı'), ('中文'), ('null'), (NULL);\n"
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+
+	cols, err := sr.ReadHeader()
+	if err != nil {
+		t.Fatalf("ReadHeader on lower-case statement: %v", err)
+	}
+	if len(cols) != 1 || cols[0] != "v" {
+		t.Fatalf("columns: %v", cols)
+	}
+
+	want := []string{"ı", "中文", "null", ""}
+	got := drainRows(t, sr)
+	if len(got) != len(want) {
+		t.Fatalf("rows = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %q, want %q (only the bare NULL token folds to nil)", i, got[i], want[i])
+		}
+	}
+}
