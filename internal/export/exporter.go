@@ -21,6 +21,12 @@ type Exporter struct {
 	sqlParser *SQLParser
 	stats     *common.Stats
 
+	// openShard overrides how a parallel export shard dials the server. Tests set
+	// it to an in-process connector so the order in which a shard releases its
+	// connection and hands over its tail bytes can be observed without a
+	// database (see TestExportShard_ReleasesConnectionBeforePipeDrain).
+	openShard func() (*sql.DB, error)
+
 	// stopMonitor ends the periodic progress record. It is held on the struct
 	// because the completion summary is logged by the export methods, which must
 	// stop the monitor first: a progress record after "export completed" reads as
@@ -558,30 +564,49 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 	}
 
 	// Create separate database connection for this shard
-	db, err := e.createShardConnection()
+	db, err := e.openShardConn()
 	if err != nil {
 		return 0, errors.Wrap(err, "failed to create shard connection")
 	}
-	defer db.Close()
 
 	// Execute shard query with attribution tag
 	taggedShardQuery := common.TagSQL(shardQuery)
 	rows, err := db.QueryContext(ctx, taggedShardQuery)
 	if err != nil {
 		preview := common.SQLPreview(shardQuery, nil)
+		db.Close()
 		common.Logger.Error("shard query failed", "shard", shardIdx, "error", err, "sql", preview)
 		return 0, errors.Wrapf(err, "failed to execute shard query (SQL: %s)", preview)
 	}
-	defer rows.Close()
+
+	// releaseDB ends this shard's consistent snapshot. It has to happen before the
+	// shard's remaining bytes are handed over: the stream writer consumes the
+	// pipes in shard order, so a shard sitting behind a slow one can wait minutes
+	// for its tail block to be accepted. By then every row is already serialised
+	// into memory, so keeping the connection through that wait holds a read
+	// transaction and an idle socket for nothing — and on a cloud link an LB/NAT
+	// idle reaper can drop exactly that socket, turning a healthy export into a
+	// failed one.
+	dbReleased := false
+	releaseDB := func() {
+		if dbReleased {
+			return
+		}
+		dbReleased = true
+		rows.Close()
+		db.Close()
+	}
 
 	// Serialize the shard into its pipe. The stream writer consumes pipes in shard
 	// order, so it must see a close on every exit path — including failures — or
-	// it waits for an EOF that never arrives.
+	// it waits for an EOF that never arrives. It is registered before releaseDB's
+	// defer so the database is always the first thing given up.
 	defer func() {
 		if cerr := out.Close(); cerr != nil && err == nil {
 			err = errors.Wrapf(cerr, "failed to finish shard %d output", shardIdx)
 		}
 	}()
+	defer releaseDB()
 
 	// Detect YEAR columns so "0" (the wire text for YEAR(0000)) can be
 	// normalized to "0000" before writing, matching the single-threaded path.
@@ -659,12 +684,27 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 		return 0, errors.Wrap(err, "row iteration error")
 	}
 
+	// Every row of this shard is now in the writer's hands, so the snapshot is no
+	// longer needed. Release it here rather than at return: the footer flush and
+	// the pipe close below can both block until the stream writer reaches this
+	// shard, and a SQL shard can have --statement-size bytes (8 MiB by default) of
+	// buffered INSERT left to hand over.
+	releaseDB()
+
 	// Write footer
 	if err := writer.WriteFooter(); err != nil {
 		return 0, errors.Wrap(err, "failed to write footer")
 	}
 
 	return rowCount, nil
+}
+
+// openShardConn dials the connection one parallel shard reads through.
+func (e *Exporter) openShardConn() (*sql.DB, error) {
+	if e.openShard != nil {
+		return e.openShard()
+	}
+	return e.createShardConnection()
 }
 
 // createShardConnection creates a new database connection for a shard
