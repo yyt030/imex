@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 // Corpus for the DEL reader benchmarks. Shapes mirror what the exporter

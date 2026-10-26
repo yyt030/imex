@@ -143,8 +143,13 @@ func TestSQLParser_SimpleTableName(t *testing.T) {
 
 	t.Run("accepts single-table queries", func(t *testing.T) {
 		cases := map[string]string{
-			"SELECT * FROM users":                        "users",
-			"SELECT id FROM `db`.`users`":                "db.users",
+			"SELECT * FROM users": "users",
+			// A schema-qualified query must yield the bare table name: the dump
+			// stamps this string into CREATE/INSERT/LOCK and matches it against
+			// information_schema, and carrying "db.users" through is what made the
+			// connection's own database get prefixed twice (Error 1146). The
+			// qualifier is retrieved separately via ExtractTableRef.
+			"SELECT id FROM `db`.`users`":                "users",
 			"SELECT * FROM users u WHERE u.id = 1":       "users",
 			"SELECT * FROM users WHERE a > 1 ORDER BY a": "users",
 		}
@@ -184,6 +189,36 @@ func TestSQLParser_SimpleTableName(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestSQLParser_ExtractTableRef pins the schema/name split used to look a table
+// up for SHOW CREATE without re-qualifying the emitted dump.
+func TestSQLParser_ExtractTableRef(t *testing.T) {
+	p := NewSQLParser()
+	cases := []struct {
+		query      string
+		wantSchema string
+		wantName   string
+	}{
+		{"SELECT * FROM users", "", "users"},
+		{"SELECT id FROM `db`.`users`", "db", "users"},
+		{"SELECT * FROM mysqldump_test.t AS x", "mysqldump_test", "t"},
+	}
+	for _, tc := range cases {
+		schema, name, err := p.ExtractTableRef(tc.query)
+		if err != nil {
+			t.Errorf("ExtractTableRef(%q) error = %v", tc.query, err)
+			continue
+		}
+		if schema != tc.wantSchema || name != tc.wantName {
+			t.Errorf("ExtractTableRef(%q) = (%q,%q), want (%q,%q)", tc.query, schema, name, tc.wantSchema, tc.wantName)
+		}
+	}
+	for _, q := range []string{"UPDATE users SET a = 1", "DELETE FROM users", "INSERT INTO users VALUES (1)"} {
+		if _, _, err := p.ExtractTableRef(q); err == nil {
+			t.Errorf("ExtractTableRef(%q) = nil error, want failure", q)
+		}
+	}
 }
 
 func TestBuildShardedQuery_NullShard(t *testing.T) {

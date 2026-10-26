@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 // delModifierFlags are the DEL layout options, present with these names on both

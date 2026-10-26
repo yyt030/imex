@@ -1,9 +1,9 @@
 package integration
 
-// Live MySQL end-to-end tests. They are skipped unless GOMYDUMP_TEST_DSN is
+// Live MySQL end-to-end tests. They are skipped unless IMEX_TEST_DSN is
 // set, so `go test ./...` stays hermetic while still compiling this file:
 //
-//	GOMYDUMP_TEST_DSN='root:pass@tcp(127.0.0.1:3306)/gomydump_it' go test ./test/integration -run Live -v
+//	IMEX_TEST_DSN='root:pass@tcp(127.0.0.1:3306)/imex_it' go test ./test/integration -run Live -v
 //
 // The DSN database must already exist. Every test creates uniquely named
 // tables and drops them on cleanup, so runs can share one schema.
@@ -22,10 +22,10 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
-	"github.com/gomydump/internal/export"
-	_import "github.com/gomydump/internal/import"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
+	"github.com/imex/internal/export"
+	_import "github.com/imex/internal/import"
 )
 
 type liveEnv struct {
@@ -36,14 +36,14 @@ type liveEnv struct {
 func newLiveEnv(t *testing.T) *liveEnv {
 	t.Helper()
 
-	dsn := os.Getenv("GOMYDUMP_TEST_DSN")
+	dsn := os.Getenv("IMEX_TEST_DSN")
 	if dsn == "" {
-		t.Skip("set GOMYDUMP_TEST_DSN to run live MySQL integration tests")
+		t.Skip("set IMEX_TEST_DSN to run live MySQL integration tests")
 	}
 
 	mc, err := mysql.ParseDSN(dsn)
 	if err != nil {
-		t.Fatalf("parse GOMYDUMP_TEST_DSN: %v", err)
+		t.Fatalf("parse IMEX_TEST_DSN: %v", err)
 	}
 
 	db, err := sql.Open("mysql", dsn)
@@ -92,7 +92,7 @@ func newLiveEnv(t *testing.T) *liveEnv {
 // liveTable returns a database-unique table name and registers its removal.
 func (e *liveEnv) liveTable(t *testing.T, prefix string) string {
 	t.Helper()
-	name := fmt.Sprintf("gmydump_it_%s_%d", prefix, time.Now().UnixNano())
+	name := fmt.Sprintf("imex_it_%s_%d", prefix, time.Now().UnixNano())
 	t.Cleanup(func() {
 		_, _ = e.db.Exec("DROP TABLE IF EXISTS `" + name + "`")
 	})
@@ -115,6 +115,9 @@ func (e *liveEnv) export(t *testing.T, opts exportOptions) {
 	cfg.Format = opts.format
 	cfg.Query = "SELECT * FROM `" + opts.table + "`"
 	cfg.Threads = opts.threads
+	// SQL export is data-only by default; --create is what opts a dump into
+	// carrying the table structure, which --mode create imports need.
+	cfg.Create = opts.create
 	if opts.progressInterval > 0 {
 		cfg.ProgressInterval = opts.progressInterval
 	}
@@ -148,6 +151,10 @@ type exportOptions struct {
 	// batchSize moves the hand-off option the parallel path does not read; zero
 	// keeps the shipped default, which is the case that must stay quiet.
 	batchSize int
+	// create opts an SQL export into emitting a CREATE TABLE statement, exactly
+	// as --create does on the command line. Only the --mode create round trip
+	// needs it; every other export is the data-only default.
+	create bool
 }
 
 func (e *liveEnv) importFile(t *testing.T, opts importOptions) {
@@ -452,7 +459,7 @@ func TestLive_ImportModes(t *testing.T) {
 	created := env.liveTable(t, "created")
 	env.fillSource(t, src)
 	sqlFile := filepath.Join(dir, "create.sql")
-	env.export(t, exportOptions{table: src, format: "sql", output: sqlFile, threads: 1})
+	env.export(t, exportOptions{table: src, format: "sql", output: sqlFile, threads: 1, create: true})
 	env.importFile(t, importOptions{
 		input: sqlFile, format: "sql", mode: config.ImportModeCreate, table: created, commitCount: 4,
 	})

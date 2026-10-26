@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 // ParseDelimiter parses a delimiter string that may be in one of these formats:

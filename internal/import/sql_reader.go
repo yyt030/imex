@@ -12,7 +12,7 @@ import (
 
 // SQLReader reads data in SQL format (CREATE TABLE + INSERT statements).
 //
-// A statement carries either one VALUES tuple (gomydump's own default layout)
+// A statement carries either one VALUES tuple (imex's own default layout)
 // or many (--extended-insert and every dump tool's style), and it may be split
 // across several physical lines. The reader reassembles each statement,
 // tokenizes its tuples into rows and queues them for ReadRow.

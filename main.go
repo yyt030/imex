@@ -4,8 +4,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gomydump/cmd"
-	"github.com/gomydump/internal/common"
+	"github.com/imex/cmd"
+	"github.com/imex/internal/common"
 )
 
 func main() {

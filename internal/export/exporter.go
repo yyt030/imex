@@ -10,8 +10,8 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 // Exporter handles data export operations
@@ -167,14 +167,15 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	}
 
 	// For SQL format, pre-fetch the CREATE TABLE statement while the
-	// connection is still free.
+	// connection is still free. Only when the dump was asked to carry it
+	// (--create).
 	var createStmt string
-	if e.config.Format == "sql" && !e.config.NoCreate {
-		tableName, err := e.sqlParser.SimpleTableName(e.config.Query)
+	if e.config.Format == "sql" && e.config.Create {
+		schema, tableName, err := e.sqlParser.ExtractTableRef(e.config.Query)
 		if err != nil {
 			return errors.Wrap(err, "failed to extract table name")
 		}
-		createStmt, err = e.getCreateTableStatement(tableName)
+		createStmt, err = e.getCreateTableStatement(schema, tableName)
 		if err != nil {
 			return errors.Wrap(err, "failed to get CREATE TABLE statement")
 		}
@@ -258,7 +259,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		if err != nil {
 			return errors.Wrap(err, "failed to extract table name")
 		}
-		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, !e.config.NoCreate, !e.config.NoData, serverType, createStmt, e.config.DefaultCharset)
+		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, e.config.Create, !e.config.NoData, serverType, createStmt, e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		writer = sqlWriter
@@ -765,19 +766,19 @@ func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string, server
 		// The output is opened with the same writer a serial export uses, so
 		// a parallel dump can never drift from a single-threaded one in its
 		// preamble or epilogue.
-		tableName, err := e.sqlParser.ExtractTableName(e.config.Query)
+		schema, tableName, err := e.sqlParser.ExtractTableRef(e.config.Query)
 		if err != nil {
 			return errors.Wrap(err, "failed to extract table name")
 		}
 		var createStmt string
-		if !e.config.NoCreate {
-			createStmt, err = e.getCreateTableStatement(tableName)
+		if e.config.Create {
+			createStmt, err = e.getCreateTableStatement(schema, tableName)
 			if err != nil {
 				return errors.Wrap(err, "failed to get CREATE TABLE statement")
 			}
 		}
 		sqlWriter = NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize,
-			!e.config.NoCreate, !e.config.NoData, serverType, createStmt, e.config.DefaultCharset)
+			e.config.Create, !e.config.NoData, serverType, createStmt, e.config.DefaultCharset)
 		if err := sqlWriter.WriteHeader(columns); err != nil {
 			return errors.Wrap(err, "failed to write header")
 		}
@@ -807,9 +808,18 @@ func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string, server
 	return nil
 }
 
-// getCreateTableStatement gets the CREATE TABLE statement for a table
-func (e *Exporter) getCreateTableStatement(tableName string) (string, error) {
-	query := common.TagSQL(fmt.Sprintf("SHOW CREATE TABLE `%s`", tableName))
+// getCreateTableStatement gets the CREATE TABLE statement for a table. schema is
+// the qualifier the query carried ("" when it named none) and is used only to
+// look the table up: SHOW CREATE TABLE runs in the connection's own database
+// when the query did not name one, and in the named schema otherwise. The
+// returned text is the server's own definition and already targets the bare
+// table, so it needs no re-qualification for the dump.
+func (e *Exporter) getCreateTableStatement(schema, tableName string) (string, error) {
+	target := "`" + tableName + "`"
+	if schema != "" {
+		target = "`" + schema + "`." + target
+	}
+	query := common.TagSQL("SHOW CREATE TABLE " + target)
 	row := e.db.QueryRowContext(context.Background(), query)
 
 	var name, createStmt string

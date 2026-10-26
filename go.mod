@@ -1,4 +1,4 @@
-module github.com/gomydump
+module github.com/imex
 
 go 1.26.10
 

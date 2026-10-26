@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 func TestValidatePositionalColumns(t *testing.T) {

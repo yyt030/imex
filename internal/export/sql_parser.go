@@ -297,10 +297,51 @@ func (p *SQLParser) ExtractTableName(query string) (string, error) {
 
 	firstTable := selectStmt.From[0]
 	if aliased, ok := firstTable.(*sqlparser.AliasedTableExpr); ok {
-		return sqlparser.String(aliased.Expr), nil
+		tn, ok := aliased.Expr.(sqlparser.TableName)
+		if !ok {
+			return "", errors.New("could not extract table name")
+		}
+		// The bare table name only, schema prefix dropped. This string is what
+		// the SQL writer stamps into CREATE/INSERT/LOCK and what shard-key
+		// detection matches against information_schema's TABLE_NAME, and both
+		// must be the unqualified identifier: keeping a `db`.`tbl` here is what
+		// previously made the connection's own database get prefixed a second
+		// time (Error 1146: table 'db.db.tbl' doesn't exist).
+		return tn.Name.String(), nil
 	}
 
 	return "", errors.New("could not extract table name")
+}
+
+// ExtractTableRef returns the two parts of the single table a SELECT reads from:
+// the schema qualifier ("" when the query did not name one) and the bare table
+// name. Export needs both: the emitted dump always references the bare table so
+// it loads into whatever database it is pointed at, while SHOW CREATE TABLE has
+// to be looked up in the schema the query actually named, which is not always the
+// connection's --database.
+func (p *SQLParser) ExtractTableRef(query string) (schema, name string, err error) {
+	stmt, err := p.parser.Parse(query)
+	if err != nil {
+		return "", "", errors.Wrap(err, "failed to parse SQL")
+	}
+
+	selectStmt, ok := stmt.(*sqlparser.Select)
+	if !ok {
+		return "", "", errors.New("only SELECT statements are supported")
+	}
+	if len(selectStmt.From) == 0 {
+		return "", "", errors.New("no FROM clause found")
+	}
+
+	aliased, ok := selectStmt.From[0].(*sqlparser.AliasedTableExpr)
+	if !ok {
+		return "", "", errors.New("could not extract table name")
+	}
+	tn, ok := aliased.Expr.(sqlparser.TableName)
+	if !ok {
+		return "", "", errors.New("could not extract table name")
+	}
+	return tn.Qualifier.String(), tn.Name.String(), nil
 }
 
 // SimpleTableName returns the single concrete table a SELECT reads from. SQL
@@ -332,13 +373,16 @@ func (p *SQLParser) SimpleTableName(query string) (string, error) {
 	if !ok {
 		return "", sqlExportShapeError("FROM is not a plain table name")
 	}
-	switch aliased.Expr.(type) {
-	case sqlparser.TableName:
-		return sqlparser.String(aliased.Expr), nil
-	default:
+	tn, ok := aliased.Expr.(sqlparser.TableName)
+	if !ok {
 		// Subquery / derived table, or a parenthesised join expression.
 		return "", sqlExportShapeError("FROM reads from a subquery instead of a table")
 	}
+	// Bare table name: any schema qualifier is dropped for the same reason
+	// ExtractTableName drops it (the dump references the table, not db.tbl, and
+	// re-attaching the connection's own database is the Error 1146 bug). The
+	// qualifier is still available to callers that need it via ExtractTableRef.
+	return tn.Name.String(), nil
 }
 
 // sqlExportShapeError explains why a query cannot drive --format sql.

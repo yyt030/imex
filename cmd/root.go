@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gomydump/internal/common"
+	"github.com/imex/internal/common"
 	"github.com/spf13/cobra"
 )
 
@@ -31,9 +31,9 @@ var (
 var messagesPath string
 
 var rootCmd = &cobra.Command{
-	Use:   "gomydump",
+	Use:   "imex",
 	Short: "MySQL logical backup and restore tool",
-	Long: `gomydump is a table-level MySQL logical backup and restore tool.
+	Long: `imex is a table-level MySQL logical backup and restore tool.
 It supports both MySQL and OceanBase MySQL mode.
 
 Features:
@@ -54,7 +54,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("gomydump version %s\n", common.Version)
+		fmt.Printf("imex version %s\n", common.Version)
 		fmt.Printf("Git commit: %s\n", common.GitCommit)
 		fmt.Printf("Build time: %s\n", common.BuildTime)
 		fmt.Printf("Go version: %s\n", common.GoVersion)
@@ -80,32 +80,32 @@ func init() {
 	// --- Persistent flags (appear on root, inherited by export/import) ---
 
 	rootCmd.PersistentFlags().BoolVar(&errorStack, "error-stack", false,
-		"Print full error call stack on failure (also enabled via GOMYDUMP_ERROR_STACK=1)")
+		"Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)")
 
 	rootCmd.PersistentFlags().BoolVar(&echoSQLValues, "echo-sql-values", false,
-		"On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, or to the --messages file when one is given.")
+		"On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, or to the --messages file when one is given.")
 
 	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false,
-		"Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via GOMYDUMP_QUIET=1)")
+		"Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)")
 
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "java",
-		"Log layout: java (default: time level detail) or text (slog key=value), also via GOMYDUMP_LOG_FORMAT")
+		"Log layout: java (default: time level detail) or text (slog key=value), also via IMEX_LOG_FORMAT")
 
 	rootCmd.PersistentFlags().BoolVar(&noSQLTag, "no-sql-tag", false,
-		"Do not prepend the /* gomydump:<commit> */ attribution comment to statements gomydump executes (also via GOMYDUMP_NO_SQL_TAG=1)")
+		"Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)")
 
 	// PersistentPreRunE: apply global switches before any subcommand runs.
 	// This runs before flag validation in RunE, so log format is active even
 	// for usage errors.
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		// Resolve env-var overrides for persistent bool flags.
-		common.ErrorStack = errorStack || envTruthy("GOMYDUMP_ERROR_STACK")
-		common.EchoSQLValues = echoSQLValues || envTruthy("GOMYDUMP_ECHO_SQL_VALUES")
-		common.Quiet = quiet || envTruthy("GOMYDUMP_QUIET")
-		common.NoSQLTag = noSQLTag || envTruthy("GOMYDUMP_NO_SQL_TAG")
+		common.ErrorStack = errorStack || envTruthy("IMEX_ERROR_STACK")
+		common.EchoSQLValues = echoSQLValues || envTruthy("IMEX_ECHO_SQL_VALUES")
+		common.Quiet = quiet || envTruthy("IMEX_QUIET")
+		common.NoSQLTag = noSQLTag || envTruthy("IMEX_NO_SQL_TAG")
 
 		// Resolve --log-format env override.
-		if v := os.Getenv("GOMYDUMP_LOG_FORMAT"); strings.TrimSpace(v) != "" {
+		if v := os.Getenv("IMEX_LOG_FORMAT"); strings.TrimSpace(v) != "" {
 			logFormat = strings.TrimSpace(v)
 		}
 		// A typo here would otherwise silently fall back to the java layout,
@@ -135,7 +135,7 @@ func init() {
 		// Version banner must be the first log line of a run — for the commands
 		// that actually do work. `version` is excluded: its entire job is to
 		// print those same four fields, so prefixing it with a log record would
-		// duplicate the output and make `gomydump version` unusable in pipelines
+		// duplicate the output and make `imex version` unusable in pipelines
 		// and version greps.
 		if cmd.Name() != "version" {
 			common.LogVersion(cmd.Name())

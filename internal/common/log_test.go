@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 // captureStderr redirects os.Stderr into a temp file for the duration of fn and
@@ -143,7 +143,7 @@ func TestLogVersionEmitsBanner(t *testing.T) {
 	if strings.Count(out, "\n") != 1 {
 		t.Fatalf("banner spanned %d lines: %q", strings.Count(out, "\n"), out)
 	}
-	for _, w := range []string{"INFO gomydump starting", "command=export", "version="} {
+	for _, w := range []string{"INFO imex starting", "command=export", "version="} {
 		if !strings.Contains(out, w) {
 			t.Errorf("banner %q missing %q", out, w)
 		}

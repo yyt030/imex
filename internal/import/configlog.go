@@ -1,8 +1,8 @@
 package _import
 
 import (
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 // logImportConfig writes the one record that says what the run is about to do.

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 // collect drains a pipe into memory until EOF, as writeShardStream would.

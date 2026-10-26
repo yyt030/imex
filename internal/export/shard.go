@@ -9,7 +9,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/gomydump/internal/common"
+	"github.com/imex/internal/common"
 )
 
 // ShardInfo holds information about how to shard a table

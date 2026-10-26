@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gomydump/internal/common"
+	"github.com/imex/internal/common"
 )
 
 // DefaultIdleCommitTimeout is how long a writer waits for the next batch before

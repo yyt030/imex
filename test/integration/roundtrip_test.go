@@ -8,14 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
-	"github.com/gomydump/internal/export"
-	_import "github.com/gomydump/internal/import"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
+	"github.com/imex/internal/export"
+	_import "github.com/imex/internal/import"
 )
 
 // These tests are pure writer → reader round trips: no database, no files. They
-// lock down the on-disk contract between the two halves of gomydump — the
+// lock down the on-disk contract between the two halves of imex — the
 // exporter's escaping rules and the importer's parser have to agree exactly, and
 // both sides are only reachable through the internal packages, so the pair is
 // tested from outside as a consumer would use it.

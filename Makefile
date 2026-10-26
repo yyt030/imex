@@ -7,13 +7,13 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 CGO_ENABLED ?= 0
 
 LDFLAGS := -s -w \
-	-X github.com/gomydump/cmd.Version=$(VERSION) \
-	-X github.com/gomydump/cmd.BuildTime=$(BUILD_TIME) \
-	-X github.com/gomydump/cmd.GitCommit=$(GIT_COMMIT)
+	-X github.com/imex/cmd.Version=$(VERSION) \
+	-X github.com/imex/cmd.BuildTime=$(BUILD_TIME) \
+	-X github.com/imex/cmd.GitCommit=$(GIT_COMMIT)
 
 GOBUILD := CGO_ENABLED=$(CGO_ENABLED) go build -trimpath -ldflags "$(LDFLAGS)"
 
-BINARY := gomydump
+BINARY := imex
 BUILD_DIR := bin
 
 # ---- UPX 压缩（快速模式）----
@@ -76,10 +76,10 @@ test:
 	CGO_ENABLED=1 go test -race ./...
 
 # 真实 MySQL 端到端测试。需要一个已存在的库：
-#   GOMYDUMP_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/gomydump_it' make test-live
+#   IMEX_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/imex_it' make test-live
 test-live:
-	@if [ -z "$$GOMYDUMP_TEST_DSN" ]; then \
-		echo "GOMYDUMP_TEST_DSN is not set (e.g. 'root:secret@tcp(127.0.0.1:3306)/gomydump_it')"; \
+	@if [ -z "$$IMEX_TEST_DSN" ]; then \
+		echo "IMEX_TEST_DSN is not set (e.g. 'root:secret@tcp(127.0.0.1:3306)/imex_it')"; \
 		exit 2; \
 	fi
 	CGO_ENABLED=1 go test -race ./test/integration -run Live -v

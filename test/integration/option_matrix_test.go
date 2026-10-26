@@ -20,9 +20,9 @@ package integration
 //   - side-effect discipline: --messages, --no-replace and failure paths must
 //     leave exactly the files they promise, no more.
 //
-// They are skipped unless GOMYDUMP_TEST_DSN is set:
+// They are skipped unless IMEX_TEST_DSN is set:
 //
-//	CGO_ENABLED=1 GOMYDUMP_TEST_DSN='<user>:<password>@tcp(127.0.0.1:3306)/gomydump_test?parseTime=true' \
+//	CGO_ENABLED=1 IMEX_TEST_DSN='<user>:<password>@tcp(127.0.0.1:3306)/imex_test?parseTime=true' \
 //	  go test -count=1 ./test/integration -run OptionMatrix -v
 
 import (
@@ -37,14 +37,14 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 // cliBinary is built once per test run by TestMain and reused by every case.
 var cliBinary string
 
 func TestMain(m *testing.M) {
-	if os.Getenv("GOMYDUMP_TEST_DSN") == "" {
+	if os.Getenv("IMEX_TEST_DSN") == "" {
 		// Library-level tests skip themselves; nothing to build.
 		os.Exit(m.Run())
 	}
@@ -54,16 +54,16 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "resolve module root: %v\n", err)
 		os.Exit(1)
 	}
-	dir, err := os.MkdirTemp("", "gomydump-cli-")
+	dir, err := os.MkdirTemp("", "imex-cli-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create build dir: %v\n", err)
 		os.Exit(1)
 	}
-	cliBinary = filepath.Join(dir, "gomydump")
-	build := exec.Command("go", "build", "-o", cliBinary, "github.com/gomydump")
+	cliBinary = filepath.Join(dir, "imex")
+	build := exec.Command("go", "build", "-o", cliBinary, "github.com/imex")
 	build.Dir = root
 	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build gomydump for CLI tests: %v\n%s\n", err, out)
+		fmt.Fprintf(os.Stderr, "build imex for CLI tests: %v\n%s\n", err, out)
 		os.RemoveAll(dir)
 		os.Exit(1)
 	}
@@ -85,7 +85,7 @@ func newCLILive(t *testing.T) *cliEnv {
 	t.Helper()
 
 	env := newLiveEnv(t)
-	dsn := os.Getenv("GOMYDUMP_TEST_DSN")
+	dsn := os.Getenv("IMEX_TEST_DSN")
 	mc, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		t.Fatalf("parse DSN: %v", err)
@@ -663,26 +663,18 @@ func TestOptionMatrixDateFormats(t *testing.T) {
 	})
 }
 
-// TestOptionMatrixNoDataNoCreate crosses --no-data and --no-create with the
-// import modes, including the combinations that can only fail and must fail with
-// a usable message rather than an empty table.
-func TestOptionMatrixNoDataNoCreate(t *testing.T) {
+// TestOptionMatrixNoDataCreate crosses the SQL export defaults (--create, which
+// is off by default, and --no-data) with the import modes, including the
+// combinations that can only fail and must fail with a usable message rather
+// than an empty table.
+func TestOptionMatrixNoDataCreate(t *testing.T) {
 	env := newCLILive(t)
 	src, _ := env.makePair(t, "nodelete")
 
-	t.Run("仅结构 + mode create", func(t *testing.T) {
-		file := env.cliExport(t, src, "sql", "structure_only.sql", "--no-data")
-		dst := env.liveTable(t, "struct_dst")
-		env.cliImport(t, dst, "sql", file, "--mode", string(config.ImportModeCreate))
-		if n := env.rowCount(t, dst); n != 0 {
-			t.Errorf("structure-only import left %d rows, want 0", n)
-		}
-	})
-
-	t.Run("仅数据 + 目标表已存在", func(t *testing.T) {
-		file := env.cliExport(t, src, "sql", "data_only.sql", "--no-create")
+	t.Run("默认 SQL 导出仅数据", func(t *testing.T) {
+		file := env.cliExport(t, src, "sql", "data_only.sql")
 		if strings.Contains(readFile(t, file), "CREATE TABLE") {
-			t.Error("--no-create must not emit a CREATE TABLE statement")
+			t.Error("SQL export defaults to data-only and must not emit a CREATE TABLE statement")
 		}
 		dst := env.liveTable(t, "data_dst")
 		env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
@@ -690,8 +682,28 @@ func TestOptionMatrixNoDataNoCreate(t *testing.T) {
 		assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
 	})
 
-	t.Run("仅数据 + mode create 必须明确失败", func(t *testing.T) {
-		file := env.cliExport(t, src, "sql", "data_only_for_create.sql", "--no-create")
+	t.Run("--create 写入结构且保留数据", func(t *testing.T) {
+		file := env.cliExport(t, src, "sql", "with_create.sql", "--create")
+		text := readFile(t, file)
+		if !strings.Contains(text, "CREATE TABLE") {
+			t.Error("--create must emit a CREATE TABLE statement")
+		}
+		if !strings.Contains(text, "INSERT INTO") {
+			t.Error("--create must not swallow the data")
+		}
+	})
+
+	t.Run("仅结构 --create --no-data + mode create", func(t *testing.T) {
+		file := env.cliExport(t, src, "sql", "structure_only.sql", "--create", "--no-data")
+		dst := env.liveTable(t, "struct_dst")
+		env.cliImport(t, dst, "sql", file, "--mode", string(config.ImportModeCreate))
+		if n := env.rowCount(t, dst); n != 0 {
+			t.Errorf("structure-only import left %d rows, want 0", n)
+		}
+	})
+
+	t.Run("默认仅数据 + mode create 必须明确失败", func(t *testing.T) {
+		file := env.cliExport(t, src, "sql", "data_only_for_create.sql")
 		dst := env.liveTable(t, "data_create_dst")
 		out, code := env.runImportCLI(t, "-i", file, "-t", dst, "-f", "sql", "--mode", "create")
 		if code == 0 {
@@ -789,7 +801,7 @@ func TestOptionMatrixMessages(t *testing.T) {
 			}
 			// The version banner is the first record of a run, so it must be the
 			// file's first line: the file starts where the run starts.
-			if !strings.Contains(lines[0], "gomydump starting") || !strings.Contains(lines[0], "command=export") {
+			if !strings.Contains(lines[0], "imex starting") || !strings.Contains(lines[0], "command=export") {
 				t.Errorf("first line is not the banner: %q", lines[0])
 			}
 			for _, want := range []string{"export config", tc.done, "rows=10"} {
@@ -823,7 +835,7 @@ func TestOptionMatrixMessages(t *testing.T) {
 		}
 		text := readFile(t, msg)
 		lines := splitLines(text)
-		if len(lines) == 0 || !strings.Contains(lines[0], "gomydump starting") {
+		if len(lines) == 0 || !strings.Contains(lines[0], "imex starting") {
 			t.Errorf("-m must open the log file before the banner: %q", text)
 		}
 		if strings.TrimSpace(out) != "" {
@@ -840,7 +852,7 @@ func TestOptionMatrixMessages(t *testing.T) {
 			t.Fatalf("export failed: exit %d\n%s", code, out)
 		}
 		text := readFile(t, msg)
-		if !strings.Contains(text, `msg="gomydump starting"`) || !strings.Contains(text, "level=INFO") {
+		if !strings.Contains(text, `msg="imex starting"`) || !strings.Contains(text, "level=INFO") {
 			t.Errorf("--log-format text must reach the file:\n%s", text)
 		}
 		if strings.Contains(text, "SQL31") {
@@ -861,7 +873,7 @@ func TestOptionMatrixMessages(t *testing.T) {
 		// printed by the root hook before RunE applies --log-level, so it is the
 		// only INFO record any level can still see.
 		lines := splitLines(readFile(t, msg))
-		if len(lines) != 1 || !strings.Contains(lines[0], "gomydump starting") {
+		if len(lines) != 1 || !strings.Contains(lines[0], "imex starting") {
 			t.Errorf("--log-level error must leave only the banner, got: %#v", lines)
 		}
 		// The banner is an INFO record and the run asked for ERROR only, yet it is

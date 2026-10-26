@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 // scriptedDriver is a minimal database/sql driver that records execution order

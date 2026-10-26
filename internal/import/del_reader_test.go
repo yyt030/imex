@@ -8,8 +8,8 @@ import (
 
 	"fmt"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 func TestDelReader_ReadHeader(t *testing.T) {

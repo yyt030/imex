@@ -3,7 +3,7 @@ package _import
 import (
 	"testing"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 // configKeys lists the field names of a resolved configuration record, and fails

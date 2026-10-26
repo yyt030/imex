@@ -3,7 +3,7 @@ package export
 import (
 	"testing"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 // configKeys lists the field names of a resolved configuration record, and fails
@@ -36,7 +36,7 @@ var (
 		"char_del", "col_del", "row_del", "escape", "no_escape", "no_char_del",
 		"timestamp_fmt", "date_fmt", "no_col_names",
 	}
-	sqlLayoutKeys = []string{"no_create", "no_data", "statement_size", "extended_insert"}
+	sqlLayoutKeys = []string{"create", "no_data", "statement_size", "extended_insert"}
 	commonKeys    = []string{
 		"host", "port", "user", "database",
 		"output", "format", "query", "no_replace",

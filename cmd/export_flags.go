@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 // legacySingleRowInsert holds the deprecated --single-row-insert value. The
@@ -56,7 +56,8 @@ func registerExportFlags(cmd *cobra.Command) {
 	// Export-specific options
 	f.StringVarP(&exportCfg.Output, "output", "o", "", "Output file path (required)")
 	f.StringVarP(&exportCfg.Format, "format", "f", "del", "Output file format (del/sql/parquet)")
-	f.StringVarP(&exportCfg.Query, "query", "q", "", "SQL SELECT statement (required)")
+	f.StringVarP(&exportCfg.Query, "query", "q", "", "SQL SELECT statement (mutually exclusive with --query-file)")
+	f.StringVar(&exportCfg.QueryFile, "query-file", "", "Read the SQL SELECT statement from this file (mutually exclusive with -q)")
 	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")
 	f.BoolVar(&exportCfg.NoReplace, "no-replace", false, "Refuse to overwrite an existing output file (default: overwrite)")
 
@@ -79,7 +80,7 @@ func registerExportFlags(cmd *cobra.Command) {
 	// "unknown flag", and it does nothing unless combined with --extended-insert
 	// (which validate reports as a usage error).
 	f.BoolVar(&legacySingleRowInsert, "single-row-insert", false, "Deprecated: one INSERT statement per row is now the default")
-	f.BoolVar(&exportCfg.NoCreate, "no-create", false, "Do not output CREATE TABLE statement")
+	f.BoolVar(&exportCfg.Create, "create", false, "Output a CREATE TABLE statement (SQL export is data-only by default)")
 	f.BoolVar(&exportCfg.NoData, "no-data", false, "Do not output INSERT statements")
 
 	// Binary column encoding

@@ -25,7 +25,8 @@ func TestOptionScopesAppliesTo(t *testing.T) {
 		{"export", "statement-size", FormatSQL, true},
 		{"export", "statement-size", FormatDel, false},
 		{"export", "statement-size", FormatParquet, false},
-		{"export", "no-create", FormatSQL, true},
+		{"export", "create", FormatSQL, true},
+		{"export", "create", FormatDel, false},
 		{"export", "single-row-insert", FormatParquet, false},
 		{"export", "char-del", FormatDel, true},
 		{"export", "char-del", FormatSQL, false},
@@ -42,7 +43,7 @@ func TestOptionScopesAppliesTo(t *testing.T) {
 		// Import's --statement-size bounds the batches the importer builds for
 		// any input format, so it is deliberately not scoped.
 		{"import", "statement-size", FormatParquet, true},
-		{"import", "no-create", FormatDel, true},
+		{"import", "mode", FormatDel, true},
 	}
 
 	for _, tc := range cases {
@@ -100,9 +101,9 @@ func TestOptionScopeViolation(t *testing.T) {
 		{
 			name:    "first registered flag wins",
 			scopes:  ExportOptionScopes(),
-			changed: changedOf("col-del", "no-create"),
+			changed: changedOf("col-del", "create"),
 			format:  FormatParquet,
-			want:    "--no-create can only be used with --format sql",
+			want:    "--create can only be used with --format sql",
 		},
 		{
 			name:    "format that reads its own options",

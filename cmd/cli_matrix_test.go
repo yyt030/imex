@@ -8,8 +8,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 // TestCLIMatrix runs a matrix of valid/invalid flag combinations.
@@ -355,11 +355,11 @@ func TestCLIDELFlagRejectedExitCode(t *testing.T) {
 	}
 }
 
-// TestCLILogFormatEnvOverrideRejected covers the GOMYDUMP_LOG_FORMAT path: the
+// TestCLILogFormatEnvOverrideRejected covers the IMEX_LOG_FORMAT path: the
 // env value goes through the same membership check as the flag, so a typo
 // cannot silently fall back to the java layout.
 func TestCLILogFormatEnvOverrideRejected(t *testing.T) {
-	t.Setenv("GOMYDUMP_LOG_FORMAT", "javaness")
+	t.Setenv("IMEX_LOG_FORMAT", "javaness")
 	*exportCfg = *newExportConfigForTest()
 	*importCfg = *newImportConfigForTest()
 	logFormat = "java"
@@ -369,7 +369,7 @@ func TestCLILogFormatEnvOverrideRejected(t *testing.T) {
 		"-o", "/tmp/out.del", "-q", "SELECT 1"})
 	err := rootCmd.Execute()
 	if err == nil {
-		t.Fatal("expected usage error for GOMYDUMP_LOG_FORMAT=javaness, got nil")
+		t.Fatal("expected usage error for IMEX_LOG_FORMAT=javaness, got nil")
 	}
 	if !strings.Contains(err.Error(), "invalid --log-format") {
 		t.Errorf("unexpected error: %v", err)
@@ -578,16 +578,16 @@ func TestCLIEncryptArgsCountIsUsageError(t *testing.T) {
 
 	// A correct call must still pass the args check and reach RunE; with no key
 	// set it fails as a runtime error, not as a usage error.
-	t.Setenv("GOMYDUMP_KEY", "")
+	t.Setenv("IMEX_KEY", "")
 	rootCmd.SetArgs([]string{"encrypt", "secret"})
 	err := rootCmd.Execute()
 	if err == nil {
-		t.Fatal("encrypt with empty GOMYDUMP_KEY should fail")
+		t.Fatal("encrypt with empty IMEX_KEY should fail")
 	}
 	if common.IsUsageError(err) {
 		t.Errorf("missing key is a runtime failure, not a usage error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "GOMYDUMP_KEY") {
+	if !strings.Contains(err.Error(), "IMEX_KEY") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"os"
+	"strings"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
-	"github.com/gomydump/internal/export"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
+	"github.com/imex/internal/export"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -22,23 +24,32 @@ SQL, or Parquet format file.
 
 Examples:
   # Basic export to DEL format
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del -q "SELECT * FROM users"
 
   # Export to SQL format
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.sql -f sql -q "SELECT * FROM users"
 
+  # SQL export is data-only; add --create when the dump must be self-contained
+  # (import ... --mode create reads the CREATE TABLE from the file)
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+    -o /backup/users.sql -f sql --create -q "SELECT * FROM users"
+
+  # Read the query from a file instead of the command line
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+    -o /backup/users.sql -f sql --query-file /backup/users_query.sql
+
   # Export to Parquet format
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.parquet -f parquet -q "SELECT * FROM users"
 
   # Parallel export with 4 threads
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del --threads 4 -q "SELECT * FROM users"
 
   # Custom delimiters
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del --char-del '!' --col-del '@' \
     -q "SELECT * FROM users"`,
 	SilenceUsage: true,
@@ -64,8 +75,8 @@ Examples:
 		if exportCfg.Output == "" {
 			return common.Usagef("--output is required")
 		}
-		if exportCfg.Query == "" {
-			return common.Usagef("--query is required")
+		if err := resolveExportQuery(cmd); err != nil {
+			return err
 		}
 
 		// Resolve password securely.
@@ -117,6 +128,39 @@ Examples:
 
 func init() {
 	registerExportFlags(exportCmd)
+}
+
+// resolveExportQuery decides where the SELECT comes from and makes it the single
+// effective --query. -q and --query-file are mutually exclusive: asking for both
+// is a usage error rather than a flag-order tie. Exactly one source must supply
+// a non-empty statement, so a missing --query, an empty file, and "neither flag"
+// all fail here, before any connection is opened. The file's surrounding
+// whitespace and a single trailing semicolon are trimmed, because a query file is
+// normally written for a SQL client and both would otherwise reach the parser.
+func resolveExportQuery(cmd *cobra.Command) error {
+	qFlag := cmd.Flags().Changed("query")
+	fFlag := cmd.Flags().Changed("query-file")
+	if qFlag && fFlag {
+		return common.Usagef("--query and --query-file are mutually exclusive")
+	}
+	if fFlag {
+		data, err := os.ReadFile(exportCfg.QueryFile)
+		if err != nil {
+			return common.Usagef("cannot read --query-file %q: %v", exportCfg.QueryFile, err)
+		}
+		sqlText := strings.TrimSpace(string(data))
+		sqlText = strings.TrimRight(sqlText, ";")
+		sqlText = strings.TrimSpace(sqlText)
+		if sqlText == "" {
+			return common.Usagef("--query-file %q contains no SQL statement", exportCfg.QueryFile)
+		}
+		exportCfg.Query = sqlText
+		return nil
+	}
+	if exportCfg.Query == "" {
+		return common.Usagef("--query or --query-file is required")
+	}
+	return nil
 }
 
 // parseExportDelimiters parses DEL format delimiter strings.

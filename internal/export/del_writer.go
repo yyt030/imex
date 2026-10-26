@@ -11,8 +11,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 // DelWriter writes data in DEL (delimited ASCII) format

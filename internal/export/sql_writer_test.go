@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 func TestSQLWriter_SetNamesHeader(t *testing.T) {
@@ -25,7 +25,7 @@ func TestSQLWriter_SetNamesHeader(t *testing.T) {
 	}
 }
 
-func TestSQLWriter_NoHeaderWhenNoCreateNoData(t *testing.T) {
+func TestSQLWriter_NoHeaderWithoutCreateOrData(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
 		false, false, common.ServerMySQL, "", "utf8mb4")
@@ -34,7 +34,7 @@ func TestSQLWriter_NoHeaderWhenNoCreateNoData(t *testing.T) {
 	}
 	w.WriteFooter()
 	if buf.Len() != 0 {
-		t.Errorf("expected empty output with no-create and no-data, got %q", buf.String())
+		t.Errorf("expected empty output with create and data both off, got %q", buf.String())
 	}
 }
 
@@ -237,7 +237,7 @@ func TestSQLWriter_StatementSizeSingleRowOverflow(t *testing.T) {
 	}
 }
 
-func TestSQLWriter_NoCreateSkipsCreateTable(t *testing.T) {
+func TestSQLWriter_WithoutCreateSkipsCreateTable(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
 		false, true, common.ServerMySQL, "CREATE TABLE `t` (`id` int);", "utf8mb4")
@@ -247,7 +247,7 @@ func TestSQLWriter_NoCreateSkipsCreateTable(t *testing.T) {
 
 	out := buf.String()
 	if strings.Contains(out, "CREATE TABLE") {
-		t.Errorf("no-create should skip CREATE TABLE, got:\n%s", out)
+		t.Errorf("without --create the writer must skip CREATE TABLE, got:\n%s", out)
 	}
 	if !strings.Contains(out, "INSERT INTO") {
 		t.Errorf("expected INSERT in output, got:\n%s", out)

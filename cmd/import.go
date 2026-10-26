@@ -3,9 +3,9 @@ package cmd
 import (
 	"context"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
-	_import "github.com/gomydump/internal/import"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
+	_import "github.com/imex/internal/import"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -22,19 +22,19 @@ MySQL or OceanBase database.
 
 Examples:
   # Basic import from DEL format
-  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del -t users
 
   # Import from Parquet format
-  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.parquet -f parquet -t users
 
   # Import with insert_update mode
-  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del --mode insert_update -t users
 
   # Create table from SQL file
-  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.sql -f sql --mode create`,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {

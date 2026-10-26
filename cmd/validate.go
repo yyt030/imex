@@ -4,8 +4,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 	"github.com/spf13/cobra"
 )
 

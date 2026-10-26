@@ -16,7 +16,7 @@ const (
 	// EncryptedPasswordPrefix 加密密码前缀，用于区分明文和密文
 	EncryptedPasswordPrefix = "ENC:"
 	// EnvKey 密钥环境变量名
-	EnvKey = "GOMYDUMP_KEY"
+	EnvKey = "IMEX_KEY"
 )
 
 // IsEncryptedPassword 判断密码是否为加密格式
@@ -97,7 +97,7 @@ func DecryptPassword(encrypted string, key string) (string, error) {
 }
 
 // ResolvePassword 解析密码：
-// 1. 如果是 ENC: 开头，从环境变量 GOMYDUMP_KEY 获取密钥并解密
+// 1. 如果是 ENC: 开头，从环境变量 IMEX_KEY 获取密钥并解密
 // 2. 否则直接返回（明文或空）
 func ResolvePassword(password string) (string, error) {
 	if !IsEncryptedPassword(password) {

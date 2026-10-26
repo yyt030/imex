@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"database/sql"
 
-	"github.com/gomydump/internal/common"
+	"github.com/imex/internal/common"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 func TestDelWriter_WriteHeader(t *testing.T) {

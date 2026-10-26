@@ -14,7 +14,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 var (
@@ -35,18 +35,18 @@ var (
 
 	// ErrorStack, when true, includes the full error call stack in the ERROR
 	// record emitted at the end of a failed run. Controlled by --error-stack /
-	// GOMYDUMP_ERROR_STACK.
+	// IMEX_ERROR_STACK.
 	ErrorStack bool
 
 	// Quiet, when true, suppresses the periodic (5s) progress logs. Completion
 	// summaries, configuration and ERROR records are still printed. Controlled
-	// by --quiet / GOMYDUMP_QUIET.
+	// by --quiet / IMEX_QUIET.
 	Quiet bool
 
 	// LogFormat selects the record layout: "java" (the default, a fixed-width
 	// `time level detail` line resembling a JUL formatter, which greps and
 	// tail-friendly) or "text" (slog's own key=value handler). Controlled by
-	// --log-format / GOMYDUMP_LOG_FORMAT.
+	// --log-format / IMEX_LOG_FORMAT.
 	LogFormat = "java"
 )
 
@@ -128,7 +128,7 @@ func init() {
 
 // LogVersion prints the version banner. It must be the first log line of a run.
 func LogVersion(command string) {
-	Logger.Info("gomydump starting",
+	Logger.Info("imex starting",
 		"version", Version,
 		"build_time", BuildTime,
 		"git_commit", GitCommit,

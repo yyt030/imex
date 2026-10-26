@@ -1,6 +1,6 @@
-# gomydump
+# imex
 
-基于 Go 语言开发的表粒度 MySQL 逻辑备份与恢复工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，同时支持 MySQL 和 OceanBase MySQL 模式。
+名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度 MySQL 逻辑备份与恢复工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，同时支持 MySQL 和 OceanBase MySQL 模式。
 
 ## 特性
 
@@ -31,14 +31,14 @@
 
 ```bash
 git clone <repository-url>
-cd gomydump
-go build -o gomydump
+cd imex
+go build -o imex
 ```
 
 ### 使用 Makefile
 
 ```bash
-make build          # 编译当前平台二进制 → bin/gomydump
+make build          # 编译当前平台二进制 → bin/imex
 make linux          # 交叉编译 Linux amd64
 make build-all      # 交叉编译发布平台（Linux amd64 / Windows amd64）
 make build COMPRESS=1  # 编译后自动 upx 快速压缩（-1，需安装 upx；未装则跳过）
@@ -54,9 +54,9 @@ make test           # 离线单元/往返测试（不需要数据库）
 真实数据库端到端测试默认跳过，需要提供已存在库的 DSN（表会按测试名唯一创建并在结束时删除）：
 
 ```bash
-docker run -d --name gomydump-mysql -e MYSQL_ROOT_PASSWORD=secret \
-  -e MYSQL_DATABASE=gomydump_it -p 3306:3306 mysql:8.0
-GOMYDUMP_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/gomydump_it' make test-live
+docker run -d --name imex-mysql -e MYSQL_ROOT_PASSWORD=secret \
+  -e MYSQL_DATABASE=imex_it -p 3306:3306 mysql:8.0
+IMEX_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/imex_it' make test-live
 ```
 
 覆盖 DEL/SQL/Parquet 往返、insert/insert_update/replace/create 模式、列映射、并行导出与并行导入、日志文件。
@@ -68,24 +68,24 @@ GOMYDUMP_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/gomydump_it' make test-live
 ```bash
 # 仅 Linux
 make linux
-# 产物：bin/gomydump-linux-amd64
+# 产物：bin/imex-linux-amd64
 
 # 发布矩阵（Linux amd64 + Windows amd64）
 make build-all
-# 产物：bin/gomydump-linux-amd64 + bin/gomydump-windows-amd64.exe
+# 产物：bin/imex-linux-amd64 + bin/imex-windows-amd64.exe
 
 # 指定单平台（发布矩阵之外的架构按需自行产出）
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o gomydump .
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o imex .
 ```
 
-`make build-all` 只产出 Linux amd64 与 Windows amd64，不再构建 darwin 目标，也不产出 Linux arm64。macOS、ARM 服务器等环境同样是纯 Go 可直接编译：macOS 在本机执行 `make build` 即得 `bin/gomydump`，ARM64 Linux 用上面的单平台命令，只是发布包不再附带这些预编译产物。
+`make build-all` 只产出 Linux amd64 与 Windows amd64，不再构建 darwin 目标，也不产出 Linux arm64。macOS、ARM 服务器等环境同样是纯 Go 可直接编译：macOS 在本机执行 `make build` 即得 `bin/imex`，ARM64 Linux 用上面的单平台命令，只是发布包不再附带这些预编译产物。
 
-版本信息通过 ldflags 注入 `cmd` 包，`gomydump version` 可打印版本、Git commit、构建时间与 Go 版本；该子命令只写标准输出、不产生任何日志记录，可直接接管道与 `grep`。
+版本信息通过 ldflags 注入 `cmd` 包，`imex version` 可打印版本、Git commit、构建时间与 Go 版本；该子命令只写标准输出、不产生任何日志记录，可直接接管道与 `grep`。
 
 ### Docker
 
 ```bash
-docker build -t gomydump:latest .
+docker build -t imex:latest .
 ```
 
 ## 快速开始
@@ -94,22 +94,22 @@ docker build -t gomydump:latest .
 
 ```bash
 # 导出整张表到 DEL 格式
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.del \
   -q "SELECT * FROM users"
 
 # 导出为 SQL 格式
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.sql -f sql \
   -q "SELECT * FROM users"
 
 # 导出为 Parquet 格式
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.parquet -f parquet \
   -q "SELECT * FROM users"
 
 # 自定义分隔符（制表符分隔）
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.tsv \
   --col-del "\t" --no-char-del \
   -q "SELECT * FROM users"
@@ -119,18 +119,21 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 
 ```bash
 # 从 DEL 文件追加数据
-gomydump import -h 127.0.0.1 -u root -p password -D mydb \
+imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.del \
   -t users
 
 # 使用 insert_update 模式（插入或更新）
-gomydump import -h 127.0.0.1 -u root -p password -D mydb \
+imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.del \
   --mode insert_update \
   -t users
 
 # 从 SQL 文件创建表并导入（create 模式也需 -t 指定新表名）
-gomydump import -h 127.0.0.1 -u root -p password -D mydb \
+# 前置导出必须带 --create，因为 SQL 导出默认只导数据、不含 CREATE TABLE
+imex export -h 127.0.0.1 -u root -p password -D mydb \
+  -o /backup/users.sql -f sql --create -q "SELECT * FROM users"
+imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.sql -f sql \
   --mode create -t users
 ```
@@ -140,7 +143,7 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 ### export - 数据导出
 
 ```bash
-gomydump export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
+imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 ```
 
 **连接选项：**
@@ -172,13 +175,13 @@ gomydump export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQ
 示例：
 ```bash
 # OceanBase 二段式用户名
-gomydump export -h ob-host -u "root@sys" -p password -D mydb -o /backup/users.del -q "SELECT * FROM users"
+imex export -h ob-host -u "root@sys" -p password -D mydb -o /backup/users.del -q "SELECT * FROM users"
 
 # OceanBase 三段式用户名
-gomydump export -h ob-host -u "root@sys#obcluster" -p password -D mydb -o /backup/users.del -q "SELECT * FROM users"
+imex export -h ob-host -u "root@sys#obcluster" -p password -D mydb -o /backup/users.del -q "SELECT * FROM users"
 
 # OceanBase 带集群 ID 的用户名
-gomydump export -h ob-host -u "root@sys#obcluster:id" -p password -D mydb -o /backup/users.del -q "SELECT * FROM users"
+imex export -h ob-host -u "root@sys#obcluster:id" -p password -D mydb -o /backup/users.del -q "SELECT * FROM users"
 ```
 
 **会话变量（`--session-var`）：**
@@ -186,7 +189,7 @@ gomydump export -h ob-host -u "root@sys#obcluster:id" -p password -D mydb -o /ba
 在导出/导入开始前为数据库连接设置会话变量（如 `sql_mode`、`foreign_key_checks`、OceanBase 的 `query_timeout` 等），export 与 import 子命令均支持，可重复传入：
 
 ```bash
-gomydump export ... --threads 4 \
+imex export ... --threads 4 \
   --session-var "sql_mode=STRICT_TRANS_TABLES,NO_ZERO_DATE" \
   --session-var foreign_key_checks=0 \
   -q "SELECT * FROM users"
@@ -227,7 +230,7 @@ gomydump export ... --threads 4 \
 - `sql`：仅允许**逐字节转义安全**的字符集（`utf8mb4`/`utf8`/`ascii`/`latin1`）。GBK/Gb18030 的尾字节可等于 `0x5C`(`\`)/`0x27`(`'`)，会破坏按字节的 SQL 转义，故被拒绝，请改用 `--format del`。
 - `parquet`：列式二进制容器，没有"文件字符集"概念，指定非默认字符集会报错。
 
-SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAMES <charset> */;`（mysqldump `--set-charset` 风格）：标准 `mysql` 客户端在恢复时据此设定连接字符集；gomydump 自身的导入会跳过该行，改由 `--default-charset` 对齐字符集。导入端按目标列类型对 `0x` 值做十六进制还原后写入。
+SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAMES <charset> */;`（mysqldump `--set-charset` 风格）：标准 `mysql` 客户端在恢复时据此设定连接字符集；imex 自身的导入会跳过该行，改由 `--default-charset` 对齐字符集。导入端按目标列类型对 `0x` 值做十六进制还原后写入。
 
 **导出选项：**
 
@@ -235,7 +238,8 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 |------|--------|------|--------|
 | `--output` | `-o` | 输出文件路径 | 无（必填） |
 | `--format` | `-f` | 输出格式（del/sql/parquet） | `del` |
-| `--query` | `-q` | SQL SELECT 语句（支持 OceanBase / MySQL 优化器 hint） | 无（必填） |
+| `--query` | `-q` | SQL SELECT 语句（支持 OceanBase / MySQL 优化器 hint），与 `--query-file` 互斥 | 无 |
+| `--query-file` | | 从该文件读取 SQL SELECT 语句（自动去掉首尾空白与结尾分号），与 `-q` 互斥；两者必须恰好给一个 | 空 |
 | `--messages` | `-m` | 把全部日志记录写入该文件，终端不再打印（文件即命令行日志本身） | 空 |
 | `--progress-interval` | | 定时进度日志的间隔（必须 > 0，否则用法错误退出码 2） | `5s` |
 | `--no-replace` | | 拒绝覆盖已存在的输出文件（默认允许覆盖） | `false` |
@@ -268,10 +272,10 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
 | `--log-level` | 日志级别（debug/info/warn/error） | `info` |
-| `--error-stack` | 失败时打印完整调用堆栈（可用 `GOMYDUMP_ERROR_STACK=1`） | `false` |
-| `--echo-sql-values` | 失败 SQL 回显内联真实数据值（默认脱敏，可用 `GOMYDUMP_ECHO_SQL_VALUES=1`） | `false` |
-| `--quiet` | 禁止定时进度日志（默认每 5s 一条，间隔见 `--progress-interval`），仅保留配置、结束统计与 ERROR 记录（可用 `GOMYDUMP_QUIET=1`） | `false` |
-| `--no-sql-tag` | 不在工具主动执行的语句前加 `/* gomydump:<commit> */` 归因注释（默认加，可用 `GOMYDUMP_NO_SQL_TAG=1`） | `false` |
+| `--error-stack` | 失败时打印完整调用堆栈（可用 `IMEX_ERROR_STACK=1`） | `false` |
+| `--echo-sql-values` | 失败 SQL 回显内联真实数据值（默认脱敏，可用 `IMEX_ECHO_SQL_VALUES=1`） | `false` |
+| `--quiet` | 禁止定时进度日志（默认每 5s 一条，间隔见 `--progress-interval`），仅保留配置、结束统计与 ERROR 记录（可用 `IMEX_QUIET=1`） | `false` |
+| `--no-sql-tag` | 不在工具主动执行的语句前加 `/* imex:<commit> */` 归因注释（默认加，可用 `IMEX_NO_SQL_TAG=1`） | `false` |
 
 **SQL 格式修饰选项：**
 
@@ -280,18 +284,18 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--statement-size` | 单条 INSERT 语句最大字节数（只有 `--extended-insert` 时是攒批上限；默认单行布局下一行无法再拆，超过它只记一次告警） | `8388608`（8MiB） |
 | `--extended-insert` | 把多行合并进一条 INSERT（按 `--statement-size` 分组，等价 mysqldump 默认行为） | `false` |
 | `--single-row-insert` | 已废弃：每行一条 INSERT 现在是默认布局，该选项保留但不再改变任何行为（与 `--extended-insert` 同时给出报用法错误） | `false` |
-| `--no-create` | 不输出 CREATE TABLE 语句 | `false` |
+| `--create` | 输出 CREATE TABLE 语句（SQL 导出默认只导数据，需要自带建表语句时才加；与 `--format sql` 绑定，其他格式传入报用法错误） | `false` |
 | `--no-data` | 不输出 INSERT 语句 | `false` |
 
-> SQL 输出文件描述**一张真实表**（`CREATE TABLE` + 指向该表的 `INSERT`），因此 `--format sql` 只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。
+> SQL 导出默认只写 `INSERT` 数据语句；加 `--create` 才附带 `CREATE TABLE`。无论哪种，文件描述的始终是**一张真实表**，因此 `--format sql` 只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。`--query`/`--query-file` 里若表名带了 schema（`db.tbl`），导出会剥离 schema、只按裸表名写 `CREATE`/`INSERT`/`LOCK TABLES`，而 `SHOW CREATE TABLE` 仍按查询点名的 schema 查找，因此不会再出现把连接的 `--database` 二次拼接导致的 `Error 1054/1146`；`--mode create` 依赖文件里的 `CREATE TABLE`，故这类导出必须带 `--create`。`--no-create` 已随默认值反转一并移除（结构本就是 opt-in，留一个反向开关只是给 `--create` 一个否决口），传入它会得到 `unknown flag: --no-create` 并退出 2。
 
 ### import - 数据导入
 
 ```bash
-gomydump import [连接选项] [导入选项] [修饰选项]
+imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--host`/`--port`/`--user`/`--password`/`--socket`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），`--host`（或 `--socket`）、`--user`、`--password`、`--database` 为必填。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，gomydump 导入以本参数为准。
+连接选项与 export 子命令相同（`--host`/`--port`/`--user`/`--password`/`--socket`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），`--host`（或 `--socket`）、`--user`、`--password`、`--database` 为必填。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。
 
 **导入选项：**
 
@@ -349,21 +353,21 @@ gomydump import [连接选项] [导入选项] [修饰选项]
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
 | `--log-level` | 日志级别（debug/info/warn/error） | `info` |
-| `--error-stack` | 失败时打印完整调用堆栈（可用 `GOMYDUMP_ERROR_STACK=1`） | `false` |
-| `--echo-sql-values` | 失败 SQL 回显内联真实数据值（默认脱敏，可用 `GOMYDUMP_ECHO_SQL_VALUES=1`） | `false` |
-| `--quiet` | 禁止定时进度日志（默认每 5s 一条，间隔见 `--progress-interval`），仅保留配置、结束统计与 ERROR 记录（可用 `GOMYDUMP_QUIET=1`） | `false` |
-| `--no-sql-tag` | 不在工具主动执行的语句前加 `/* gomydump:<commit> */` 归因注释（默认加，可用 `GOMYDUMP_NO_SQL_TAG=1`） | `false` |
+| `--error-stack` | 失败时打印完整调用堆栈（可用 `IMEX_ERROR_STACK=1`） | `false` |
+| `--echo-sql-values` | 失败 SQL 回显内联真实数据值（默认脱敏，可用 `IMEX_ECHO_SQL_VALUES=1`） | `false` |
+| `--quiet` | 禁止定时进度日志（默认每 5s 一条，间隔见 `--progress-interval`），仅保留配置、结束统计与 ERROR 记录（可用 `IMEX_QUIET=1`） | `false` |
+| `--no-sql-tag` | 不在工具主动执行的语句前加 `/* imex:<commit> */` 归因注释（默认加，可用 `IMEX_NO_SQL_TAG=1`） | `false` |
 
 ### version - 版本信息
 
 ```bash
-gomydump version
+imex version
 ```
 
 ### encrypt - 密码加密
 
 ```bash
-gomydump encrypt <password>
+imex encrypt <password>
 ```
 
 加密数据库密码，生成 `ENC:` 前缀的密文，可在 export/import 命令中安全使用。
@@ -372,21 +376,21 @@ gomydump encrypt <password>
 - `password`：要加密的明文密码（必填）
 
 **环境变量：**
-- `GOMYDUMP_KEY`：加密密钥（必填，经 SHA-256 派生为 AES-256-GCM 密钥）
+- `IMEX_KEY`：加密密钥（必填，经 SHA-256 派生为 AES-256-GCM 密钥）
 
 **示例：**
 
 ```bash
-export GOMYDUMP_KEY="my-secret-key"
-gomydump encrypt "my-password"
+export IMEX_KEY="my-secret-key"
+imex encrypt "my-password"
 # 输出: ENC:CiQ0mGHx0IasPOwmBKX99/9ZyjeG+QMl0Ee0uH3tYg+84S3BPOR5RqtS8w==
 ```
 
 **注意：**
 - 解密在 export/import 起始处自动完成（`common.ResolvePassword`），不提供公开的 decrypt 命令，以降低安全风险；`-p` 的值不是 `ENC:` 开头时按明文处理。
 - 密文带随机 nonce，同一明文 + 同一密钥每次结果都不同，不要拿密文做等值比较。
-- `GOMYDUMP_KEY` 未设置或与实际密钥不符时，命令失败并退出 1，错误形如 `failed to resolve password: password is encrypted but GOMYDUMP_KEY environment variable is not set` / `failed to decrypt: wrong key or corrupted data`。
-- `GOMYDUMP_KEY` 本身也是凭据，此机制只解决"密码在命令行可见"，不解决密钥托管。
+- `IMEX_KEY` 未设置或与实际密钥不符时，命令失败并退出 1，错误形如 `failed to resolve password: password is encrypted but IMEX_KEY environment variable is not set` / `failed to decrypt: wrong key or corrupted data`。
+- `IMEX_KEY` 本身也是凭据，此机制只解决"密码在命令行可见"，不解决密钥托管。
 
 ## 高级用法
 
@@ -394,20 +398,20 @@ gomydump encrypt "my-password"
 
 ```bash
 # 自动检测主键并并行导出（4线程）
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.del \
   --threads 4 \
   -q "SELECT * FROM users"
 
 # 指定分片键进行并行导出
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/orders.del \
   --threads 8 \
   --shard-key order_id \
   -q "SELECT * FROM orders"
 
 # JOIN 查询自动降级为单线程（智能检测）
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/user_orders.del \
   --threads 4 \
   -q "SELECT u.name, o.order_id FROM users u JOIN orders o ON u.id = o.user_id"
@@ -430,7 +434,7 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 
 - 在途行数 ≈ `batch-size × (pipeline-buffer + 线程数)`，峰值内存 ≈ 在途行数 × 平均行字节。宽表/BLOB 大字段时，调小两者即可压低峰值。
 - 这是**比例控制，不是字节硬上限**：Go 堆、数据库驱动的读缓冲（≈ `max_allowed_packet`）以及每条巨型 INSERT 的解析，都在本参数之外。因此**无法**用它对任意输入保证「进程 RSS ≤ 某值」。
-- 需要进程级内存天花板时，用 Go 运行时软上限：`GOMEMLIMIT=6GiB gomydump import ...`（配合 `GOGC` 调整回收力度）。这才是真正约束 Go 进程占用的杠杆。
+- 需要进程级内存天花板时，用 Go 运行时软上限：`GOMEMLIMIT=6GiB imex import ...`（配合 `GOGC` 调整回收力度）。这才是真正约束 Go 进程占用的杠杆。
 - 生效范围：`--batch-size/--pipeline-buffer` 作用于**单线程导出**、**单线程与并行导入**；**并行导出**是分片内同步流式 `scan→write`，内存几乎不随数据量增长，不受这两个参数影响。并行导出因此会在确实按分片并行执行、且你改动过这两个值之中的任一个时记一条 `parallel export ignores pipeline options`（都保持默认值则完全静默），免得 `--threads 8 --batch-size 50000` 看起来像被采纳了。SQL 导入会把单条语句一次性解析，默认布局下一条语句就是一行，规模由行本身决定；只有 `--extended-insert` 导出的文件才由 `--statement-size` 约束单条语句的大小。
 
 ### 导入攒批的硬上限与可选压低
@@ -461,13 +465,13 @@ DEL 导入的 CPU 主要在两处：**记录分帧**（按 `--row-del` 找行边
 
 ```bash
 # OceanBase 并行 hint（放在 SELECT 之前）
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.del \
   --threads 4 \
   -q "/*+ parallel(8) */ SELECT id, name FROM users"
 
 # hint 写在 SELECT 之后同样支持
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/orders.del \
   -q "SELECT /*+ INDEX(orders idx_status) */ * FROM orders WHERE status='active'"
 ```
@@ -478,7 +482,7 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 
 ```bash
 # 4线程并行导入
-gomydump import -h 127.0.0.1 -u root -p password -D mydb \
+imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.del \
   --threads 4 \
   -t users
@@ -488,14 +492,14 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 
 ```bash
 # 方式1：位置映射（文件3列 → 表的name,age,email列）
-gomydump import -h 127.0.0.1 -u root -p password -D mydb \
+imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/data.del \
   --columns "name,age,email" \
   --no-col-names \
   -t users
 
 # 方式2：名称映射（显式指定文件列到表列的映射）
-gomydump import -h 127.0.0.1 -u root -p password -D mydb \
+imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/data.del \
   --columns "user_name=name,user_age=age,user_email=email" \
   -t users
@@ -505,7 +509,7 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 
 ```bash
 # 导出无包裹符文件（纯分隔符）
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.tsv \
   --col-del "," --no-char-del \
   -q "SELECT * FROM users"
@@ -516,7 +520,7 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 # 李四,30,li@example.com
 
 # 导入无包裹符文件
-gomydump import -h 127.0.0.1 -u root -p password -D mydb \
+imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.tsv \
   --no-char-del \
   -t users
@@ -554,23 +558,23 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 | `--commit-count` | `≥1` | `invalid --commit-count`，退出码 2 |
 | `--skip-count` / `--row-count` | `≥0`（`row-count=0` 表示无限制） | 退出码 2 |
 | `--log-level` | `debug`/`info`/`warn`/`error`（大小写与首尾空格容错） | `invalid --log-level`，退出码 2（此前非法值会被静默降级为 info） |
-| `--log-format` / `GOMYDUMP_LOG_FORMAT` | `java`（默认）/ `text` | `invalid --log-format`，退出码 2（此前非法取值静默回落 java） |
+| `--log-format` / `IMEX_LOG_FORMAT` | `java`（默认）/ `text` | `invalid --log-format`，退出码 2（此前非法取值静默回落 java） |
 | `--format` / `--mode` | 各自枚举白名单 | 退出码 2 |
 | `--default-charset` | 字符集白名单；非 `utf8mb4` 不可用于 `parquet`；`gbk`/`gb18030` 不可用于 `sql`（按字节转义不安全） | `invalid --default-charset` / 格式冲突，退出码 2 |
 | `--hex-blob` + `--no-hex-blob` | 二者互斥 | `mutually exclusive`，退出码 2 |
 | `--single-row-insert` + `--extended-insert` | 二者互斥（前者只是默认布局的旧名，同时给出无法判定要哪种布局） | `--single-row-insert and --extended-insert cannot be used together`，退出码 2 |
 | `--char-del` `--col-del` `--row-del` `--escape` `--no-escape` `--timestamp-fmt` `--date-fmt` `--no-char-del` `--no-col-names` | 仅 `--format del` 生效（SQL/Parquet 写端不使用这些修饰） | `--xxx can only be used with --format del`，退出码 2 |
 | `--hex-blob` / `--no-hex-blob` + `--format parquet` | Parquet 二进制列原生按 `binary` 存储，两个开关都不改变输出 | `--hex-blob cannot be used with --format parquet`，退出码 2 |
-| `encrypt` 的位置参数 | 恰好 1 个（密码明文） | `gomydump encrypt accepts 1 argument(s), received N`，退出码 2 |
+| `encrypt` 的位置参数 | 恰好 1 个（密码明文） | `imex encrypt accepts 1 argument(s), received N`，退出码 2 |
 
-关联校验：`--no-create`/`--no-data`/`--statement-size`/`--extended-insert`/`--single-row-insert` 仅对 `--format sql` 生效（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
+关联校验：`--create`/`--no-data`/`--statement-size`/`--extended-insert`/`--single-row-insert` 仅对 `--format sql` 生效（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`；导出侧 `-q`/`--query` 与 `--query-file` 互斥，且必须恰好给出一个（都不给或只给空语句都是用法错误，退出码 2）。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
 
 ### OceanBase 租户连接
 
 OceanBase 的租户通过**用户名**指定，OBProxy 在握手认证阶段据此路由，支持 `user@tenant`、`user@tenant#cluster` 等形式：
 
 ```bash
-gomydump export -h oceanbase-host -u 'root@my_tenant#obcluster' -p password -D mydb \
+imex export -h oceanbase-host -u 'root@my_tenant#obcluster' -p password -D mydb \
   -o /backup/users.del \
   -q "SELECT * FROM users"
 ```
@@ -579,13 +583,13 @@ gomydump export -h oceanbase-host -u 'root@my_tenant#obcluster' -p password -D m
 
 ```bash
 # 使用十六进制分隔符（制表符 0x09）
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.tsv \
   --col-del 0x09 --no-char-del \
   -q "SELECT * FROM users"
 
 # 使用多字节分隔符
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.del \
   --col-del "||" --row-del "\r\n" \
   -q "SELECT * FROM users"
@@ -595,7 +599,7 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 
 ```bash
 # 跳过前 1 行数据，导入 1000 行，每 100 行提交一次
-gomydump import -h 127.0.0.1 -u root -p password -D mydb \
+imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.del \
   --skip-count 1 --row-count 1000 --commit-count 100 \
   -t users
@@ -605,15 +609,15 @@ gomydump import -h 127.0.0.1 -u root -p password -D mydb \
 
 ```bash
 # 导出：命令行日志只写文件，终端不打印
-gomydump export -h 127.0.0.1 -u root -p password -D mydb \
+imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.del \
-  -m /var/log/gomydump_export.log \
+  -m /var/log/imex_export.log \
   -q "SELECT * FROM users"
 ```
 
 导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`create`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 `--progress-interval`（默认 **5 秒**）打印一次进度：`rate` 是**自开始以来的总速率**（已处理 ÷ 已用时长，平滑，反映整体快慢），`interval_rate` 是**上一个进度点到这一个进度点之间的区间速率**（两次快照之差，反映此刻吞吐与抖动；两者无倍率关系，长跑时看 `interval_rate` 判断当前快不快、看 `rate` 判断整体多少），另打印已处理条数与 `elapsed`。结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。**汇总恒为本次运行的最后一条记录**：写汇总之前先停掉进度计时器，而停止会等待正在写的那条进度落笔，因此不会再出现 `completed` 之后跟一条 `progress` 的读感。反过来说，**运行时长不足一个间隔时一条进度也不会打印**：首个计时点要等满一个间隔才触发，停止只等在写的那条记录、不空等剩余间隔，所以一个 3 行的小表 6 ms 就结束，日志里只有横幅、配置与汇总（实测），把间隔调成 `200ms` 后同一类长跑（100 万行）则每 200 ms 一条、共 29 条进度，最后一条仍是 `export completed`。
 
-版本横幅（`gomydump starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后是配置参数快照（`export/import config`，由 `NewExporter`/`NewImporter` 在**建立连接之前**打印，因此连不上服务端时也看得到参数；原先重复它的 `export started`/`import started` 已删除）。快照只打印**所选 `--format` 真正读取的字段**，判据与用法错误的拒绝逻辑、`--help` 里的范围标记同出自一张登记表 `internal/config/formatscope.go`：`-f sql` 不再打印 `char_del`/`col_del`/`row_del`/`escape`/`timestamp_fmt` 这些被忽略的 DEL 布局，`-f del` 不再打印 `statement_size`/`no_create`/`extended_insert`，`-f parquet` 两类都不打印（实测：`export` 的回显改动前对三种格式是**逐字节相同**的同一套 26 项，现在分别是 25/20/15；`import` 现在是 29/20/20）。字段按「连接 → 输入输出 → 并行与流水线 → 字符集 → 该格式的专属布局 → 日志」排列，且补齐了 DEL 写入器一直在读、快照却从未打印的 `date_fmt`、`no_escape`、`no_char_del` 三项；`hex_blob` 打印的是**生效值**（`--hex-blob`/`--no-hex-blob` 都没给时由字符集决定），与写入器用的是同一个判定函数；唯一例外是 `gomydump version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `gomydump version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `config`/`progress`/`completed`/`aborted`/`failed`（`started` 只出现在版本横幅 `gomydump starting` 里；如 `export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `java` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `GOMYDUMP_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；`--messages` 文件同样没有进度行（早期版本让消息文件按 DB2 格式继续记 `SQL3105N`，该例外已随报告一起取消）。
+版本横幅（`imex starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后是配置参数快照（`export/import config`，由 `NewExporter`/`NewImporter` 在**建立连接之前**打印，因此连不上服务端时也看得到参数；原先重复它的 `export started`/`import started` 已删除）。快照只打印**所选 `--format` 真正读取的字段**，判据与用法错误的拒绝逻辑、`--help` 里的范围标记同出自一张登记表 `internal/config/formatscope.go`：`-f sql` 不再打印 `char_del`/`col_del`/`row_del`/`escape`/`timestamp_fmt` 这些被忽略的 DEL 布局，`-f del` 不再打印 `statement_size`/`no_create`/`extended_insert`，`-f parquet` 两类都不打印（实测：`export` 的回显改动前对三种格式是**逐字节相同**的同一套 26 项，现在分别是 25/20/15；`import` 现在是 29/20/20）。字段按「连接 → 输入输出 → 并行与流水线 → 字符集 → 该格式的专属布局 → 日志」排列，且补齐了 DEL 写入器一直在读、快照却从未打印的 `date_fmt`、`no_escape`、`no_char_del` 三项；`hex_blob` 打印的是**生效值**（`--hex-blob`/`--no-hex-blob` 都没给时由字符集决定），与写入器用的是同一个判定函数；唯一例外是 `imex version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `imex version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `config`/`progress`/`completed`/`aborted`/`failed`（`started` 只出现在版本横幅 `imex starting` 里；如 `export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `java` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `IMEX_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；`--messages` 文件同样没有进度行（早期版本让消息文件按 DB2 格式继续记 `SQL3105N`，该例外已随报告一起取消）。
 
 `--messages` / `-m` 的文件内容**就是本次运行的命令行日志**，并且是它唯一的目的地：一条记录一个物理行，版本横幅是首行（文件在根命令打印横幅之前打开），`export/import config`（建连接之前）、定时进度、WARN 告警、`completed` 统计与收尾的 `command failed` 都在里面，stdout 与 stderr 一行也不打印；`--log-level`、`--log-format` 一样作用于文件，退出码不受影响（0 成功、1 运行时错误、2 用法错误），脚本照样能判断成败。实测同一条注定失败的导出：带 `-m` 时 stdout/stderr 均 0 字节、文件 5 条记录、退出 1，而不带 `-m` 那次的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同。两类例外：未知选项在文件打开前就失败，错误只上 stderr 且不建文件；`-m` 路径无法创建时 `failed to create message file <path>: ...` 也只上 stderr。`--help` 与 `-m` 同时给不产生文件。早期版本按 DB2 LOAD/EXPORT 风格另写一份 `SQL3104N/3105N/3107N/3109N/3110N` 报告，那份重复的记录与 `MessageWriter` 已整体删除，告警与失败只保留一条日志记录。会出现 WARN 的场景：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调、无表头文件被当作表头丢弃首行、`insert_update` 命中无唯一键的表。
 
@@ -623,11 +627,11 @@ gomydump export -h 127.0.0.1 -u root -p password -D mydb \
 
 ```bash
 # 方式1：命令行标志（持久标志，所有子命令可用）
-gomydump export --error-stack -h 127.0.0.1 -u root -p password -D mydb \
+imex export --error-stack -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users.del -q "SELECT * FROM nope"
 
 # 方式2：环境变量（适合脚本/容器）
-GOMYDUMP_ERROR_STACK=1 gomydump import -h 127.0.0.1 -u root -p password -D mydb \
+IMEX_ERROR_STACK=1 imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.del -t users
 ```
 
@@ -641,11 +645,11 @@ time=... level=ERROR msg="command failed" error="failed to create exporter: Erro
 
 ```
 time=... level=ERROR msg="command failed" error="failed to execute query:
-github.com/gomydump/internal/export.(*Exporter).exportSingle
+github.com/imex/internal/export.(*Exporter).exportSingle
 	/path/exporter.go:185
 ...
 export failed
-github.com/gomydump/cmd.init.func2
+github.com/imex/cmd.init.func2
 	/path/export.go:111
 ..."
 ```
@@ -661,15 +665,15 @@ Error: import failed: failed to insert batch (SQL: INSERT INTO `u` (`id`, `pw`) 
 标签足以判断"哪一列、什么类型、多长、是否 NULL"，而不会把密码/个人信息写进长期留存的日志与日志文件。回显超过 2048 字节自动截断。确需内联真实值排障时显式开启（警告：真实数据将出现在 stderr，或出现在 `--messages` 文件）：
 
 ```bash
-gomydump import --echo-sql-values ...
-GOMYDUMP_ECHO_SQL_VALUES=1 gomydump import ...   # 环境变量方式
+imex import --echo-sql-values ...
+IMEX_ECHO_SQL_VALUES=1 imex import ...   # 环境变量方式
 ```
 
 `--query` 的 SELECT 原文与 CREATE TABLE 语句不含行数据，失败时始终原文回显。
 
 ### 运行时 SQL 归因注释
 
-默认情况下，工具在自己**主动执行**的语句前追加一段自描述注释 `/* gomydump:<commit7> */`（commit 为构建经 ldflags 注入的 git 短哈希前 7 位）。目的是在数据库 `general_log`、慢查询日志或审计流里，按该前缀即可过滤出"gomydump 执行的语句"，并据 commit 定位到具体二进制版本。
+默认情况下，工具在自己**主动执行**的语句前追加一段自描述注释 `/* imex:<commit7> */`（commit 为构建经 ldflags 注入的 git 短哈希前 7 位）。目的是在数据库 `general_log`、慢查询日志或审计流里，按该前缀即可过滤出"imex 执行的语句"，并据 commit 定位到具体二进制版本。
 
 加注释的范围是**工具对数据/结构/元数据主动发起的语句**：
 
@@ -678,7 +682,7 @@ GOMYDUMP_ECHO_SQL_VALUES=1 gomydump import ...   # 环境变量方式
 
 **不加**注释的是工具的连接期与事务期内部控制语句：`SET NAMES` 与 `--session-var`（均由 DSN 在建连时发出、不经执行路径）、`SET FOREIGN_KEY_CHECKS`，以及 `START TRANSACTION` / `SET TRANSACTION` / `COMMIT` / `ROLLBACK`。
 
-可用 `--no-sql-tag` 或 `GOMYDUMP_NO_SQL_TAG=1` 关闭该注释。dev 构建（`GitCommit=unknown`）或注入值非合法十六进制哈希时不加注释，保持日志零噪音；注释内容限定为 `[0-9a-f]`，不会提前闭合或注入。该注释**只作用于运行时发往服务端的语句，导出文件内容不受影响**（导出的 SQL 文件不写此注释）。若 `--query` 含优化器 hint `/*+ … */`，前导普通块注释不影响 hint 解析（hint 仍紧跟 `SELECT`）。
+可用 `--no-sql-tag` 或 `IMEX_NO_SQL_TAG=1` 关闭该注释。dev 构建（`GitCommit=unknown`）或注入值非合法十六进制哈希时不加注释，保持日志零噪音；注释内容限定为 `[0-9a-f]`，不会提前闭合或注入。该注释**只作用于运行时发往服务端的语句，导出文件内容不受影响**（导出的 SQL 文件不写此注释）。若 `--query` 含优化器 hint `/*+ … */`，前导普通块注释不影响 hint 解析（hint 仍紧跟 `SELECT`）。
 
 ### 密码加密
 
@@ -686,14 +690,14 @@ GOMYDUMP_ECHO_SQL_VALUES=1 gomydump import ...   # 环境变量方式
 
 ```bash
 # 1. 设置加密密钥（环境变量）
-export GOMYDUMP_KEY="your-secret-key"
+export IMEX_KEY="your-secret-key"
 
 # 2. 加密密码
-gomydump encrypt "my-password"
+imex encrypt "my-password"
 # 输出: ENC:CiQ0mGHx0IasPOwmBKX99/9ZyjeG+QMl0Ee0uH3tYg+84S3BPOR5RqtS8w==
 
 # 3. 使用加密后的密码执行导出/导入
-gomydump export -h 127.0.0.1 -u root -p "ENC:CiQ0mGHx0IasPOwmBKX99/9ZyjeG+QMl0Ee0uH3tYg+84S3BPOR5RqtS8w==" \
+imex export -h 127.0.0.1 -u root -p "ENC:CiQ0mGHx0IasPOwmBKX99/9ZyjeG+QMl0Ee0uH3tYg+84S3BPOR5RqtS8w==" \
   -D mydb -o backup.sql -q "SELECT * FROM users"
 ```
 
@@ -702,14 +706,14 @@ gomydump export -h 127.0.0.1 -u root -p "ENC:CiQ0mGHx0IasPOwmBKX99/9ZyjeG+QMl0Ee
 ```bash
 #!/bin/bash
 # 设置密钥（从安全存储获取）
-export GOMYDUMP_KEY="my-secret-key"
+export IMEX_KEY="my-secret-key"
 
 # 加密密码（只需执行一次，保存结果）
-ENCRYPTED_PWD=$(gomydump encrypt "actual-password")
+ENCRYPTED_PWD=$(imex encrypt "actual-password")
 
 # 批量导出多个数据库
 for db in db1 db2 db3; do
-    gomydump export -h 127.0.0.1 -u root -p "$ENCRYPTED_PWD" -D "$db" -o "${db}.sql" -q "SELECT * FROM users"
+    imex export -h 127.0.0.1 -u root -p "$ENCRYPTED_PWD" -D "$db" -o "${db}.sql" -q "SELECT * FROM users"
 done
 ```
 
@@ -720,7 +724,7 @@ done
 - ✅ 自动解密（export/import 命令自动识别 `ENC:` 前缀并解密）
 
 **注意事项：**
-- 加密密钥必须通过 `GOMYDUMP_KEY` 环境变量设置
+- 加密密钥必须通过 `IMEX_KEY` 环境变量设置
 - 密钥丢失将无法解密密码，请妥善保管
 - 建议在自动化脚本中使用密钥管理服务（如 Vault）存储密钥
 
@@ -789,8 +793,8 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | `--no-col-names` 不带 `-c` 报错晦涩 | 新增前置校验，给出清晰错误并提示使用 `--columns` |
 | Parquet 非 UTF-8 二进制回导失败 | 二进制列存为原始 BYTE_ARRAY（去 UTF-8 标注），非 UTF-8 内容完整往返 |
 | DEL/Parquet 导入未校验目标列，表达式列头（如 `SELECT 1` 产生的 `"1"`）报 `Unknown column '1' in 'field list'`；replace 模式还会先清空表再失败 | 导入前用 `information_schema` 校验目标列存在性（大小写不敏感），缺失时立即给出含修复建议的错误（起别名或用 `--columns`），表不存在同样明确报错；校验在 mode 处理之前执行，replace 模式不再发生"先清表后报错"的数据丢失 |
-| 语句执行失败时错误信息不含 SQL，难以定位 | 失败 SQL 随错误回显到日志（stderr，或 `--messages` 文件）；默认脱敏（占位符保留，值以 `str(14)/num/NULL/bytes(256)` 类型标签呈现），2048 字节截断并保持引号配平；`--echo-sql-values` / `GOMYDUMP_ECHO_SQL_VALUES=1` 可显式内联真实值 |
-| 失败时以裸 `Error:` 行输出、与其它日志格式不一致；版本信息不在首行；进度日志无法关闭 | 命令失败统一走 `level=ERROR msg="command failed"` 日志记录（`--error-stack` 追加调用栈）；版本横幅 `gomydump starting` 提前为运行首行；新增 `--quiet` / `GOMYDUMP_QUIET=1` 禁止定时进度日志（当时消息文件仍继续记进度，该例外已由后面的 `--messages` 改造取消） |
+| 语句执行失败时错误信息不含 SQL，难以定位 | 失败 SQL 随错误回显到日志（stderr，或 `--messages` 文件）；默认脱敏（占位符保留，值以 `str(14)/num/NULL/bytes(256)` 类型标签呈现），2048 字节截断并保持引号配平；`--echo-sql-values` / `IMEX_ECHO_SQL_VALUES=1` 可显式内联真实值 |
+| 失败时以裸 `Error:` 行输出、与其它日志格式不一致；版本信息不在首行；进度日志无法关闭 | 命令失败统一走 `level=ERROR msg="command failed"` 日志记录（`--error-stack` 追加调用栈）；版本横幅 `imex starting` 提前为运行首行；新增 `--quiet` / `IMEX_QUIET=1` 禁止定时进度日志（当时消息文件仍继续记进度，该例外已由后面的 `--messages` 改造取消） |
 | 导入行数统计把"写入相同值的行"当成新增（`insert_update` 重复导入同一文件时报 `inserted=N updated=0`）| 每批按服务端 affected 拆成互斥的 `inserted`/`updated`/`unchanged`，三者之和恒等于批行数；`replace` 模式（先清空目标表）仍全部计新增。实测：相同内容重导 → `inserted=0 updated=0 unchanged=4`，全部改动 → `updated=4`，删 2 行后重导 → `inserted=2 unchanged=2` |
 | 单线程导出失败只报错不清理，磁盘上留下半截产物（实测 20 万行表被 `--no-char-del` 拒于末行时残留 21 MB，文件名与成功导出一致）| 两条导出路径统一"要么完整、要么没有"：`exportSingle` 在创建输出文件之后注册与并行路径共用的 `removeIncompleteOutput`，任何后续失败都删除该文件；注册点保证创建之前的失败（查询报错、`--no-replace` 命中已有文件）不会误删既有文件 |
 | `--no-col-names` 导出的文件只用 `-c` 导入时静默丢掉首行（3 行只进 2 行、退出码 0）| 文件本身无法区分"有表头 + 位置映射"与"无表头"，两种情形都必须能导入，因此不改结果、只补可见性：被当作表头丢弃的那一行若与目标表列名全不匹配，记 WARN 日志（`--messages` 打开时只写进该文件），提示补 `--no-col-names`；`--no-col-names` 是成对选项，导出加了导入也要加 |
@@ -798,17 +802,19 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | 带 `--messages` 时终端与文件各打一份，`-m` 语义仍像“另存一份”而不是“交给文件” | `sink.Write` 改为单一目的地：文件挂载期间**只写文件**，未挂载时照旧写 stderr，因此带 `-m` 的运行终端完全静默，文件是这次运行唯一的记录，退出码不变（实测失败导出：stdout/stderr 各 0 字节、文件 5 条、退出 1；同一命令不带 `-m` 的 stderr 与该文件去掉时间戳/PID 后逐行相同）。`CloseLogFile` 先脱钩再关闭，所以“关闭失败”这条 ERROR 是唯一回到 stderr、不落进文件的记录。帮助文本改为「Redirect the command log to this file; with it, nothing is printed to stderr」；未知选项在 `PersistentPreRunE` 之前失败，文件尚未打开，故只上 stderr 且不建文件，`--help` 与 `-m` 同时给也不建文件。测试同步改为断言终端为空：`internal/common/log_test.go` 的镜像用例改名 `TestLogFileTakesOverFromStderr`（stderr 0 字节、文件恰 3 条、关闭后记录回 stderr），CLI 矩阵的 5 种格式/并行组合 + `-m` 短选项 + 失败记录 + 级别过滤各加“stdout+stderr 为空”断言，`--no-col-names` 对称用例的 WARN 断言移进文件 |
 | 长跑到结束时日志最后一行是 `export progress`，读起来像任务还没完 | 计时器的停止方式导致：`StartMonitor` 返回的 cancel 只发信号，goroutine 里已开始的那次 report 收不回来，而汇总先写好、`defer stopMon()` 在函数返回后才执行。现 stop 改为**排空**（等待 monitor goroutine 退出，并在 tick 与 cancel 同时就绪时再确认一次取消），导出/导入的 6 处终点汇总（`export completed`、`parallel export completed`、结构-only 与常规 `import completed`、`parallel import completed`、`import aborted`）在写汇总**之前**显式停止，停止句柄提为结构体字段；间隔从硬编码 5 s 改为 `common.MonitorInterval` 变量（默认值不变），使回归测试能把计时器压到毫秒级。**注：该变量下一行升级为命令行选项 `--progress-interval`。**回归：`internal/common/stats_test.go` 把一条 report 钉在"正在写"的状态再 stop，旧实现必然产出 `[completed progress progress]`；`TestLive_ProgressNeverOutlivesCompletion` 以 8192 行表在 1 ms 间隔下跑单线程/并行 × 导出/导入四段，断言日志里确有进度记录且最后一条是对应汇总 |
 | `export started` 与紧随其后的 `export config` 字段重复（output/input、format、host、port、database 两个都打），而配置回显打在连接之后，连接失败时一个参数都看不到 | 删掉两侧 `started` 记录，并把 `export/import config` 上移到 `NewExporter`/`NewImporter` 的**建连接之前**，回显同时补 `progress_interval`。实测：3 行小表导出 3 条记录、6 ms 结束；查不存在的表失败导出文件 4 行（横幅、config、`query failed`、`command failed`）退出 1；密码写错那次 6 行（横幅、config、3 条 ping WARN、`command failed`）退出 1 且不创建输出文件。同时新增 `--progress-interval`（默认 5s，必须 > 0，`0`/负值为用法错误退出 2；不解释为"关闭进度"，那是 `--quiet`），包级变量 `common.MonitorInterval` 删除、改由 `config.Config.ProgressInterval` + `EffectiveProgressInterval()` 承担（零值与负值回落默认值，避免库调用方把非正间隔传给会 panic 的 `time.NewTicker`）。测试：`internal/config/config_test.go`（2 用例）、`cmd/cli_matrix_test.go:TestCLIProgressInterval`、`internal/common/stats_test.go:TestMonitorSilentBeforeFirstTick`（间隔未到不产出记录且 stop 立即返回），`TestLive_ProgressNeverOutlivesCompletion` 增加一段真实二进制 `--progress-interval 1ms --messages` 的端到端断言 |
-| SQL 文件默认把多行合并进一条 INSERT，而导入侧无视文件布局按 `--batch-size` 重新攒批——合并只在导出侧换来体积，代价是导出与导入都要把整条语句留在内存 | `--format sql` 的默认布局改为**每行一条 INSERT**（mysqldump `--skip-extended-insert` 的形态），攒批统一交给导入侧；新增 `--extended-insert` 显式恢复合并，`--single-row-insert` 保留为已废弃别名（与 `--extended-insert` 同时给出为用法错误，退出码 2），`--statement-size` 在默认布局下退化为告警阈值，配置回显补 `extended_insert`。实测（本地 MariaDB，100 万行窄表，热缓存，`/usr/bin/time -v` 峰值 RSS）：导出单行 2.43–2.57 s / 35.5–38.5 MB / 278,790,434 B（gzip 28,247,005 B）/ 1,000,000 条语句，合并 2.65–2.69 s / 71.3–74.1 MB / 153,792,809 B（gzip 27,050,101 B）/ 19 条语句，且 `--extended-insert` 的产物与旧默认**逐字节一致**；导入同一份数据（`--batch-size 1000` 单线程）单行 12.49–12.87 s / 42–44 MB，合并 12.96–13.19 s / 215–224 MB（`--threads 4 --batch-size 20000`：10.0–10.2 s / 67–69 MB 对 8.9 s / 273–276 MB）。目标库 general log 复核（20,000 行、`--batch-size 1000`）：20,000 条语句的单行文件与 1 条语句的合并文件都只产生 20 条服务端 INSERT。结论：内存差是结构性的（导出减半、导入降到约 1/5），速度差在 ±10% 以内，代价是文件体积 +81%（gzip 后 +4.4%）。顺带登记一处既有缺陷（待用户定级）：SQL 文件把 `LOCK TABLES` 写在 `CREATE TABLE` 之前，用标准 `mysql` 客户端回放空库会在第 2 行 `ERROR 1146 (42S02)` 中止，gomydump 自身导入会跳过这些前导语句故不受影响 |
+| SQL 文件默认把多行合并进一条 INSERT，而导入侧无视文件布局按 `--batch-size` 重新攒批——合并只在导出侧换来体积，代价是导出与导入都要把整条语句留在内存 | `--format sql` 的默认布局改为**每行一条 INSERT**（mysqldump `--skip-extended-insert` 的形态），攒批统一交给导入侧；新增 `--extended-insert` 显式恢复合并，`--single-row-insert` 保留为已废弃别名（与 `--extended-insert` 同时给出为用法错误，退出码 2），`--statement-size` 在默认布局下退化为告警阈值，配置回显补 `extended_insert`。实测（本地 MariaDB，100 万行窄表，热缓存，`/usr/bin/time -v` 峰值 RSS）：导出单行 2.43–2.57 s / 35.5–38.5 MB / 278,790,434 B（gzip 28,247,005 B）/ 1,000,000 条语句，合并 2.65–2.69 s / 71.3–74.1 MB / 153,792,809 B（gzip 27,050,101 B）/ 19 条语句，且 `--extended-insert` 的产物与旧默认**逐字节一致**；导入同一份数据（`--batch-size 1000` 单线程）单行 12.49–12.87 s / 42–44 MB，合并 12.96–13.19 s / 215–224 MB（`--threads 4 --batch-size 20000`：10.0–10.2 s / 67–69 MB 对 8.9 s / 273–276 MB）。目标库 general log 复核（20,000 行、`--batch-size 1000`）：20,000 条语句的单行文件与 1 条语句的合并文件都只产生 20 条服务端 INSERT。结论：内存差是结构性的（导出减半、导入降到约 1/5），速度差在 ±10% 以内，代价是文件体积 +81%（gzip 后 +4.4%）。顺带登记一处既有缺陷（待用户定级）：SQL 文件把 `LOCK TABLES` 写在 `CREATE TABLE` 之前，用标准 `mysql` 客户端回放空库会在第 2 行 `ERROR 1146 (42S02)` 中止，imex 自身导入会跳过这些前导语句故不受影响 |
 | SQL 导入把每条语句先物化成字符串、再拷一份大写副本来判关键字，每个 VALUES 元组还要经 `strings.Builder` 重打一遍；跨物理行的语句每追加一行都从头重扫已积累的文本，代价随语句长度平方增长 | 语句级改为全程 `[]byte`：`nextStatement` 直接交出记录缓冲里的切片（只有跨行语句才复制进 reader 复用的 `stmt` 缓冲），引号状态 `stmtState` 跨行携带使一条语句只扫一遍，关键字与 `NULL` 用只折叠 ASCII 的 `hasPrefixFold`/`indexFold`/`equalFoldNull` 在字节上比较，`extractRows` 把元组窗口直接交给 `parseValueList([]byte)`，攒批语句文本改为按精确长度 `Grow` 一次成型、归属注释作为前缀字节写入（不再由 `common.TagSQL` 把整批文本再拼一遍）。值的类型仍是 `string`——装箱到 `driver.Value` 必然分配，只减少拷贝次数。实测（同一份 2 万行 × 8 列数据三种布局的微基准，`-benchmem`）：默认单行 90.0→42.3 ms / 36.6→9.3 MB/op / 728,986→340,009 次分配，`--extended-insert` 69.1→32.8 ms / 32.1→10.2 MB / 629,507→320,368，跨行折行 1839.3→32.1 ms（57×）/ 40.8→10.4 MB / 650,226→320,387；每条批次语句文本的构造 131→21 µs / 138,160→24,792 B / 20→3 次分配。端到端（本地 MariaDB，20 万行，`--batch-size 1000` 单线程，注入归属注释的构建，峰值 RSS）：单行布局 2.61→2.29 s / 41.6→34.6 MB，合并布局 2.85→2.44 s / 187.8→137.6 MB，148 万字节折行文件 5.98→0.184 s；12 次导入（新旧二进制 × 三种布局 × 注释开关）目标表 `CHECKSUM TABLE` 逐组相同，general log 复核服务端仍只收到 10 条约 138,556 字节的 INSERT，下发内容不变 |
 | 并行导出中已经读完的分片仍持有连接与一致性快照，直到把尾部字节交给按序写出的 goroutine（云环境里这段空等正对上 LB/NAT 的空闲 socket 回收，实测倾斜表下 `Writing to net` 约 5 s、`INNODB_TRX` 快照年龄涨到 9 s）| `exportShard` 在行迭代结束（`rows.Err()` 判过）后立刻 `releaseDB()` 关闭 `rows` 与分片连接，页脚写出与 `pipe.Close()` 移到释放之后；`releaseDB` 幂等，`defer` 注册在输出 `Close` 之前，保证查询失败、页脚失败等路径下数据库仍是最先被放弃的资源。为在无数据库条件下回归，`Exporter` 增加未导出的 `openShard` 连接器钩子，新增 `internal/export/exporter_shard_test.go`（2 用例）：一个用例起故意没有消费者的 `shardPipe`，断言连接已关闭而 `exportShard` 尚未返回（把改动前的 `defer` 顺序还原回去必然在 5 s 超时失败，已实测），另一个断言空分片不留连接也不挂队列。实测这条**是不变量而不是吞吐**：A/B 同一份 400 万行倾斜表产物逐字节一致（DEL 587,806,929 B md5 `2c9834af64e6`、SQL `--extended-insert` 642,102,879 B md5 `503ae9219565`），耗时持平（DEL 8.334/8.167 s 对 8.140/8.050 s，SQL 12.284/12.674 s 对 12.321/13.384 s）——本地写普通文件时尾部只有 1~2 个 256 KiB 块（写入器即 `bufio.NewWriterSize(w, 256*1024)`）；差别在连接状态：旧二进制采样抓到过 `[3 2:270=Sleep:0 268=Query:6 267=Sleep:6]`（一个读完但仍打开的分片），新二进制再没有"已完成但仍打开"的连接。导入侧本条不适用：并行导入是单读取 goroutine + 共享队列的动态派工，worker 退出即 `commit` 后 `db.Close()`，实测 `--threads 5` 全程恰 6 条连接且结束全消失 |
 | 帮助文本与实际语义不符，且并行导出会静默忽略 `--batch-size`/`--pipeline-buffer`：`--statement-size` 在默认单行布局下已不是攒批上限、只是告警阈值，help 仍写 "Max bytes per INSERT statement"；这两个管道选项只有 `exportSingle` 读取，`exportParallel` 的前瞻另由 64 MiB ÷ 分片数决定，于是 `--threads 8 --batch-size 50000` 静默等价于默认值 | 三条 help 改述实际语义（`--statement-size` 加 "only bounds merged statements: without --extended-insert a longer row just warns"，两个管道选项加 "single-threaded export; --threads>1 ignores it and says so"），并在 `exportParallel` 确认按分片并行执行之后（放在分片数判定之后，降级为单线程时不误报）经 `pipelineOptionsIgnoredByParallel()` 记一条 `info`：`parallel export ignores pipeline options`，带生效值与每分片实际前瞻。判定基准是"与出厂默认值不等"而不是"是否传了该 flag"，因此常见运行完全静默。实测（100 万行表，`--threads 4`）：`--batch-size 5000` 那次出现该记录且 `look_ahead_per_shard="16.0 MiB"`；不带该选项的并行导出与 `--threads 1 --batch-size 5000`（真正生效的路径）出现次数均为 0。顺带删除死常量 `config.DefaultMaxAllowedPacketCap`（全仓库仅定义处一处；`--statement-size` 的上界在参数校验里独立成立，导入侧的包上限另有 `batchcap.go` 的 4 MiB 保守值）。新增 `TestParallelExportPipelineOptionNotice`（无库依赖）与 `TestLive_ParallelExportReportsIgnoredPipelineOptions`（真实库三段式：并行+改动必须出现、并行+默认必须静默、单线程+改动不得报警）；`docs/cli-oracle.txt` 头注登记三处 reword（导出侧有意差异 6→9 条） |
 | 导入侧批次字节预算完全由目标库 `max_allowed_packet` 决定，用户无法主动把批次切小：`--statement-size` 只在导出侧有意义，`import` 根本没有该选项 | 给 `import` 补上同名选项，语义为「单条生成语句的字节上限」：与 `max_allowed_packet × 9/10` 预算取较小值，**只压低不抬高**（抬高等于让一批在服务端中途触发 `error 1153`），默认 `0`=不额外压低，低于 64 KiB 下限的显式数字照原值执行。`applyStatementCap()` 挂在 `batchBudget()` 上，故单线程/并行导入与 DEL/SQL/Parquet 三种输入一并生效；单行大于上限时仍独立成批（不拆行）。参数校验与导出侧刻意分列：导入用 `validateImportStatementSize`（接受 `0`，`<0` 或 `>268435456` 为用法错误退出 2），导出仍用 `validateStatementSize`（拒绝 `0`）。日志：`import batch byte cap resolved` 增 `statement_size` 与 `limiting_factor`（`max_allowed_packet` / `statement-size`）两个字段，`import config` 回显增 `statement_size`。实测（本地 MariaDB，`max_allowed_packet=134217728` → 预算 120,795,955 B；2048 行 × 约 200 B；`--batch-size 20480` 使行数不触顶；目标库 `Com_insert` 差值）：默认 **1** 条语句，`--statement-size 65536` **7** 条（`--threads 4`、SQL 文件、Parquet 文件同样 7 条），`--statement-size 1024` **342** 条，`--statement-size 268435456`（高于预算）仍 **1** 条且记 `limiting_factor=max_allowed_packet`；各次落库行数与 `CRC32` 校验和全部一致（2048 / 4397778945034）。测试：`internal/import/batchcap_test.go` 新增 `TestApplyStatementCap`、`TestBatchBudgetAppliesStatementCapWithoutConnection`（读不到 `max_allowed_packet` 的分支同样压低），`cmd/cli_matrix_test.go:TestCLIImportStatementSize`（导入接受 `0`、导出仍拒绝、两侧共享上界），`test/integration/live_mysql_test.go:TestLive_ImportStatementSizeCapsStatements`（真实库以 `Com_insert` 断言语句数变化并复核落库行）；`docs/cli-oracle.txt` 头注登记导入侧新增该选项（有意差异 4→5 条） |
-| 配置回显不看 `--format`：三种格式打的是**同一套 26 个字段**（实测把 HEAD 二进制的三条 `-f del/sql/parquet` 回显去掉 `format=` 后逐字节比对完全相同），既包含所选格式根本不读的字段（`-f del` 打 `statement_size`/`no_create`/`extended_insert`，`-f sql` 打 `char_del`/`col_del`/`timestamp_fmt`，`-f parquet` 两类都打），又漏打 DEL 写入器一直在读的 `date_fmt`/`no_escape`/`no_char_del` 三项，`hex_blob` 打的还是 `--hex-blob` 原始标志位而非生效值（非 utf8mb4 自动开启时回显 `false`）；`--help` 也不说这些选项只对某种格式有效 | 建立唯一一张格式适用范围登记表 `internal/config/formatscope.go`（`ExportOptionScopes`/`ImportOptionScopes` + `AppliesTo`/`Violation`），三处共用：① `cmd/validate.go` 把手写的 `validateSQLOnlyOptions`/`validateDELOnlyOptions`+`delOnlyFlags`/`validateParquetBinaryOptions` 合并为一个 `validateOptionScopes`，**拒绝顺序与文案逐字不变**；② `cmd/option_scope.go:annotateOptionScopes` 在两个子命令注册 flag 的末尾给每个受限选项追加范围标记；③ 回显移到 `internal/export/configlog.go`/`internal/import/configlog.go`，按 `AppliesTo` 过滤、补齐漏打的三项，`hex_blob` 改用新抽出的 `effectiveHexBlob()`（原先单线程路径与并行分片各写一遍的重复表达式一并收敛）。实测：`export` 回显 `-f del/sql/parquet` 为 25/20/15 个字段、`import` 为 29/20/20（DEL 布局 9 项只在 `-f del` 出现）；`-f del --charset gbk` 回显 `hex_blob=true` 而 `-f del` 默认 `false`；`--format sql --char-del '!'` 仍报 `--char-del can only be used with --format del` 退出 2；`export --help` 有 16 行、`import --help` 有 9 行带标记。测试：`internal/config/formatscope_test.go`（4 用例：`AppliesTo` 矩阵、`Violation` 文案与首条顺序、登记表自洽性、两侧 DEL 组必须一致）、`cmd/option_scope_test.go`（3 用例：标记进入 `Usage` 与渲染后的 help、九个 DEL 选项不得漏登记、重复调用不重复追加）、`internal/export/configlog_test.go`（4 用例）、`internal/import/configlog_test.go`（3 用例，含导入侧 `statement_size` 不受格式过滤）；`docs/cli-oracle.txt` 头注把标记带来的帮助文本差异登记为有意差异（export 9→21 行、import 5→14 行） |
+| 配置回显不看 `--format`：三种格式打的是**同一套 26 个字段**（实测把 HEAD 二进制的三条 `-f del/sql/parquet` 回显去掉 `format=` 后逐字节比对完全相同），既包含所选格式根本不读的字段（`-f del` 打 `statement_size`/`no_create`/`extended_insert`，`-f sql` 打 `char_del`/`col_del`/`timestamp_fmt`，`-f parquet` 两类都打），又漏打 DEL 写入器一直在读的 `date_fmt`/`no_escape`/`no_char_del` 三项，`hex_blob` 打的还是 `--hex-blob` 原始标志位而非生效值（非 utf8mb4 自动开启时回显 `false`）；`--help` 也不说这些选项只对某种格式有效 | 建立唯一一张格式适用范围登记表 `internal/config/formatscope.go`（`ExportOptionScopes`/`ImportOptionScopes` + `AppliesTo`/`Violation`），三处共用：① `cmd/validate.go` 把手写的 `validateSQLOnlyOptions`/`validateDELOnlyOptions`+`delOnlyFlags`/`validateParquetBinaryOptions` 合并为一个 `validateOptionScopes`，**拒绝顺序与文案逐字不变**；② `cmd/option_scope.go:annotateOptionScopes` 在两个子命令注册 flag 的末尾给每个受限选项追加范围标记；③ 回显移到 `internal/export/configlog.go`/`internal/import/configlog.go`，按 `AppliesTo` 过滤、补齐漏打的三项，`hex_blob` 改用新抽出的 `effectiveHexBlob()`（原先单线程路径与并行分片各写一遍的重复表达式一并收敛）。实测：`export` 回显 `-f del/sql/parquet` 为 25/20/15 个字段、`import` 为 29/20/20（DEL 布局 9 项只在 `-f del` 出现）；`-f del --charset gbk` 回显 `hex_blob=true` 而 `-f del` 默认 `false`；`--format sql --char-del '!'` 仍报 `--char-del can only be used with --format del` 退出 2；`export --help` 有 16 行、`import --help` 有 9 行带标记。测试：`internal/config/formatscope_test.go`（4 用例：`AppliesTo` 矩阵、`Violation` 文案与首条顺序、登记表自洽性、两侧 DEL 组必须一致）、`cmd/option_scope_test.go`（3 用例：标记进入 `Usage` 与渲染后的 help、九个 DEL 选项不得漏登记、重复调用不重复追加）、`internal/export/configlog_test.go`（4 用例）、`internal/import/configlog_test.go`（3 用例，含导入侧 `statement_size` 不受格式过滤）；`docs/cli-oracle.txt` 头注把标记带来的帮助文本差异登记为有意差异（export 9→21 行、import 5→14 行）；**注：本行提到的 SQL 布局字段 `no_create` 已被下一行的 `--create` 取代** |
+| `--query` 写成带 schema 的限定名（形如 db.tbl，两段各带反引号）时 SQL 导出必然失败：表名解析交回的是**已带反引号的限定串**，`SHOW CREATE TABLE` 又把它当裸名包一层反引号并前置连接自己的 `--database`，服务端把整串当作默认库里的单个标识符（HEAD 构建的二进制实测退出 1：`Error 1146 (42S02): Table 'imex_test.imex_test.zzq_evi' doesn't exist`）。另有两点不便：SQL 导出默认总带 `CREATE TABLE`，想只要数据没有开关；长 SQL 只能写在命令行上 | 三项：① 表名解析统一交回**裸表名**（`ExtractTableName`/`SimpleTableName` 断言 `sqlparser.TableName` 后取其 `Name`），新增 `ExtractTableRef()` 把 schema 与表名拆开、只供 `SHOW CREATE TABLE` 使用（`getCreateTableStatement(schema, tableName)`，schema 为空不加前缀），单线程与并行分片两条预取路径同一口径——产物里的 `CREATE`/`INSERT`/`LOCK TABLES` 因此永远引用裸表名，同一个文件可以导进任意库；分片键探测本就按 `TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?` 过滤，带前缀反而匹配不到主键。② SQL 导出改为**默认仅数据**，新增 `--create` 显式带回建表，并**删掉 `--no-create`**（结构已是 opt-in，反向开关唯一的作用就是否决 `--create`，留着只多一个状态组合；传入它现在报 `unknown flag: --no-create` 退出 2），该选项登记为 SQL 专属（`--create -f del` 与其它格式越界同口径退出 2），配置回显由 `no_create` 改打 `create`；要用 `import --mode create` 建表，导出就必须加 `--create`。③ 新增 `--query-file` 从文件读 SQL（首尾空白与行尾分号自动去掉），与 `-q` **互斥**：两者都给、两者都不给、文件为空、文件不存在均为用法错误退出 2，回显只在真正走文件时打 `query_file`。实测（本地 MariaDB，HEAD 与工作区两个二进制跑同一条命令）：工作区默认导出退出 0、产物 `CREATE TABLE` 0 行 / `INSERT` 3 行；`--create` 退出 0、产物首块即该表的建表语句、全文件库名出现 **0** 次；删掉源表后用 `import -f sql --mode create` 回灌同一文件 `inserted=3` 且 `COUNT(*)=3`；`--no-create` 无论单独给还是跟着 `--create` 给，都是 `unknown flag` 退出 2。测试：新增 `TestSQLParser_ExtractTableRef`，`TestSQLParser_SimpleTableName` 的限定名期望由 `db.users` 改为 `users`（钉住缺陷本身），`option_matrix_test.go` 的 `TestOptionMatrixNoDataNoCreate` 重写为四个子用例（默认仅数据可导入、`--create` 结构+数据、`--create --no-data` 配 `--mode create`、默认仅数据配 `--mode create` 必须失败），新增 `test/integration/export_cli_test.go`（4 用例：schema 限定查询导出回灌、`--create` 默认矩阵、`--query-file` 正例与四条负例、parquet 走 `--query-file`）；`docs/cli-oracle.txt` 的 `## export` 段按新帮助文本整体重新基线（实测逐字节相同） |
+| 工程名 `gomydump` 与工具定位（导入 + 导出）不再贴合，且各处叫法混用：模块名、二进制名、环境变量、帮助与日志回显、文档、测试库名与表前缀（实测表前缀还写成 `gmydump_it_`，少一个 `o`）不完全一致 | 全线改名为 **imex**（ImEx = Import + Export）：`go.mod` 模块路径 `github.com/imex`，命令词与二进制 `imex`，环境变量前缀 `IMEX_`（`IMEX_KEY`、`IMEX_QUIET`、`IMEX_LOG_FORMAT`、`IMEX_ERROR_STACK`、`IMEX_ECHO_SQL_VALUES`、`IMEX_NO_SQL_TAG`），SQL 归因注释 `/* imex:<commit> */`，启动横幅 `imex starting`，版本行 `imex version 0.1.0`，`Makefile` 的 `BINARY` 与 ldflags 注入路径、`Dockerfile` 的 `ENTRYPOINT ["/app/imex"]`，集成测试改用 `IMEX_TEST_DSN`、测试库 `imex_test` 与表前缀 `imex_it_`。归因注释**只写不读**（导入侧不反向识别它），旧导出文件里的 `/* gomydump:... */` 仍按普通 SQL 注释忽略，**旧产物照常导入**；本轮无 flag、退出码、文件格式变更，也不留旧名兼容层。实测：`imex version` 输出 `imex version 0.1.0`，`--log-level debug` 首条记录 `INFO imex starting ... command=export`，MariaDB general log 收到 `/* imex:9389a88 */ SHOW CREATE TABLE ...` 与 `/* imex:9389a88 */ SELECT ...`；代码、`Makefile`、`Dockerfile`、`go.mod` 对 `gomydump`/`GOMYDUMP`/`gmydump` 三种写法命中 **0**（文档里仅剩本条与需求文档变更记录 56 对旧名的引述）。`gofmt -l` 空、`go vet ./...` 干净、`go test -race -count=1 ./...` 七包全通过，真实库 `./test/integration` 104 条 PASS（含子用例）、0 SKIP，测试资产数量不变（39 个 `_test.go`、201 个 `Test*`、6 个 `Fuzz*`、12 个 `Benchmark*`）。同日收尾把仓库外也统一：工作副本目录名与产物前缀一并改为 `imex`（发布与保留脚本同时识别改名前的 `gomydump-` 前缀，否则旧批次清不掉），仓库内旧名产物 `bin/gomydump*` 与 `dist/gomydump-*` 删除。详见需求文档变更记录 56、57 |
 
 ## 项目结构
 
 ```
-gomydump/
+imex/
 ├── main.go                    # 程序入口
 ├── main_test.go               # 日志消息风格静态守卫（go/ast）
 ├── cmd/
@@ -831,7 +837,7 @@ gomydump/
 │   │   ├── colkind.go           # 列类型分类（DEL 文本修饰与回转换、二进制列判定）
 │   │   ├── sessionvars.go       # 会话变量解析与 DSN 注入（--session-var）
 │   │   ├── sqlpreview.go        # 失败 SQL 脱敏回显（--echo-sql-values）
-│   │   ├── sqltag.go            # 运行时 SQL 归因注释 /* gomydump:<commit> */（--no-sql-tag）
+│   │   ├── sqltag.go            # 运行时 SQL 归因注释 /* imex:<commit> */（--no-sql-tag）
 │   │   ├── dberr.go             # 瞬态错误判定（连接级 MySQL 错误码/网络错误/文本兜底）
 │   │   ├── retry.go             # 重试策略（次数、指数退避、抖动、ctx 取消）
 │   │   ├── pool.go              # 连接池老化（ConnMaxIdleTime / ConnMaxLifetime）
@@ -860,8 +866,10 @@ gomydump/
 ├── test/
 │   └── integration/             # 集成测试
 │       ├── roundtrip_test.go    # 离线往返（导出写入器→导入读取器：转义/换行/0x/NULL 与空串/单行 INSERT/DEL 修饰符）
-│       ├── live_mysql_test.go   # 真实 MySQL 端到端（默认跳过，需 GOMYDUMP_TEST_DSN）
-│       └── option_matrix_test.go # 真实 CLI 交叉选项矩阵（argv 驱动编译出的二进制，同上门控）
+│       ├── live_mysql_test.go   # 真实 MySQL 端到端（默认跳过，需 IMEX_TEST_DSN）
+│       ├── option_matrix_test.go # 真实 CLI 交叉选项矩阵（argv 驱动编译出的二进制，同上门控）
+│       ├── lock_contention_test.go # 重复主键 × 导入并发的锁冲突回归（真实二进制 + 真实库）
+│       └── export_cli_test.go   # 导出 CLI 三项：schema 限定查询、`--create` 默认、`--query-file` 互斥
 ├── docs/
 │   ├── requirements.md          # 需求文档
 │   └── cli-oracle.txt           # 已发布二进制的 --help 契约快照（回归基线）

@@ -118,6 +118,11 @@ type ExportConfig struct {
 	Output string
 	Format string // "del", "sql" or "parquet"
 	Query  string
+	// QueryFile is a path passed to --query-file whose contents become Query. It
+	// is mutually exclusive with --query on the command line; by the time the
+	// exporter runs, RunE has read the file into Query and this field only
+	// carries the origin for the configuration record.
+	QueryFile string
 
 	// NoReplace refuses to overwrite an existing output file. The default is
 	// to overwrite (os.Create truncates).
@@ -133,8 +138,14 @@ type ExportConfig struct {
 	// (verified against the server's general log), so merging on the export side
 	// only inflates the file and makes the reader materialise a whole statement.
 	ExtendedInsert bool
-	NoCreate       bool // skip CREATE TABLE
-	NoData         bool // skip INSERT statements
+	// Create opts a SQL export into emitting a CREATE TABLE statement. SQL
+	// export defaults to data-only, so the layout the common case produces needs
+	// no extra flag; --create re-attaches the table structure when the dump must
+	// be self-contained (import --mode create). There is no --no-create: with the
+	// structure already opt-in, a second switch for turning it off would only be
+	// a way to contradict --create.
+	Create bool
+	NoData bool // skip INSERT statements
 
 	// Binary column encoding. HexBlob forces 0x literals; NoHexBlob forces raw
 	// passthrough. Both false means "automatic": hex is enabled whenever

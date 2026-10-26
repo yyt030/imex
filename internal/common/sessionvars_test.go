@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 func TestParseSessionVars(t *testing.T) {

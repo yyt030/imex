@@ -1,4 +1,21 @@
 # CLI surface extracted from shipped binary commit 4934dd2
+# Rename note (2026-10-26): the project was renamed gomydump -> imex (ImEx =
+# Import + Export). Every name inside the four bodies below was rewritten with
+# it — the command word (`imex export [flags]`, `imex [command]`), the env
+# variables (IMEX_ECHO_SQL_VALUES / IMEX_ERROR_STACK / IMEX_LOG_FORMAT /
+# IMEX_NO_SQL_TAG / IMEX_QUIET) and the attribution comment
+# (`/* imex:<commit> */`) — so the bodies read `imex` where the 4934dd2 snapshot
+# printed `gomydump`. Nothing else was edited, and the `## version` body is still
+# that snapshot's output apart from the renamed command word.
+# Re-baselined note (2026-10-26): the `## export` section below was regenerated
+# verbatim from the working tree, so it now matches `imex export --help` with
+# NO pending deltas — it absorbed every export-side change listed underneath, plus
+# this cycle's (--query reworded to name --query-file, new --query-file, new
+# --create, --no-create removed outright, and two new
+# example blocks), and it was re-verified byte-for-byte against the renamed binary
+# after the rename. The `## import`, `## root` and `## version` sections remain the
+# 4934dd2 snapshot, so the counts and rewordings enumerated below apply to import
+# and root (and the environmental Go line) only; a `## export` diff should be empty.
 # Frozen baseline, kept verbatim as a regression reference. The intentional
 # deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --single-row-insert and then --extended-insert (one INSERT per
@@ -28,17 +45,24 @@
 # but still rejects it on export). On 2026-10-26 every format-scoped option also
 # gained a generated scope marker at the end of its own help text — "(only with
 # --format del)" on the nine DEL layout options, "(only with --format sql)" on the
-# five SQL layout options, "(not with --format parquet)" on --hex-blob and
+# five SQL layout options (--create took over --no-create's slot among the five from row 52), "(not with --format parquet)" on --hex-blob and
 # --no-hex-blob — appended from internal/config/formatscope.go, the same registry
 # cmd/validate.go rejects with, so `--help` can no longer advertise an option for a
-# format that refuses it. Diff `gomydump <cmd> --help` against this file and expect
-# only those lines: twenty-one added or changed lines for export (the sixteen
-# marked options, --messages, --progress-interval, --batch-size, --pipeline-buffer,
-# --echo-sql-values; --statement-size/--single-row-insert/--extended-insert are
-# marked and reworded or added at the same time and count once) and fourteen for
-# import (the nine marked options, --messages, --progress-interval, --skip-count,
-# --echo-sql-values, --statement-size). One further delta is environmental, not a
-# code change: `gomydump version` now reports the Go toolchain the binary was built
+# format that refuses it. Diff `imex <cmd> --help` against this file and expect
+# only those lines. For `export` the diff is now empty: every export delta listed
+# below (the fourteen marked options — nine DEL plus five SQL, after --create took
+# --no-create's slot in the SQL group, --messages,
+# --progress-interval, --batch-size, --pipeline-buffer, --echo-sql-values,
+# --statement-size/--single-row-insert/--extended-insert, plus this cycle's --query
+# reword, new --query-file, new --create and the removed --no-create) has been folded
+# into the re-baselined `## export` body. For `import` expect fourteen added or
+# changed lines (the nine marked options, --messages, --progress-interval,
+# --skip-count, --echo-sql-values, --statement-size). For `root` expect two
+# changed lines: the Features bullet now reads "Command log file (--messages)"
+# in place of "Message file logging", and it carries the same --echo-sql-values
+# rewording as import's Global Flags block. One further delta is
+# environmental, not a
+# code change: `imex version` now reports the Go toolchain the binary was built
 # with, and go.mod requires go 1.26.10, so the "Go version:" line below (go1.26.9)
 # is expected to differ on every build since 2026-10-26. Last verified against the
 # working tree on 2026-10-26.
@@ -48,99 +72,112 @@ SQL, or Parquet format file.
 
 Examples:
   # Basic export to DEL format
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del -q "SELECT * FROM users"
 
   # Export to SQL format
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.sql -f sql -q "SELECT * FROM users"
 
+  # SQL export is data-only; add --create when the dump must be self-contained
+  # (import ... --mode create reads the CREATE TABLE from the file)
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+    -o /backup/users.sql -f sql --create -q "SELECT * FROM users"
+
+  # Read the query from a file instead of the command line
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+    -o /backup/users.sql -f sql --query-file /backup/users_query.sql
+
   # Export to Parquet format
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.parquet -f parquet -q "SELECT * FROM users"
 
   # Parallel export with 4 threads
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del --threads 4 -q "SELECT * FROM users"
 
   # Custom delimiters
-  gomydump export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del --char-del '!' --col-del '@' \
     -q "SELECT * FROM users"
 
 Usage:
-  gomydump export [flags]
+  imex export [flags]
 
 Aliases:
   export, exp
 
 Flags:
-      --batch-size int                  Rows per reader->writer hand-off batch (single-threaded export) (default 1000)
-      --char-del string                 String delimiter (default "\"")
-      --col-del string                  Column delimiter (default ",")
+      --batch-size int                  Rows per reader->writer hand-off batch (single-threaded export; --threads>1 ignores it and says so) (default 1000)
+      --char-del string                 String delimiter (only with --format del) (default "\"")
+      --col-del string                  Column delimiter (only with --format del) (default ",")
       --connect-timeout duration        TCP connect timeout (maps to JDBC connectTimeout) (default 5s)
+      --create                          Output a CREATE TABLE statement (SQL export is data-only by default) (only with --format sql)
   -D, --database string                 Database name
-      --date-fmt string                 Date format (default "yyyy-MM-dd")
+      --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
       --default-charset string          Connection & output-file charset (utf8mb4 default; also utf8, latin1, ascii, gbk, gb18030)
-      --escape string                   Escape character (default "\"")
+      --escape string                   Escape character (only with --format del) (default "\"")
+      --extended-insert                 Merge rows into multi-row INSERT statements bounded by --statement-size (only with --format sql)
   -f, --format string                   Output file format (del/sql/parquet) (default "del")
   -?, --help                            help for export
-      --hex-blob                        Encode binary columns as 0x hexadecimal literals (auto-on for non-utf8mb4 charset)
+      --hex-blob                        Encode binary columns as 0x hexadecimal literals (auto-on for non-utf8mb4 charset) (not with --format parquet)
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Message file path
-      --no-char-del                     Do not use string delimiter
-      --no-col-names                    Do not output column names
-      --no-create                       Do not output CREATE TABLE statement
-      --no-data                         Do not output INSERT statements
-      --no-escape                       Disable escaping
-      --no-hex-blob                     Force raw binary passthrough even for non-utf8mb4 charset (may corrupt binary data)
+  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+      --no-char-del                     Do not use string delimiter (only with --format del)
+      --no-col-names                    Do not output column names (only with --format del)
+      --no-data                         Do not output INSERT statements (only with --format sql)
+      --no-escape                       Disable escaping (only with --format del)
+      --no-hex-blob                     Force raw binary passthrough even for non-utf8mb4 charset (may corrupt binary data) (not with --format parquet)
       --no-replace                      Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Output file path (required)
   -p, --password string                 Database password
-      --pipeline-buffer int             Hand-off queue depth, in batches (single-threaded export) (default 10)
+      --pipeline-buffer int             Hand-off queue depth, in batches (single-threaded export; --threads>1 ignores it and says so) (default 10)
   -P, --port int                        TCP/IP port (default 3306)
-  -q, --query string                    SQL SELECT statement (required)
-      --row-del string                  Row delimiter (default "\n")
+      --progress-interval duration      How often to write the periodic progress record (must be positive; --quiet drops the records entirely) (default 5s)
+  -q, --query string                    SQL SELECT statement (mutually exclusive with --query-file)
+      --query-file string               Read the SQL SELECT statement from this file (mutually exclusive with -q)
+      --row-del string                  Row delimiter (only with --format del) (default "\n")
       --session-var stringArray         Set a MySQL/OceanBase session variable before export (repeatable), e.g. --session-var "sql_mode=STRICT_TRANS_TABLES" --session-var foreign_key_checks=0
       --shard-key string                Column name for sharding (auto-detect primary key if empty)
+      --single-row-insert               Deprecated: one INSERT statement per row is now the default (only with --format sql)
   -S, --socket string                   UNIX domain socket path
       --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)
-      --statement-size int              Max bytes per INSERT statement (default 16777216)
+      --statement-size int              Max bytes per INSERT statement (only bounds merged statements: without --extended-insert a longer row just warns) (only with --format sql) (default 8388608)
       --threads int                     Number of parallel export tasks (1 = no parallelism) (default 1)
-      --timestamp-fmt string            Timestamp format (default "yyyy-MM-dd HH:mm:ss")
+      --timestamp-fmt string            Timestamp format (only with --format del) (default "yyyy-MM-dd HH:mm:ss")
   -u, --user string                     Database username (default "root")
 
 Global Flags:
-      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
-      --error-stack         Print full error call stack on failure (also enabled via GOMYDUMP_ERROR_STACK=1)
-      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via GOMYDUMP_LOG_FORMAT (default "java")
-      --no-sql-tag          Do not prepend the /* gomydump:<commit> */ attribution comment to statements gomydump executes (also via GOMYDUMP_NO_SQL_TAG=1)
-      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via GOMYDUMP_QUIET=1)
+      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, or to the --messages file when one is given.
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via IMEX_LOG_FORMAT (default "java")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)
+      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)
 ## import
 Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
 MySQL or OceanBase database.
 
 Examples:
   # Basic import from DEL format
-  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del -t users
 
   # Import from Parquet format
-  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.parquet -f parquet -t users
 
   # Import with insert_update mode
-  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del --mode insert_update -t users
 
   # Create table from SQL file
-  gomydump import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.sql -f sql --mode create
 
 Usage:
-  gomydump import [flags]
+  imex import [flags]
 
 Aliases:
   import, imp
@@ -182,13 +219,13 @@ Flags:
   -u, --user string                     Database username (default "root")
 
 Global Flags:
-      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
-      --error-stack         Print full error call stack on failure (also enabled via GOMYDUMP_ERROR_STACK=1)
-      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via GOMYDUMP_LOG_FORMAT (default "java")
-      --no-sql-tag          Do not prepend the /* gomydump:<commit> */ attribution comment to statements gomydump executes (also via GOMYDUMP_NO_SQL_TAG=1)
-      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via GOMYDUMP_QUIET=1)
+      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via IMEX_LOG_FORMAT (default "java")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)
+      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)
 ## root
-gomydump is a table-level MySQL logical backup and restore tool.
+imex is a table-level MySQL logical backup and restore tool.
 It supports both MySQL and OceanBase MySQL mode.
 
 Features:
@@ -203,7 +240,7 @@ Features:
   - Smart JOIN detection for parallel export
 
 Usage:
-  gomydump [command]
+  imex [command]
 
 Available Commands:
   encrypt     Encrypt password for secure automation
@@ -213,16 +250,16 @@ Available Commands:
   version     Print version information
 
 Flags:
-      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via GOMYDUMP_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
-      --error-stack         Print full error call stack on failure (also enabled via GOMYDUMP_ERROR_STACK=1)
-  -h, --help                help for gomydump
-      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via GOMYDUMP_LOG_FORMAT (default "java")
-      --no-sql-tag          Do not prepend the /* gomydump:<commit> */ attribution comment to statements gomydump executes (also via GOMYDUMP_NO_SQL_TAG=1)
-      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via GOMYDUMP_QUIET=1)
+      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+  -h, --help                help for imex
+      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via IMEX_LOG_FORMAT (default "java")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)
+      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)
 
-Use "gomydump [command] --help" for more information about a command.
+Use "imex [command] --help" for more information about a command.
 ## version
-gomydump version 0.1.0
+imex version 0.1.0
 Git commit: 4934dd2
 Build time: 2026-10-22_04:30:38
 Go version: go1.26.9

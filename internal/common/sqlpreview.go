@@ -13,7 +13,7 @@ const MaxSQLErrorPreview = 2048
 // row values instead of redacted type/length tags. It is off by default
 // because real data (passwords, personal or business content) would then be
 // written to stderr, logs, and --messages files. Enabled via --echo-sql-values
-// or GOMYDUMP_ECHO_SQL_VALUES=1.
+// or IMEX_ECHO_SQL_VALUES=1.
 var EchoSQLValues bool
 
 // FailingSQL renders a failing statement for an error message, respecting the
@@ -64,7 +64,7 @@ func SQLPreview(query string, args []interface{}) string {
 // SQLPreviewWithValues substitutes as many `?` placeholders as it can with
 // rendered literals. The result is meant for human debugging ONLY — never
 // execute it, and never write it to a persistent sink unless the user
-// explicitly opted in (--echo-sql-values / GOMYDUMP_ECHO_SQL_VALUES=1).
+// explicitly opted in (--echo-sql-values / IMEX_ECHO_SQL_VALUES=1).
 func SQLPreviewWithValues(query string, args []interface{}) string {
 	var sb strings.Builder
 	sb.Grow(len(query) + 16*len(args))

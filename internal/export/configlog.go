@@ -1,8 +1,8 @@
 package export
 
 import (
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 // effectiveHexBlob resolves the binary-column encoding for a run: --hex-blob
@@ -51,6 +51,10 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		{"output", "output", cfg.Output},
 		{"format", "format", cfg.Format},
 		{"query", "query", cfg.Query},
+		// query_file is only meaningful when --query-file was the source of the
+		// query; a -q run leaves it empty and prints nothing, so the record keeps
+		// naming where the SQL came from.
+		{"query-file", "query_file", cfg.QueryFile},
 		{"no-replace", "no_replace", cfg.NoReplace},
 
 		// Parallelism and hand-off
@@ -62,8 +66,11 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		// Charset
 		{"default-charset", "default_charset", cfg.DefaultCharset},
 
-		// SQL layout
-		{"no-create", "no_create", cfg.NoCreate},
+		// SQL layout. SQL export is data-only by default and --create opts the
+		// table structure back in, so the printed value is the one the writer
+		// acts on — the same way hex_blob below prints the resolved value rather
+		// than the flag bits.
+		{"create", "create", cfg.Create},
 		{"no-data", "no_data", cfg.NoData},
 		{"statement-size", "statement_size", cfg.StatementSize},
 		{"extended-insert", "extended_insert", cfg.ExtendedInsert},
@@ -92,6 +99,11 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 	args := make([]interface{}, 0, len(fields)*2)
 	for _, f := range fields {
 		if !scopes.AppliesTo(f.flag, cfg.Format) {
+			continue
+		}
+		// query_file is an origin marker, not a setting: an empty one means the
+		// query came from -q and the field has nothing to say.
+		if f.key == "query_file" && cfg.QueryFile == "" {
 			continue
 		}
 		args = append(args, f.key, f.value)

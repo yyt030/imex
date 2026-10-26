@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gomydump/internal/common"
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 // stubResult stands in for the driver's per-batch affected-rows report.

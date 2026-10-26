@@ -12,7 +12,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/gomydump/internal/common"
+	"github.com/imex/internal/common"
 )
 
 // SQLWriter writes data in SQL format (CREATE TABLE + INSERT statements)
@@ -86,7 +86,7 @@ func (s *SQLWriter) WriteHeader(columns []string) error {
 	// Write the self-describing charset header whenever we're going to emit
 	// any content (CREATE TABLE or INSERT data). This mirrors mysqldump's
 	// --set-charset behavior; the standard mysql client uses it to set the
-	// connection charset, and gomydump's own importer skips this line.
+	// connection charset, and imex's own importer skips this line.
 	if s.writeCreate || s.writeData {
 		if _, err := fmt.Fprintf(s.bw, "/*!40101 SET NAMES %s */;\n", s.charset); err != nil {
 			return err

@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/gomydump/internal/common"
+	"github.com/imex/internal/common"
 	"github.com/pkg/errors"
 )
 

@@ -6,7 +6,7 @@ import (
 )
 
 // NoSQLTag disables the attribution comment for the whole run. It is set once
-// from the --no-sql-tag persistent flag (or GOMYDUMP_NO_SQL_TAG) in the root
+// from the --no-sql-tag persistent flag (or IMEX_NO_SQL_TAG) in the root
 // command's PersistentPreRunE, before any subcommand executes a statement.
 var NoSQLTag bool
 
@@ -25,7 +25,7 @@ var (
 )
 
 // SQLTag returns the self-describing block comment prepended to every statement
-// the tool executes itself, e.g. "/* gomydump:9183226 */". The commit lets
+// the tool executes itself, e.g. "/* imex:9183226 */". The commit lets
 // general_log, slow_query_log and audit streams be filtered by tool origin, and
 // identifies the exact build that produced a given statement.
 //
@@ -52,7 +52,7 @@ func buildSQLTag() string {
 	if len(c) > 7 {
 		c = c[:7]
 	}
-	return "/* gomydump:" + c + " */"
+	return "/* imex:" + c + " */"
 }
 
 // ResetSQLTag drops the cached tag. Callers that change GitCommit or NoSQLTag

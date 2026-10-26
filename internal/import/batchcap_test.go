@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gomydump/internal/config"
+	"github.com/imex/internal/config"
 )
 
 func TestEffectiveBatchSize(t *testing.T) {

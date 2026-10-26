@@ -12,7 +12,7 @@ import (
 // the three file layouts the SQL import path has to handle, so a change to the
 // statement-level parsing can be compared on identical input:
 //
-//   - single-row: gomydump's own default since d1b1ee2, one INSERT per line
+//   - single-row: imex's own default since d1b1ee2, one INSERT per line
 //   - extended:   --extended-insert / mysqldump style, many tuples per line
 //   - wrapped:    a statement split across several physical lines, the layout
 //     produced by other tools (and by --statement-size with long rows)
