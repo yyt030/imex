@@ -37,8 +37,11 @@
 # --echo-sql-values; --statement-size/--single-row-insert/--extended-insert are
 # marked and reworded or added at the same time and count once) and fourteen for
 # import (the nine marked options, --messages, --progress-interval, --skip-count,
-# --echo-sql-values, --statement-size). Last verified against the working tree on
-# 2026-10-26.
+# --echo-sql-values, --statement-size). One further delta is environmental, not a
+# code change: `gomydump version` now reports the Go toolchain the binary was built
+# with, and go.mod requires go 1.26.10, so the "Go version:" line below (go1.26.9)
+# is expected to differ on every build since 2026-10-26. Last verified against the
+# working tree on 2026-10-26.
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.
