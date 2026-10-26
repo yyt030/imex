@@ -17,7 +17,7 @@ package integration
 //     be the option that makes the file readable on the import side;
 //   - output determinism: an option that must not change bytes (thread count,
 //     batching) must not change them;
-//   - side-effect discipline: --messages, --no-replace and failure paths must
+//   - side-effect discipline: --messages, --no-overwrite and failure paths must
 //     leave exactly the files they promise, no more.
 //
 // They are skipped unless IMEX_TEST_DSN is set:
@@ -917,13 +917,13 @@ func splitLines(text string) []string {
 	return strings.Split(text, "\n")
 }
 
-// TestOptionMatrixNoReplace checks that refusing to overwrite leaves the old
+// TestOptionMatrixNoOverwrite checks that refusing to overwrite leaves the old
 // file untouched on every path. This matters in particular for the parallel
 // export, which now streams straight into the final file and would otherwise
 // truncate it before discovering the refusal.
-func TestOptionMatrixNoReplace(t *testing.T) {
+func TestOptionMatrixNoOverwrite(t *testing.T) {
 	env := newCLILive(t)
-	src, _ := env.makePair(t, "noreplace")
+	src, _ := env.makePair(t, "nooverwrite")
 
 	for _, threads := range []string{"1", "4"} {
 		t.Run("threads="+threads, func(t *testing.T) {
@@ -933,9 +933,9 @@ func TestOptionMatrixNoReplace(t *testing.T) {
 				t.Fatalf("write sentinel: %v", err)
 			}
 			out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`",
-				"-f", "del", "-o", path, "--threads", threads, "--no-replace")
+				"-f", "del", "-o", path, "--threads", threads, "--no-overwrite")
 			if code == 0 {
-				t.Fatalf("--no-replace must refuse an existing output\n%s", out)
+				t.Fatalf("--no-overwrite must refuse an existing output\n%s", out)
 			}
 			if got := readFile(t, path); got != sentinel {
 				t.Errorf("existing output was modified:\n%s", firstLines(got, 2))

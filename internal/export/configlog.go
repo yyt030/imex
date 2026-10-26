@@ -55,7 +55,7 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		// query; a -q run leaves it empty and prints nothing, so the record keeps
 		// naming where the SQL came from.
 		{"query-file", "query_file", cfg.QueryFile},
-		{"no-replace", "no_replace", cfg.NoReplace},
+		{"no-overwrite", "no_overwrite", cfg.NoOverwrite},
 
 		// Parallelism and hand-off
 		{"threads", "threads", cfg.Threads},

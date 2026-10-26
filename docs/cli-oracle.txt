@@ -16,6 +16,13 @@
 # after the rename. The `## import`, `## root` and `## version` sections remain the
 # 4934dd2 snapshot, so the counts and rewordings enumerated below apply to import
 # and root (and the environmental Go line) only; a `## export` diff should be empty.
+# Re-baselined note 2 (2026-10-26): export's --no-replace was renamed --no-overwrite
+# (the option never touched REPLACE semantics — it refuses to overwrite an existing
+# output file — so the old name collided with the SQL format and with import's
+# --mode replace). The `## export` body was regenerated from the tree again and the
+# diff is empty once more; the flag keeps the same column alignment and the same
+# help text, and no --no-replace alias is kept, so `imex export --no-replace` is now
+# an unknown-flag usage error (exit 2).
 # Frozen baseline, kept verbatim as a regression reference. The intentional
 # deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --single-row-insert and then --extended-insert (one INSERT per
@@ -129,7 +136,7 @@ Flags:
       --no-data                         Do not output INSERT statements (only with --format sql)
       --no-escape                       Disable escaping (only with --format del)
       --no-hex-blob                     Force raw binary passthrough even for non-utf8mb4 charset (may corrupt binary data) (not with --format parquet)
-      --no-replace                      Refuse to overwrite an existing output file (default: overwrite)
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Output file path (required)
   -p, --password string                 Database password
       --pipeline-buffer int             Hand-off queue depth, in batches (single-threaded export; --threads>1 ignores it and says so) (default 10)

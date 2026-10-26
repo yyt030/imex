@@ -39,7 +39,7 @@ var (
 	sqlLayoutKeys = []string{"create", "no_data", "statement_size", "extended_insert"}
 	commonKeys    = []string{
 		"host", "port", "user", "database",
-		"output", "format", "query", "no_replace",
+		"output", "format", "query", "no_overwrite",
 		"threads", "shard_key", "batch_size", "pipeline_buffer",
 		"default_charset",
 		"log_level", "progress_interval",

@@ -124,9 +124,9 @@ type ExportConfig struct {
 	// carries the origin for the configuration record.
 	QueryFile string
 
-	// NoReplace refuses to overwrite an existing output file. The default is
+	// NoOverwrite refuses to overwrite an existing output file. The default is
 	// to overwrite (os.Create truncates).
-	NoReplace bool
+	NoOverwrite bool
 
 	DelModifier DelModifier
 

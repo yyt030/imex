@@ -59,7 +59,7 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.StringVarP(&exportCfg.Query, "query", "q", "", "SQL SELECT statement (mutually exclusive with --query-file)")
 	f.StringVar(&exportCfg.QueryFile, "query-file", "", "Read the SQL SELECT statement from this file (mutually exclusive with -q)")
 	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")
-	f.BoolVar(&exportCfg.NoReplace, "no-replace", false, "Refuse to overwrite an existing output file (default: overwrite)")
+	f.BoolVar(&exportCfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
 
 	// DEL format modifiers
 	f.StringVar(&exportCfg.DelModifier.CharDel, "char-del", "\"", "String delimiter")

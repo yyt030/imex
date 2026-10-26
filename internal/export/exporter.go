@@ -125,10 +125,10 @@ func (e *Exporter) Export(ctx context.Context) error {
 		}
 	}
 
-	// Check if output file exists and --no-replace is set
-	if e.config.NoReplace {
+	// Check if output file exists and --no-overwrite is set
+	if e.config.NoOverwrite {
 		if _, err := os.Stat(e.config.Output); err == nil {
-			return errors.Errorf("output file %s already exists, remove --no-replace to overwrite", e.config.Output)
+			return errors.Errorf("output file %s already exists, remove --no-overwrite to overwrite", e.config.Output)
 		}
 	}
 
