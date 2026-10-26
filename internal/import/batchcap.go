@@ -131,12 +131,26 @@ func batchByteLimit(maxAllowedPacket int64) int64 {
 	return limit
 }
 
+// applyStatementCap lowers the server-derived per-batch byte budget when the
+// caller gave --statement-size on the import side. It only ever lowers it: a
+// batch above max_allowed_packet*9/10 fails mid-import with error 1153, which is
+// what the packet budget exists to prevent. A value below batchByteLimit's 64 KiB
+// floor is honoured as given, because an explicit number is a deliberate choice,
+// and a single row larger than the budget still goes out as its own statement
+// (nothing here can split a row).
+func applyStatementCap(packetBudget int64, statementSize int) int64 {
+	if statementSize <= 0 || int64(statementSize) >= packetBudget {
+		return packetBudget
+	}
+	return int64(statementSize)
+}
+
 // batchBudget returns the per-batch byte ceiling for the connected server,
 // resolved once and reused for every batch of the run.
 func (imp *Importer) batchBudget() int64 {
 	imp.packetOnce.Do(func() {
 		if imp.db == nil {
-			imp.maxBatchBytes = batchByteLimit(defaultMaxAllowedPacket)
+			imp.maxBatchBytes = applyStatementCap(batchByteLimit(defaultMaxAllowedPacket), imp.cfg.StatementSize)
 			return
 		}
 		packet, err := fetchMaxAllowedPacket(imp.db)
@@ -144,10 +158,17 @@ func (imp *Importer) batchBudget() int64 {
 			common.Logger.Warn("could not read max_allowed_packet, assuming conservative batch limit",
 				"assumed_bytes", defaultMaxAllowedPacket, "error", err)
 		}
-		imp.maxBatchBytes = batchByteLimit(packet)
+		serverBudget := batchByteLimit(packet)
+		imp.maxBatchBytes = applyStatementCap(serverBudget, imp.cfg.StatementSize)
+		limiting := "max_allowed_packet"
+		if imp.maxBatchBytes != serverBudget {
+			limiting = "statement-size"
+		}
 		common.Logger.Info("import batch byte cap resolved",
 			"max_allowed_packet", packet,
 			"batch_bytes", imp.maxBatchBytes,
+			"statement_size", imp.cfg.StatementSize,
+			"limiting_factor", limiting,
 		)
 	})
 	return imp.maxBatchBytes

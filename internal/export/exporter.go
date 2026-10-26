@@ -39,34 +39,7 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	// The parameters go out before the connection is dialled: this is the record
 	// an operator reads when the run cannot reach the server at all, so it must
 	// not depend on the dial succeeding.
-	common.Logger.Info("export config",
-		"host", cfg.Host,
-		"port", cfg.Port,
-		"user", cfg.User,
-		"database", cfg.Database,
-		"output", cfg.Output,
-		"format", cfg.Format,
-		"query", cfg.Query,
-		"threads", cfg.Threads,
-		"shard_key", cfg.ShardKey,
-		"statement_size", cfg.StatementSize,
-		"extended_insert", cfg.ExtendedInsert,
-		"no_create", cfg.NoCreate,
-		"no_data", cfg.NoData,
-		"no_replace", cfg.NoReplace,
-		"char_del", cfg.DelModifier.CharDel,
-		"col_del", cfg.DelModifier.ColDel,
-		"row_del", cfg.DelModifier.RowDel,
-		"escape", cfg.DelModifier.Escape,
-		"default_charset", cfg.DefaultCharset,
-		"timestamp_fmt", cfg.DelModifier.TimestampFmt,
-		"no_col_names", cfg.DelModifier.NoColNames,
-		"log_level", cfg.LogLevel,
-		"batch_size", cfg.BatchSize,
-		"pipeline_buffer", cfg.PipelineBuffer,
-		"progress_interval", cfg.EffectiveProgressInterval(),
-		"hex_blob", cfg.HexBlob,
-	)
+	logExportConfig(cfg)
 
 	// Build DSN using mysql.Config to properly escape special characters
 	dsn := common.BuildDSN(&cfg.Config)
@@ -245,7 +218,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	// HexBlob forces on; NoHexBlob forces off; both false means automatic
 	// (hex enabled when charset is not byte-safe, i.e. not utf8mb4/utf8).
 	binaryFlags := common.BinaryColumnFlags(colTypes)
-	hex := e.config.HexBlob || (!e.config.NoHexBlob && config.HexBlobForCharset(e.config.DefaultCharset))
+	hex := effectiveHexBlob(e.config)
 	if hex && !e.config.HexBlob && !e.config.NoHexBlob {
 		// Auto-enabled by charset: log info
 		common.Logger.Info("hex-blob auto-enabled by charset", "charset", e.config.DefaultCharset)
@@ -464,6 +437,19 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 		return e.exportSingle(ctx, startTime)
 	}
 
+	// The parallel path never reads --batch-size/--pipeline-buffer: shard
+	// look-ahead comes from a fixed byte budget divided across the shards
+	// (shardStreamQueueBlocks), not from those two. Report it, because otherwise
+	// `--threads 8 --batch-size 50000` silently changes nothing.
+	if e.pipelineOptionsIgnoredByParallel() {
+		blocks := shardStreamQueueBlocks(len(shardRanges))
+		common.Logger.Info("parallel export ignores pipeline options",
+			"batch_size", e.config.BatchSize,
+			"pipeline_buffer", e.config.PipelineBuffer,
+			"look_ahead_per_shard", fmt.Sprintf("%.1f MiB", float64(blocks*shardBlockSize)/(1<<20)),
+			"applies_to", "single-threaded export only")
+	}
+
 	// Detect server type
 	serverType, err := common.DetectServerType(e.db)
 	if err != nil {
@@ -617,7 +603,7 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 
 	// Compute binary flags and hex setting for this shard
 	binaryFlags := common.BinaryColumnFlags(colTypes)
-	hex := e.config.HexBlob || (!e.config.NoHexBlob && config.HexBlobForCharset(e.config.DefaultCharset))
+	hex := effectiveHexBlob(e.config)
 
 	// Create writer for this shard (writeCreate=false: preamble written by the
 	// stream writer, which owns the one LOCK/UNLOCK pair and the header)
@@ -697,6 +683,15 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 	}
 
 	return rowCount, nil
+}
+
+// pipelineOptionsIgnoredByParallel reports whether the caller moved the two
+// hand-off options that only exportSingle reads. Comparing against the shipped
+// defaults rather than asking cobra keeps the notice with the code that ignores
+// the values, and stays quiet for a run that never touched them.
+func (e *Exporter) pipelineOptionsIgnoredByParallel() bool {
+	return e.config.BatchSize != config.DefaultBatchSize ||
+		e.config.PipelineBuffer != config.DefaultPipelineBuffer
 }
 
 // openShardConn dials the connection one parallel shard reads through.

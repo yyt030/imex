@@ -73,10 +73,15 @@ func registerImportFlags(cmd *cobra.Command) {
 	// Pipeline hand-off controls
 	f.IntVar(&importCfg.BatchSize, "batch-size", config.DefaultBatchSize, "Rows per reader->writer hand-off batch")
 	f.IntVar(&importCfg.PipelineBuffer, "pipeline-buffer", config.DefaultPipelineBuffer, "Hand-off queue depth, in batches")
+	f.IntVar(&importCfg.StatementSize, "statement-size", 0, "Ceiling for each generated INSERT statement, in bytes (0 = only the server max_allowed_packet budget applies; this lowers that budget, never raises it)")
 
 	// Parallel import
 	f.IntVar(&importCfg.ImportThreads, "threads", 1, "Number of parallel import tasks (1 = no parallelism)")
 
 	// Log level (local, not persistent)
 	f.StringVar((*string)(&importCfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
+
+	// Append each format-scoped option's scope to its own help text, from the
+	// registry cmd/validate.go rejects with.
+	annotateOptionScopes(cmd, config.ImportOptionScopes())
 }

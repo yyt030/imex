@@ -1,6 +1,6 @@
 # CLI surface extracted from shipped binary commit 4934dd2
-# Frozen baseline, kept verbatim as a regression reference. Five intentional
-# deltas vs the current tree: --statement-size now defaults to 8388608 (8 MiB),
+# Frozen baseline, kept verbatim as a regression reference. The intentional
+# deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --single-row-insert and then --extended-insert (one INSERT per
 # row is now the default layout, so --single-row-insert only reads "Deprecated:
 # one INSERT statement per row is now the default" and changes nothing, while
@@ -13,12 +13,32 @@
 # is a usage error, exit 2). Two help strings were also reworded:
 # --echo-sql-values now says "writes real data to stderr, or to the --messages
 # file when one is given", and import's --skip-count now says "Skip first n data
-# rows (header is consumed separately)". Diff `gomydump <cmd> --help` against
-# this file and expect only those lines: six added or changed lines for export
-# (the two new options, the --single-row-insert reword, --messages,
-# --statement-size's default, --echo-sql-values) and four for import
-# (--messages, --progress-interval, --skip-count, --echo-sql-values). Last
-# verified against the working tree on 2026-10-24.
+# rows (header is consumed separately)". Three more export help strings were
+# reworded on 2026-10-25 to say what the options actually govern: --statement-size
+# now reads "Max bytes per INSERT statement (only bounds merged statements: without
+# --extended-insert a longer row just warns)" because the default one-row layout
+# turned it into an alert threshold, and --batch-size/--pipeline-buffer now end in
+# "(single-threaded export; --threads>1 ignores it and says so)" because the
+# parallel path sizes shard look-ahead from its own byte budget and now records
+# `parallel export ignores pipeline options` when either was moved. import gained
+# --statement-size on 2026-10-25 as well, with a different meaning from export's
+# same-named option: there it is an optional ceiling in bytes on each INSERT the
+# importer builds, default 0 meaning "no extra cap", and it may only lower the
+# max_allowed_packet-derived budget, never raise it (validate accepts 0 on import
+# but still rejects it on export). On 2026-10-26 every format-scoped option also
+# gained a generated scope marker at the end of its own help text — "(only with
+# --format del)" on the nine DEL layout options, "(only with --format sql)" on the
+# five SQL layout options, "(not with --format parquet)" on --hex-blob and
+# --no-hex-blob — appended from internal/config/formatscope.go, the same registry
+# cmd/validate.go rejects with, so `--help` can no longer advertise an option for a
+# format that refuses it. Diff `gomydump <cmd> --help` against this file and expect
+# only those lines: twenty-one added or changed lines for export (the sixteen
+# marked options, --messages, --progress-interval, --batch-size, --pipeline-buffer,
+# --echo-sql-values; --statement-size/--single-row-insert/--extended-insert are
+# marked and reworded or added at the same time and count once) and fourteen for
+# import (the nine marked options, --messages, --progress-interval, --skip-count,
+# --echo-sql-values, --statement-size). Last verified against the working tree on
+# 2026-10-26.
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.

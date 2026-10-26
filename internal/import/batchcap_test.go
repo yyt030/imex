@@ -96,6 +96,58 @@ func TestBatchByteLimit(t *testing.T) {
 	}
 }
 
+// TestApplyStatementCap pins the import-side --statement-size to what it is for:
+// a lever that can only tighten the server-derived budget. Raising it above the
+// max_allowed_packet budget would reintroduce error 1153 mid-import, so the
+// function must ignore such a value rather than honour it.
+func TestApplyStatementCap(t *testing.T) {
+	const budget = 115200
+	cases := []struct {
+		name          string
+		statementSize int
+		want          int64
+	}{
+		{"zero keeps the server budget", 0, budget},
+		{"negative keeps the server budget", -1, budget},
+		{"a cap above the budget is not an upgrade", 2 * budget, budget},
+		{"a cap equal to the budget changes nothing", budget, budget},
+		{"a real cap tightens it", 50000, 50000},
+		// batchByteLimit floors the derived budget at 64 KiB; an explicit number
+		// below that floor is a deliberate choice and must survive.
+		{"below the derived floor is still honoured", 1024, 1024},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := applyStatementCap(budget, c.statementSize); got != c.want {
+				t.Fatalf("applyStatementCap(%d, %d) = %d, want %d", budget, c.statementSize, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBatchBudgetAppliesStatementCapWithoutConnection drives the resolved budget
+// through the importer the way the reader goroutines do, with no server to ask.
+// The nil-DB branch must apply the same cap as the connected one, otherwise a
+// target whose max_allowed_packet cannot be read silently drops the option.
+func TestBatchBudgetAppliesStatementCapWithoutConnection(t *testing.T) {
+	cfg := config.NewImportConfig()
+	cfg.StatementSize = 4096
+	imp := &Importer{cfg: cfg}
+
+	if _, got := imp.resolveBatchSize(4); got != 4096 {
+		t.Fatalf("budget = %d, want the explicit 4096", got)
+	}
+
+	// A cap wider than the assumed fallback must not widen it.
+	wide := config.NewImportConfig()
+	wide.StatementSize = 1 << 30
+	impWide := &Importer{cfg: wide}
+	want := batchByteLimit(defaultMaxAllowedPacket)
+	if _, got := impWide.resolveBatchSize(4); got != want {
+		t.Fatalf("budget = %d, want the unchanged fallback %d", got, want)
+	}
+}
+
 func TestShouldFlush(t *testing.T) {
 	const budget = int64(1000)
 	cases := []struct {

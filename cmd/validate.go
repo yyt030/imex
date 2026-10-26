@@ -42,6 +42,17 @@ func validatePipelineBuffer(buffer int) error {
 	return nil
 }
 
+// validateImportStatementSize bounds the per-statement byte ceiling the importer
+// may apply. 0 is legal here and means "no extra cap", which is why this is not
+// validateStatementSize: on export the value is a real budget with a non-zero
+// default, on import the default is the absence of a cap.
+func validateImportStatementSize(size int) error {
+	if size < 0 || size > 268435456 {
+		return common.Usagef("invalid --statement-size %d: must be between 0 and 268435456 (0 means no extra cap)", size)
+	}
+	return nil
+}
+
 // validateStatementSize checks that the statement size is in the valid range >0 and ≤268435456.
 func validateStatementSize(size int) error {
 	if size <= 0 || size > 268435456 {
@@ -175,66 +186,16 @@ func validateInsertLayout(cmd *cobra.Command) error {
 	return nil
 }
 
-// validateSQLOnlyOptions checks that SQL-only options are not used with non-SQL formats.
-func validateSQLOnlyOptions(cmd *cobra.Command, format string) error {
-	if format == "sql" {
-		return nil
-	}
-	if cmd.Flags().Changed("no-create") {
-		return common.Usagef("--no-create can only be used with --format sql")
-	}
-	if cmd.Flags().Changed("no-data") {
-		return common.Usagef("--no-data can only be used with --format sql")
-	}
-	if cmd.Flags().Changed("statement-size") {
-		return common.Usagef("--statement-size can only be used with --format sql")
-	}
-	if cmd.Flags().Changed("single-row-insert") {
-		return common.Usagef("--single-row-insert can only be used with --format sql")
-	}
-	if cmd.Flags().Changed("extended-insert") {
-		return common.Usagef("--extended-insert can only be used with --format sql")
-	}
-	return nil
-}
-
-// delOnlyFlags are the DEL format modifiers. They describe how a .del file is
-// laid out or encoded, so the sql and parquet writers have no use for them and
-// silently ignoring them would let the user believe a file was written another
-// way. Passing any of them with --format sql|parquet is a usage error.
-var delOnlyFlags = []string{
-	"char-del", "col-del", "row-del", "escape", "no-escape",
-	"timestamp-fmt", "date-fmt", "no-char-del", "no-col-names",
-}
-
-// validateDELOnlyOptions checks that DEL-only options are not used with non-DEL
-// formats. It mirrors validateSQLOnlyOptions so that every format-scoped option
-// behaves the same way: accepted for its own format, exit 2 for the others.
-func validateDELOnlyOptions(cmd *cobra.Command, format string) error {
-	if format == "del" {
-		return nil
-	}
-	for _, name := range delOnlyFlags {
-		if cmd.Flags().Changed(name) {
-			return common.Usagef("--%s can only be used with --format del", name)
-		}
-	}
-	return nil
-}
-
-// validateParquetBinaryOptions checks the binary-encoding flags that the parquet
-// writer cannot honour. Parquet stores binary columns with their own type, so
-// neither --hex-blob nor --no-hex-blob changes the output; the SQL writer does
-// use them, so they stay legal there.
-func validateParquetBinaryOptions(cmd *cobra.Command, format string) error {
-	if format != "parquet" {
-		return nil
-	}
-	if cmd.Flags().Changed("hex-blob") {
-		return common.Usagef("--hex-blob cannot be used with --format parquet: binary columns are already stored as binary")
-	}
-	if cmd.Flags().Changed("no-hex-blob") {
-		return common.Usagef("--no-hex-blob cannot be used with --format parquet: binary columns are already stored as binary")
+// validateOptionScopes rejects a format-scoped flag the user explicitly passed
+// together with a format that does not read it. Which flags are scoped, the order
+// a mismatch is reported in, the wording of the message and the marker the flag's
+// own help text carries all come from one registry (internal/config/formatscope.go),
+// which the `export/import config` echo reads as well. Silently ignoring such a
+// flag would let a user believe the file was laid out or encoded differently than
+// it is, so every one of them is a usage error instead.
+func validateOptionScopes(cmd *cobra.Command, scopes config.OptionScopes, format string) error {
+	if msg, bad := scopes.Violation(cmd.Flags().Changed, format); bad {
+		return common.Usagef("%s", msg)
 	}
 	return nil
 }
@@ -324,13 +285,7 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 	if err := validateInsertLayout(cmd); err != nil {
 		return err
 	}
-	if err := validateSQLOnlyOptions(cmd, cfg.Format); err != nil {
-		return err
-	}
-	if err := validateDELOnlyOptions(cmd, cfg.Format); err != nil {
-		return err
-	}
-	if err := validateParquetBinaryOptions(cmd, cfg.Format); err != nil {
+	if err := validateOptionScopes(cmd, config.ExportOptionScopes(), cfg.Format); err != nil {
 		return err
 	}
 	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel, cfg.DelModifier.Escape)
@@ -346,6 +301,9 @@ func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
 		return err
 	}
 	if err := validatePipelineBuffer(cfg.PipelineBuffer); err != nil {
+		return err
+	}
+	if err := validateImportStatementSize(cfg.StatementSize); err != nil {
 		return err
 	}
 	if err := validatePort(cfg.Port); err != nil {
@@ -384,7 +342,7 @@ func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
 	if err := validateRowCount(cfg.RowCount); err != nil {
 		return err
 	}
-	if err := validateDELOnlyOptions(cmd, cfg.Format); err != nil {
+	if err := validateOptionScopes(cmd, config.ImportOptionScopes(), cfg.Format); err != nil {
 		return err
 	}
 	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel, cfg.DelModifier.Escape)

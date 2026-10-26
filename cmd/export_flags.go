@@ -72,7 +72,7 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.BoolVar(&exportCfg.DelModifier.NoColNames, "no-col-names", false, "Do not output column names")
 
 	// SQL format modifiers
-	f.IntVar(&exportCfg.StatementSize, "statement-size", config.DefaultStatementSize, "Max bytes per INSERT statement")
+	f.IntVar(&exportCfg.StatementSize, "statement-size", config.DefaultStatementSize, "Max bytes per INSERT statement (only bounds merged statements: without --extended-insert a longer row just warns)")
 	f.BoolVar(&exportCfg.ExtendedInsert, "extended-insert", false, "Merge rows into multi-row INSERT statements bounded by --statement-size")
 	// --single-row-insert is the old spelling of what one-row-per-statement export
 	// is now by default. It stays accepted so existing scripts do not die on
@@ -86,9 +86,11 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.BoolVar(&exportCfg.HexBlob, "hex-blob", false, "Encode binary columns as 0x hexadecimal literals (auto-on for non-utf8mb4 charset)")
 	f.BoolVar(&exportCfg.NoHexBlob, "no-hex-blob", false, "Force raw binary passthrough even for non-utf8mb4 charset (may corrupt binary data)")
 
-	// Pipeline hand-off controls
-	f.IntVar(&exportCfg.BatchSize, "batch-size", config.DefaultBatchSize, "Rows per reader->writer hand-off batch (single-threaded export)")
-	f.IntVar(&exportCfg.PipelineBuffer, "pipeline-buffer", config.DefaultPipelineBuffer, "Hand-off queue depth, in batches (single-threaded export)")
+	// Pipeline hand-off controls. Both are read only by the single-threaded path;
+	// a parallel shard sizes its look-ahead from a fixed byte budget divided
+	// across shards, so exportParallel reports when these were moved.
+	f.IntVar(&exportCfg.BatchSize, "batch-size", config.DefaultBatchSize, "Rows per reader->writer hand-off batch (single-threaded export; --threads>1 ignores it and says so)")
+	f.IntVar(&exportCfg.PipelineBuffer, "pipeline-buffer", config.DefaultPipelineBuffer, "Hand-off queue depth, in batches (single-threaded export; --threads>1 ignores it and says so)")
 
 	// Parallel export
 	f.IntVar(&exportCfg.Threads, "threads", 1, "Number of parallel export tasks (1 = no parallelism)")
@@ -96,4 +98,8 @@ func registerExportFlags(cmd *cobra.Command) {
 
 	// Log level (local, not persistent)
 	f.StringVar((*string)(&exportCfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
+
+	// Append each format-scoped option's scope to its own help text, from the
+	// registry cmd/validate.go rejects with.
+	annotateOptionScopes(cmd, config.ExportOptionScopes())
 }

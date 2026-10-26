@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gomydump/internal/config"
 )
 
 // collect drains a pipe into memory until EOF, as writeShardStream would.
@@ -313,5 +315,29 @@ func TestShardStreamQueueBlocks(t *testing.T) {
 	// Worst case memory is bounded even with the maximum thread count.
 	if maxBytes := shardStreamQueueBlocks(256) * shardBlockSize * 256; maxBytes > 256<<20 {
 		t.Errorf("256 shards hold %d bytes in flight, want <= %d", maxBytes, 256<<20)
+	}
+}
+
+// TestParallelExportPipelineOptionNotice guards the record the parallel path
+// writes when the hand-off options were tuned but cannot take effect. Silence is
+// half the contract: the common run (both options at their defaults) must not
+// gain a record, and neither may the single-threaded path, which reads them.
+func TestParallelExportPipelineOptionNotice(t *testing.T) {
+	untouched := config.NewExportConfig()
+	if (&Exporter{config: untouched}).pipelineOptionsIgnoredByParallel() {
+		t.Error("a run that left --batch-size and --pipeline-buffer at their defaults must not be told they are ignored")
+	}
+
+	widened := config.NewExportConfig()
+	widened.BatchSize = 5000
+	if !(&Exporter{config: widened}).pipelineOptionsIgnoredByParallel() {
+		t.Error("--batch-size moved off its default is exactly what the notice exists for")
+	}
+
+	// 0 is a legal value meaning synchronous hand-off, and moving it is deliberate.
+	synced := config.NewExportConfig()
+	synced.PipelineBuffer = 0
+	if !(&Exporter{config: synced}).pipelineOptionsIgnoredByParallel() {
+		t.Error("--pipeline-buffer 0 is a deliberate move and has to be reported too")
 	}
 }

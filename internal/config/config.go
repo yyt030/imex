@@ -52,9 +52,8 @@ const DefaultCharset = "utf8mb4"
 // Connection timeout defaults, aligned with the JDBC-equivalent names exposed
 // on the command line.
 const (
-	DefaultConnectTimeout      = 5 * time.Second
-	DefaultSocketTimeout       = 5 * time.Minute
-	DefaultMaxAllowedPacketCap = 256 << 20
+	DefaultConnectTimeout = 5 * time.Second
+	DefaultSocketTimeout  = 5 * time.Minute
 )
 
 // DefaultProgressInterval is how often a running export or import writes its
@@ -173,6 +172,16 @@ type ImportConfig struct {
 	// Pipeline hand-off controls (see the constants above).
 	BatchSize      int
 	PipelineBuffer int
+
+	// StatementSize is an explicit ceiling, in bytes, for each INSERT statement
+	// the importer builds. Import batching is row-count driven plus a byte budget
+	// derived from the server's max_allowed_packet (see batchcap.go); this option
+	// lowers that budget further and never raises it. 0 (the default) keeps the
+	// server-derived budget alone, so an ordinary run changes nothing. Unlike the
+	// export side, where the same name bounds a merged statement, this cannot
+	// split anything: a single row larger than the budget still goes out as its
+	// own statement.
+	StatementSize int
 
 	// Parallel import options
 	ImportThreads int // number of parallel import threads (1 = no parallelism)

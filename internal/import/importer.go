@@ -42,33 +42,7 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 	// The parameters go out before the connection is dialled: this is the record
 	// an operator reads when the run cannot reach the server at all, so it must
 	// not depend on the dial succeeding.
-	common.Logger.Info("import config",
-		"host", cfg.Host,
-		"port", cfg.Port,
-		"user", cfg.User,
-		"database", cfg.Database,
-		"input", cfg.Input,
-		"bytes", common.FileSize(cfg.Input),
-		"table", cfg.Table,
-		"format", cfg.Format,
-		"mode", cfg.Mode,
-		"threads", cfg.ImportThreads,
-		"skip_count", cfg.SkipCount,
-		"row_count", cfg.RowCount,
-		"commit_count", cfg.CommitCount,
-		"char_del", cfg.DelModifier.CharDel,
-		"col_del", cfg.DelModifier.ColDel,
-		"row_del", cfg.DelModifier.RowDel,
-		"escape", cfg.DelModifier.Escape,
-		"default_charset", cfg.DefaultCharset,
-		"timestamp_fmt", cfg.DelModifier.TimestampFmt,
-		"no_col_names", cfg.DelModifier.NoColNames,
-		"batch_size", cfg.BatchSize,
-		"pipeline_buffer", cfg.PipelineBuffer,
-		"progress_interval", cfg.EffectiveProgressInterval(),
-		"columns", cfg.Columns,
-		"log_level", cfg.LogLevel,
-	)
+	logImportConfig(cfg)
 
 	// Build DSN using mysql.Config to properly escape special characters
 	dsn := common.BuildDSN(&cfg.Config)

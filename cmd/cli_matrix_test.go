@@ -477,6 +477,73 @@ func TestCLIProgressInterval(t *testing.T) {
 	}
 }
 
+// TestCLIImportStatementSize pins the deliberate asymmetry of one flag name on
+// two subcommands. On export --statement-size is the merged-statement budget, so
+// it has a non-zero default and 0 is nonsense. On import it is an optional cap
+// over the server-derived byte budget, so 0 is the documented "no extra cap" and
+// must parse. Both sides still share the same upper bound.
+func TestCLIImportStatementSize(t *testing.T) {
+	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb"}
+	importArgs := append(append([]string{}, base...), "-i", "/tmp/in.del", "-t", "users")
+	exportArgs := append(append([]string{}, base...), "-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql")
+
+	if err := validateOnly(t, "import", importArgs); err != nil {
+		t.Fatalf("import without --statement-size: %v", err)
+	}
+	if importCfg.StatementSize != 0 {
+		t.Errorf("import default --statement-size = %d, want 0 (no extra cap)", importCfg.StatementSize)
+	}
+
+	for _, tc := range []struct {
+		value   string
+		want    int
+		wantErr string
+	}{
+		{value: "0", want: 0},
+		{value: "1", want: 1},
+		{value: "65536", want: 65536},
+		{value: "268435456", want: 268435456},
+		{value: "268435457", wantErr: "invalid --statement-size"},
+		{value: "-1", wantErr: "invalid --statement-size"},
+	} {
+		flag := "--statement-size=" + tc.value
+		err := validateOnly(t, "import", append(append([]string{}, importArgs...), flag))
+		if tc.wantErr != "" {
+			if err == nil {
+				t.Errorf("import %s: expected usage error, got nil", flag)
+				continue
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("import %s: error %q lacks %q", flag, err, tc.wantErr)
+			}
+			if !common.IsUsageError(err) {
+				t.Errorf("import %s: %q must be a usage error (exit code 2)", flag, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("import %s: unexpected error %v", flag, err)
+			continue
+		}
+		if importCfg.StatementSize != tc.want {
+			t.Errorf("import %s: StatementSize = %d, want %d", flag, importCfg.StatementSize, tc.want)
+		}
+	}
+
+	// Export keeps rejecting 0: there the value is a budget that must exist, not
+	// the absence of one.
+	err := validateOnly(t, "export", append(append([]string{}, exportArgs...), "--statement-size=0"))
+	if err == nil {
+		t.Fatal("export --statement-size=0 must stay a usage error")
+	}
+	if !strings.Contains(err.Error(), "--statement-size") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !common.IsUsageError(err) {
+		t.Errorf("export --statement-size=0: %q must be a usage error (exit code 2)", err)
+	}
+}
+
 // TestCLIEncryptArgsCountIsUsageError pins the positional-argument check of the
 // encrypt subcommand to the exit-code contract: a wrong argument count is a
 // usage problem (exit code 2), the same as every rejected option. cobra's own

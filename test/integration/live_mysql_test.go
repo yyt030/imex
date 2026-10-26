@@ -118,6 +118,9 @@ func (e *liveEnv) export(t *testing.T, opts exportOptions) {
 	if opts.progressInterval > 0 {
 		cfg.ProgressInterval = opts.progressInterval
 	}
+	if opts.batchSize > 0 {
+		cfg.BatchSize = opts.batchSize
+	}
 
 	if opts.messages != "" {
 		defer teeLogToFile(t, opts.messages)()
@@ -142,6 +145,9 @@ type exportOptions struct {
 	// progressInterval compresses the progress ticker so a test can make the
 	// record repeat; zero keeps the shipped default.
 	progressInterval time.Duration
+	// batchSize moves the hand-off option the parallel path does not read; zero
+	// keeps the shipped default, which is the case that must stay quiet.
+	batchSize int
 }
 
 func (e *liveEnv) importFile(t *testing.T, opts importOptions) {
@@ -173,6 +179,9 @@ func (e *liveEnv) importFileStats(t *testing.T, opts importOptions) common.Stats
 	if opts.batchSize > 0 {
 		cfg.BatchSize = opts.batchSize
 	}
+	if opts.statementSize > 0 {
+		cfg.StatementSize = opts.statementSize
+	}
 	if opts.progressInterval > 0 {
 		cfg.ProgressInterval = opts.progressInterval
 	}
@@ -198,6 +207,9 @@ type importOptions struct {
 	threads     int
 	commitCount int
 	batchSize   int
+	// statementSize moves the import-side per-statement byte cap; zero keeps the
+	// shipped default, which is "no extra cap over max_allowed_packet".
+	statementSize int
 	// progressInterval compresses the progress ticker; zero keeps the default.
 	progressInterval time.Duration
 }
@@ -695,5 +707,164 @@ func assertLogEndsOn(t *testing.T, path, want string) {
 	last := lines[len(lines)-1]
 	if !strings.Contains(last, want) {
 		t.Errorf("last record is %q, want the %q summary:\n%s", last, want, text)
+	}
+}
+
+// TestLive_ParallelExportReportsIgnoredPipelineOptions pins the notice the
+// parallel path writes for --batch-size, an option it never reads: moving it has
+// to say so (the run otherwise looks like it honoured the tuning), and leaving it
+// at the shipped default must not add a record to an ordinary run.
+func TestLive_ParallelExportReportsIgnoredPipelineOptions(t *testing.T) {
+	env := newLiveEnv(t)
+	dir := t.TempDir()
+
+	src := env.liveTable(t, "pipeign")
+	env.exec(t, fmt.Sprintf(liveSourceDDL, src))
+	for i := 0; i < 200; i++ {
+		env.exec(t, "INSERT INTO `"+src+"` VALUES (?,?,?,?,?,?,?)",
+			i+1, fmt.Sprintf("name-%03d", i), fmt.Sprintf("%d.%04d", i*1000, i),
+			strings.Repeat("n", i%40), "2026-01-01 00:00:00", []byte{byte(i), byte(i >> 8)}, i%3)
+	}
+
+	const notice = "parallel export ignores pipeline options"
+
+	tuned := filepath.Join(dir, "tuned.log")
+	env.export(t, exportOptions{
+		table: src, format: "del", output: filepath.Join(dir, "tuned.del"),
+		threads: 4, batchSize: 5000, messages: tuned,
+	})
+	assertMessageFile(t, tuned, notice)
+
+	defaults := filepath.Join(dir, "defaults.log")
+	env.export(t, exportOptions{
+		table: src, format: "del", output: filepath.Join(dir, "defaults.del"),
+		threads: 4, messages: defaults,
+	})
+	if text := readFile(t, defaults); strings.Contains(text, notice) {
+		t.Errorf("a run that touched neither hand-off option gained the notice:\n%s", text)
+	}
+
+	// The single-threaded path reads both options, so it must stay quiet too.
+	single := filepath.Join(dir, "single.log")
+	env.export(t, exportOptions{
+		table: src, format: "del", output: filepath.Join(dir, "single.del"),
+		threads: 1, batchSize: 5000, messages: single,
+	})
+	if text := readFile(t, single); strings.Contains(text, notice) {
+		t.Errorf("--batch-size takes effect on the single-threaded path, but it was reported as ignored:\n%s", text)
+	}
+}
+
+// statusCounter reads one server-side status counter. The name is inlined rather
+// than bound because SHOW ... LIKE does not accept a placeholder on every server
+// version; every caller here passes a literal.
+func (e *liveEnv) statusCounter(t *testing.T, name string) int64 {
+	t.Helper()
+
+	var key, value string
+	if err := e.db.QueryRow("SHOW GLOBAL STATUS LIKE '"+name+"'").Scan(&key, &value); err != nil {
+		t.Fatalf("read status %s: %v", name, err)
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		t.Fatalf("status %s = %q: %v", name, value, err)
+	}
+	return n
+}
+
+// rowChecksum reduces a (id, name) table to rows plus a content sum, so two
+// imports of the same file can be compared without hauling every row through the
+// test.
+func (e *liveEnv) rowChecksum(t *testing.T, table string) string {
+	t.Helper()
+
+	var rows int64
+	var sum sql.NullString
+	query := "SELECT COUNT(*), COALESCE(SUM(CRC32(CONCAT_WS('|', id, name))), 0) FROM `" + table + "`"
+	if err := e.db.QueryRow(query).Scan(&rows, &sum); err != nil {
+		t.Fatalf("checksum %s: %v", table, err)
+	}
+	return fmt.Sprintf("%d/%s", rows, sum.String)
+}
+
+// TestLive_ImportStatementSizeCapsStatements measures import --statement-size on
+// the server instead of in the log. Two imports of the same file, into the same
+// table shape, with the same --batch-size, differ only in the byte ceiling; the
+// target counts the INSERT statements it executed, so a lower ceiling has to show
+// up as strictly more statements with identical landed rows. That also pins the
+// default: without the option the whole file still goes out as one statement.
+func TestLive_ImportStatementSizeCapsStatements(t *testing.T) {
+	env := newLiveEnv(t)
+	dir := t.TempDir()
+
+	src := env.liveTable(t, "stmtcap_src")
+	env.exec(t, "CREATE TABLE `"+src+"` (id BIGINT NOT NULL PRIMARY KEY, name VARCHAR(200) NOT NULL) DEFAULT CHARSET=utf8mb4")
+	env.exec(t, "INSERT INTO `"+src+"` VALUES (1, ?)", strings.Repeat("x", 190))
+	// 2048 rows of a fixed payload, ~440 KB of SQL text: far below this server's
+	// max_allowed_packet budget, so only an explicit cap can split it.
+	for i := 0; i < 11; i++ {
+		var n int64
+		if err := env.db.QueryRow("SELECT COUNT(*) FROM `" + src + "`").Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", src, err)
+		}
+		env.exec(t, "INSERT INTO `"+src+"` (id, name) SELECT id + ?, name FROM `"+src+"`", n)
+	}
+
+	file := filepath.Join(dir, "stmtcap.del")
+	env.export(t, exportOptions{table: src, format: "del", output: file})
+
+	dstOff := env.liveTable(t, "stmtcap_off")
+	dstOn := env.liveTable(t, "stmtcap_on")
+	for _, table := range []string{dstOff, dstOn} {
+		env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", table, src))
+	}
+
+	// --batch-size stays above the row count so the byte budget, not the row
+	// count, is the only ceiling that can end a statement in either run.
+	const rows = 2048
+	base := importOptions{
+		input: file, format: "del", mode: config.ImportModeInsert,
+		table: dstOff, commitCount: 10 * rows, batchSize: 10 * rows,
+		messages: filepath.Join(dir, "off.log"),
+	}
+	before := env.statusCounter(t, "Com_insert")
+	env.importFile(t, base)
+	uncapped := env.statusCounter(t, "Com_insert") - before
+
+	on := base
+	on.table = dstOn
+	on.statementSize = 64 << 10
+	on.messages = filepath.Join(dir, "on.log")
+	before = env.statusCounter(t, "Com_insert")
+	env.importFile(t, on)
+	capped := env.statusCounter(t, "Com_insert") - before
+
+	t.Logf("2048 rows: %d INSERT statement(s) without --statement-size, %d with --statement-size 65536",
+		uncapped, capped)
+
+	if uncapped != 1 {
+		t.Errorf("without --statement-size the file went out as %d INSERT statements, want 1", uncapped)
+	}
+	// ~440 KB against a 64 KiB ceiling is about seven statements. The bound is
+	// loose on purpose: the assertion is that the cap split the work, not that
+	// estimateRowBytes predicts the packet width to the byte.
+	if capped < 5 || capped > 20 {
+		t.Errorf("with --statement-size 65536 the file went out as %d INSERT statements, want about 7", capped)
+	}
+	if capped <= uncapped {
+		t.Errorf("--statement-size changed nothing: %d statements versus %d without it", capped, uncapped)
+	}
+
+	assertMessageFile(t, base.messages, "import batch byte cap resolved",
+		"statement_size=0", "limiting_factor=max_allowed_packet")
+	assertMessageFile(t, on.messages, "import batch byte cap resolved",
+		"statement_size=65536", "limiting_factor=statement-size")
+
+	// Smaller statements must still land the same rows.
+	want := env.rowChecksum(t, src)
+	for _, table := range []string{dstOff, dstOn} {
+		if got := env.rowChecksum(t, table); got != want {
+			t.Errorf("%s holds %s, want the source rows %s", table, got, want)
+		}
 	}
 }

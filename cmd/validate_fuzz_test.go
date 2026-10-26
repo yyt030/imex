@@ -85,6 +85,34 @@ func FuzzValidateStatementSize(f *testing.F) {
 	})
 }
 
+// FuzzValidateImportStatementSize checks the import-side boundary of the same
+// option name: 0 is legal here (no extra cap), which is the one case
+// FuzzValidateStatementSize asserts the other way round.
+func FuzzValidateImportStatementSize(f *testing.F) {
+	f.Add(0)
+	f.Add(1)
+	f.Add(65536)
+	f.Add(268435456)
+	f.Add(268435457)
+	f.Add(-1)
+	f.Add(-268435457)
+
+	f.Fuzz(func(t *testing.T, size int) {
+		err := validateImportStatementSize(size)
+		if size >= 0 && size <= 268435456 {
+			if err != nil {
+				t.Errorf("validateImportStatementSize(%d) returned error for valid value: %v", size, err)
+			}
+		} else {
+			if err == nil {
+				t.Errorf("validateImportStatementSize(%d) should return error for invalid value", size)
+			} else if !strings.Contains(err.Error(), "--statement-size") {
+				t.Errorf("error message should contain '--statement-size', got: %v", err)
+			}
+		}
+	})
+}
+
 // FuzzValidateThreads checks boundary consistency for validateThreads.
 func FuzzValidateThreads(f *testing.F) {
 	// Seed with boundary values
