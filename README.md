@@ -425,7 +425,7 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
 >
 > 并行导出按分片序号顺序拼接结果，**不保证**与 `--query` 的全局行序一致；需要稳定全局顺序时使用单线程导出。分片边界使用精确整数/十进制运算，`BIGINT`/`DECIMAL` 超过 2^53 也不会丢行；每个分片有各自的一致性快照，分片之间不是同一时间点。带 `--query` 的 `WHERE` 过滤时边界仍按**整表**统计来采样，可能被过滤后的实际分布误导（只会不均，不会丢行或重复），需要精确均衡时用单线程导出或把键条件写成分段查询。
 >
-> 分片数与线程数解耦：默认切 `min(2×threads, 64)` 段，由恰好 `threads` 个 worker 从共享游标**按序号领取**（段数多于线程数才有人一直有活干，收尾段不再拖尾；按序领取是硬要求——写出侧按段序消费，乱序领取会死锁）。因此 `--threads 4` 通常是 8 段 4 个 worker。并行导出**不产生临时文件**：分片把序列化结果写进自己的字节队列，另一个 goroutine 按分片序号依次消费并直接写最终文件，因此磁盘写入量等于输出体积（旧实现先写 `<output>.shard_N.tmp` 再拼接，每个字节落盘两次：实测 125 MB 的 DEL 导出写入 238 MB）。队列是固定 **64 MiB 进程预算按段数均分**，`--threads 4`（8 段）时每段 8 MiB 在途，`--threads 8`（16 段）时每段 4 MiB，段数上限 64 时每段 1 MiB；实测把每段前瞻从 16 MiB 压到 4 MiB 在这台 4 核沙箱上没有可测损失（141 MB 的 DEL 导出 `--threads 8` 为 0.86 s 对 0.91 s，差异在探针成本之内），但深度调到 2.5 MiB 以下会明显拖慢 SQL 格式（慢约 20%），所以这个预算是量出来的，不是猜的。段边界对产物内容的影响也有边界：DEL 与默认单行 SQL 布局下**任意边界组合都产出逐字节相同的文件**（实测 3 张表 × DEL/单行 SQL × `--threads 1/4/8` 共 18 组、外加 `--extended-insert` 的 `--threads 1` 3 组，与改动前的二进制 md5 全同），只有 `--extended-insert` 每个边界多一条 INSERT 头（实测 `bench_lay` `--threads 4` 多 192 B、`--threads 8` 多 384 B，即每边界一条 48 B 的头）。
+> 分片数与线程数解耦：默认切 `min(2×threads, 64)` 段，由恰好 `threads` 个 worker 从共享游标**按序号领取**（段数多于线程数才有人一直有活干，收尾段不再拖尾；按序领取是硬要求——写出侧按段序消费，乱序领取会死锁）。因此 `--threads 4` 通常是 8 段 4 个 worker。并行导出**不产生临时文件**：分片把序列化结果写进自己的字节队列，另一个 goroutine 按分片序号依次消费并直接写最终文件，因此磁盘写入量等于输出体积（旧实现先写 `<output>.shard_N.tmp` 再拼接，每个字节落盘两次：实测 125 MB 的 DEL 导出写入 238 MB）。队列是固定 **64 MiB 进程预算按段数均分**，`--threads 4`（8 段）时每段 8 MiB 在途，`--threads 8`（16 段）时每段 4 MiB，段数上限 64 时每段 1 MiB；实测把每段前瞻从 16 MiB 压到 4 MiB 在这台 4 核沙箱上没有可测损失（141 MB 的 DEL 导出 `--threads 8` 为 0.86 s 对 0.91 s，差异在探针成本之内），但深度调到 2.5 MiB 以下会明显拖慢 SQL 格式（慢约 20%），所以这个预算是量出来的，不是猜的。段边界对产物内容的影响也有边界：DEL 与默认单行 SQL 布局下**任意边界组合都产出逐字节相同的文件**（实测 3 张表 × DEL/单行 SQL × `--threads 1/4/8` 共 18 组、外加 `--extended-insert` 的 `--threads 1` 3 组，与改动前的二进制 md5 全同），只有 `--extended-insert` 每个边界多一条 INSERT 头（实测 `bench_lay` `--threads 4` 多 192 B、`--threads 8` 多 384 B，即每边界一条 48 B 的头）。每条 `shard export completed` 记录都带 `worker`（`0` 到 `threads-1`）与 `shard`（段序号），分片查询失败的错误信息以 `(worker N, SQL: ...)` 开头，汇总行带 `workers`——并行时出了问题可以直接定位到具体 worker；并行导入同样在错误记录上带 `thread` 编号。
 >
 > 失败时（分片报错、磁盘写满等）不保留半截产物：已写出的输出文件会被删除并记一条 `incomplete output file removed` 警告，其余分片立即解除阻塞。单线程导出同样如此——此前它只在报错信息里承认失败，磁盘上仍留着已经写出的部分（实测 20 万行表在第 20 万零一行被拒时留下 21 MB），现在两条路径统一为**要么完整、要么没有**。未安装信号处理器，`Ctrl-C` 仍会直接终止进程并留下一个不完整的输出文件，需要自行删除。
 
@@ -619,7 +619,7 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
   -q "SELECT * FROM users"
 ```
 
-导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`create`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 `--progress-interval`（默认 **5 秒**）打印一次进度：`rate` 是**自开始以来的总速率**（已处理 ÷ 已用时长，平滑，反映整体快慢），`interval_rate` 是**上一个进度点到这一个进度点之间的区间速率**（两次快照之差，反映此刻吞吐与抖动；两者无倍率关系，长跑时看 `interval_rate` 判断当前快不快、看 `rate` 判断整体多少），另打印已处理条数与 `elapsed`。结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。**汇总恒为本次运行的最后一条记录**：写汇总之前先停掉进度计时器，而停止会等待正在写的那条进度落笔，因此不会再出现 `completed` 之后跟一条 `progress` 的读感。反过来说，**运行时长不足一个间隔时一条进度也不会打印**：首个计时点要等满一个间隔才触发，停止只等在写的那条记录、不空等剩余间隔，所以一个 3 行的小表 6 ms 就结束，日志里只有横幅、配置与汇总（实测），把间隔调成 `200ms` 后同一类长跑（100 万行）则每 200 ms 一条、共 29 条进度，最后一条仍是 `export completed`。
+导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`create`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 `--progress-interval`（默认 **5 秒**）打印一次进度：`rate` 是**自开始以来的总速率**（已处理 ÷ 已用时长，平滑，反映整体快慢），`interval_rate` 是**上一个进度点到这一个进度点之间的区间速率**（两次快照之差，反映此刻吞吐与抖动；两者无倍率关系，长跑时看 `interval_rate` 判断当前快不快、看 `rate` 判断整体多少），另打印已处理条数与 `elapsed`。所有耗时字段（进度里的 `elapsed` 与汇总里的 `duration`）固定以**秒**为单位、保留**三位小数**（`842ms` 写成 `0.842s`、90 秒写成 `90.000s`），不再随量级在 `ms`/`s`/`m` 之间切换，跨记录可以直接相减比较。结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。**汇总恒为本次运行的最后一条记录**：写汇总之前先停掉进度计时器，而停止会等待正在写的那条进度落笔，因此不会再出现 `completed` 之后跟一条 `progress` 的读感。反过来说，**运行时长不足一个间隔时一条进度也不会打印**：首个计时点要等满一个间隔才触发，停止只等在写的那条记录、不空等剩余间隔，所以一个 3 行的小表 6 ms 就结束，日志里只有横幅、配置与汇总（实测），把间隔调成 `200ms` 后同一类长跑（100 万行）则每 200 ms 一条、共 29 条进度，最后一条仍是 `export completed`。
 
 版本横幅（`imex starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后是配置参数快照（`export/import config`，由 `NewExporter`/`NewImporter` 在**建立连接之前**打印，因此连不上服务端时也看得到参数；原先重复它的 `export started`/`import started` 已删除）。快照只打印**所选 `--format` 真正读取的字段**，判据与用法错误的拒绝逻辑、`--help` 里的范围标记同出自一张登记表 `internal/config/formatscope.go`：`-f sql` 不再打印 `char_del`/`col_del`/`row_del`/`escape`/`timestamp_fmt` 这些被忽略的 DEL 布局，`-f del` 不再打印 `statement_size`/`no_create`/`extended_insert`，`-f parquet` 两类都不打印（实测：`export` 的回显改动前对三种格式是**逐字节相同**的同一套 26 项，现在分别是 25/20/15；`import` 现在是 29/20/20）。字段按「连接 → 输入输出 → 并行与流水线 → 字符集 → 该格式的专属布局 → 日志」排列，且补齐了 DEL 写入器一直在读、快照却从未打印的 `date_fmt`、`no_escape`、`no_char_del` 三项；`hex_blob` 打印的是**生效值**（`--hex-blob`/`--no-hex-blob` 都没给时由字符集决定），与写入器用的是同一个判定函数；唯一例外是 `imex version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `imex version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `config`/`progress`/`completed`/`aborted`/`failed`（`started` 只出现在版本横幅 `imex starting` 里；如 `export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `java` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `IMEX_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；`--messages` 文件同样没有进度行（早期版本让消息文件按 DB2 格式继续记 `SQL3105N`，该例外已随报告一起取消）。
 
@@ -674,6 +674,21 @@ IMEX_ECHO_SQL_VALUES=1 imex import ...   # 环境变量方式
 ```
 
 `--query` 的 SELECT 原文与 CREATE TABLE 语句不含行数据，失败时始终原文回显。
+
+### 调试级 SQL 交互回显
+
+```bash
+# 查看导出在并行分片前到底发了哪些语句
+imex export --log-level debug -h 127.0.0.1 -u root -p password -D mydb \
+  -o /backup/users.del --threads 4 -q "SELECT * FROM users" 2>&1 \
+  | grep 'db interaction'
+```
+
+`--log-level debug` 会把工具与数据库之间的**交互语句**逐条记成 `db interaction`（导出、导入都适用），用于确认自动分片切了哪些边界、导入前跑了哪些校验。绑定参数按既有脱敏规则以 `num`/`str(长度)`/`bytes(长度)`/`NULL` 呈现，真实值仍需 `--echo-sql-values`。
+
+覆盖范围是"语句数量不随行数增长"的那一类：导出侧的 `SHOW CREATE TABLE`、`INFORMATION_SCHEMA` 分片统计与列类型、`MIN`/`MAX`、`LIMIT 0` 列探测、采样探针、`version_comment`；导入侧的表/列/唯一键校验、表头判定、`SHOW VARIABLES max_allowed_packet`、`CREATE TABLE`、`DELETE`、`SET FOREIGN_KEY_CHECKS`。**逐行数据语句不打印**——攒批 INSERT/REPLACE 只在失败时经脱敏错误路径出现，因此 debug 日志不会因为导入百万行而膨胀。并行导出还会在每条分片记录上带 `worker=N`，分片查询失败的文案也以 `(worker N, SQL: ...)` 开头。
+
+默认的 info 级别下这些记录一条都不会出现。
 
 ### 运行时 SQL 归因注释
 
@@ -788,12 +803,13 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **二进制列**：DEL/SQL 在 `--hex-blob` 生效时写 `0x…`，空值写 `0x`；Parquet 存原始 BYTE_ARRAY，不做 UTF-8 标注。
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
-## 修复记录（v0.2.0）
+## 修复记录（v0.2.1）
 
 对照需求文档的系统自测发现以下缺陷，均已修复并通过端到端回归（HEX 字节指纹 + 单位/整表往返校验）：
 
 | 缺陷 | 修复 |
 |------|------|
+| 日志的耗时字段单位随量级漂移（`842ms`/`4.3205s`/`1m2.3s` 混用），正常跑完看不到工具向库发过哪些语句，并行日志分不清哪个 worker 出错 | ① 新增 `common.Seconds`，单线程/并行导出的 `duration`、导入结构-only/单线程/并行/中止的 `duration` 与 `elapsed`、以及两个进度 `elapsed` 共 8 处统一为秒、三位小数（`842ms`→`0.842s`、`90s`→`90.000s`）。② `--log-level debug` 下新增 `db interaction` 记录，回显导出/导入与库交互的语句（`SHOW CREATE TABLE`、information_schema 校验、分片统计与采样探针、`max_allowed_packet`、`CREATE TABLE`/`DELETE`/`SET FOREIGN_KEY_CHECKS` 等），绑定参数按 `num`/`str(len)`/`bytes(len)`/`NULL` 脱敏；攒批 INSERT/REPLACE 一律不打，因此记录条数只随表/分片/批次规模增长、与行数无关。③ 并行导出的分片完成/失败记录带 `worker` 与 `shard`，分片查询失败的错误前缀为 `(worker N, SQL: ...)`，并行汇总补 `workers`（并行导入沿用既有的 `thread`）。实测 100 万行表 `--threads 4 --log-level debug` 得到 22 条交互记录、`worker=0` 到 `3`、`duration=4.320s`；同一命令降到 info 级后交互记录为 0。新增 `internal/common/logsql_test.go`（3 用例）与 `TestOptionMatrixDebugEchoesInteractionSQL`；无 flag/帮助/退出码/文件格式/env 变化，`cli-oracle` 无需重新基线 |
 | create 模式省略 `-t` 时 INSERT 因空表名失败并遗留脏表 | 自动取 SQL 文件首条 CREATE 语句表名回填，再按 `-t`（若提供）重写 |
 | 导出侧 `--date-fmt`/`--timestamp-fmt` 解析但不生效 | DEL 写入按列类型（`common.ColumnKind`）应用文本修饰，默认值下输出与旧行为逐字节一致（`--dec-pt` 后来随参数精简移除） |
 | 导入侧 `--date-fmt`/`--timestamp-fmt` 未回转换 | 查询目标表列类型后，仅对日期/时间戳列做反向转换，字符串与数值列不受影响（`--dec-pt` 后来随参数精简移除） |

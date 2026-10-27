@@ -152,13 +152,14 @@ func denseEnoughForEqualWidth(info *ShardInfo, rows int64) bool {
 // enough to place boundaries, because a boundary is always a value the probe
 // actually found, never an interpolated one.
 func tableStats(db *sql.DB, tableName string) (rows, avgRowLen int64, ok bool) {
-	query := common.TagSQL(`
+	query := `
 		SELECT TABLE_ROWS, AVG_ROW_LENGTH
 		FROM INFORMATION_SCHEMA.TABLES
 		WHERE TABLE_SCHEMA = DATABASE()
 			AND TABLE_NAME = ?
-	`)
-	if err := db.QueryRow(query, tableName).Scan(&rows, &avgRowLen); err != nil {
+	`
+	common.LogInteractionSQL(query, tableName)
+	if err := db.QueryRow(common.TagSQL(query), tableName).Scan(&rows, &avgRowLen); err != nil {
 		return 0, 0, false
 	}
 	if rows <= 0 {
@@ -215,12 +216,15 @@ func sampleShardRanges(db *sql.DB, tableName string, info *ShardInfo, numRanges 
 	for i := 1; i < numRanges; i++ {
 		// The offset is one less than the step: the boundary sought is the
 		// rowsPerRange-th row after the previous one.
-		query := common.TagSQL(fmt.Sprintf(
+		probeSQL := fmt.Sprintf(
 			"SELECT %s FROM `%s` WHERE %s > ? ORDER BY %s LIMIT 1 OFFSET %d",
-			quoted, tableName, quoted, quoted, rowsPerRange-1))
+			quoted, tableName, quoted, quoted, rowsPerRange-1)
+		probeBound := probeArg(bounds[len(bounds)-1], integer)
+		common.LogInteractionSQL(probeSQL, probeBound)
+		query := common.TagSQL(probeSQL)
 
 		var raw interface{}
-		if err := db.QueryRow(query, probeArg(bounds[len(bounds)-1], integer)).Scan(&raw); err != nil {
+		if err := db.QueryRow(query, probeBound).Scan(&raw); err != nil {
 			if err == sql.ErrNoRows {
 				// The estimate was too high, or everything left duplicates of the
 				// last boundary. Fewer ranges is not a failure: whatever has been

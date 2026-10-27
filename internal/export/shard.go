@@ -49,15 +49,16 @@ func DetectShardKey(db *sql.DB, tableName string, preferKey string) (*ShardInfo,
 
 // findPrimaryKey finds all primary key columns of a table (supports composite keys)
 func findPrimaryKey(db *sql.DB, tableName string) ([]string, error) {
-	query := common.TagSQL(`
+	query := `
 		SELECT COLUMN_NAME 
 		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
 		WHERE TABLE_SCHEMA = DATABASE() 
 			AND TABLE_NAME = ? 
 			AND CONSTRAINT_NAME = 'PRIMARY'
 		ORDER BY ORDINAL_POSITION
-	`)
-	rows, err := db.Query(query, tableName)
+	`
+	common.LogInteractionSQL(query, tableName)
+	rows, err := db.Query(common.TagSQL(query), tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +78,7 @@ func findPrimaryKey(db *sql.DB, tableName string) ([]string, error) {
 
 // findUniqueKey finds the first unique key columns (supports composite keys)
 func findUniqueKey(db *sql.DB, tableName string) ([]string, error) {
-	query := common.TagSQL(`
+	query := `
 		SELECT COLUMN_NAME, CONSTRAINT_NAME
 		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
 		WHERE TABLE_SCHEMA = DATABASE() 
@@ -85,8 +86,9 @@ func findUniqueKey(db *sql.DB, tableName string) ([]string, error) {
 			AND CONSTRAINT_NAME != 'PRIMARY'
 			AND REFERENCED_TABLE_NAME IS NULL
 		ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
-	`)
-	rows, err := db.Query(query, tableName)
+	`
+	common.LogInteractionSQL(query, tableName)
+	rows, err := db.Query(common.TagSQL(query), tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -137,16 +139,17 @@ func getShardInfo(db *sql.DB, tableName string, columnNames []string) (*ShardInf
 
 	// Get column types
 	for i, colName := range columnNames {
-		colQuery := common.TagSQL(`
+		colQuery := `
 			SELECT DATA_TYPE, IS_NULLABLE
 			FROM INFORMATION_SCHEMA.COLUMNS 
 			WHERE TABLE_SCHEMA = DATABASE() 
 				AND TABLE_NAME = ? 
 				AND COLUMN_NAME = ?
-		`)
+		`
+		common.LogInteractionSQL(colQuery, tableName, colName)
 		var colType string
 		var isNullable string
-		err := db.QueryRow(colQuery, tableName, colName).Scan(&colType, &isNullable)
+		err := db.QueryRow(common.TagSQL(colQuery), tableName, colName).Scan(&colType, &isNullable)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to get column type for %s", colName)
 		}
@@ -168,7 +171,9 @@ func getShardInfo(db *sql.DB, tableName string, columnNames []string) (*ShardInf
 		selectParts[i*2] = fmt.Sprintf("MIN(`%s`)", colName)
 		selectParts[i*2+1] = fmt.Sprintf("MAX(`%s`)", colName)
 	}
-	minMaxQuery := common.TagSQL(fmt.Sprintf("SELECT %s FROM `%s`", strings.Join(selectParts, ", "), tableName))
+	minMaxSQL := fmt.Sprintf("SELECT %s FROM `%s`", strings.Join(selectParts, ", "), tableName)
+	common.LogInteractionSQL(minMaxSQL)
+	minMaxQuery := common.TagSQL(minMaxSQL)
 
 	// Scan results
 	scanArgs := make([]interface{}, len(columnNames)*2)

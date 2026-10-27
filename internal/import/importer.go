@@ -98,7 +98,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 				"failed", curr.Failed,
 				"rate", fmt.Sprintf("%.2f rows/sec", curr.RatePerSec()),
 				"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
-				"elapsed", curr.Elapsed.Truncate(time.Second),
+				"elapsed", common.Seconds(curr.Elapsed),
 			)
 		}
 	})
@@ -224,10 +224,12 @@ func (imp *Importer) Import(ctx context.Context) error {
 	switch imp.cfg.Mode {
 	case config.ImportModeReplace:
 		// Disable foreign key checks for replace mode
+		common.LogInteractionSQL("SET FOREIGN_KEY_CHECKS=0")
 		if _, err := imp.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
 			common.Logger.Warn("failed to disable foreign key checks", "error", err)
 		}
 		defer func() {
+			common.LogInteractionSQL("SET FOREIGN_KEY_CHECKS=1")
 			if _, err := imp.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
 				common.Logger.Warn("failed to re-enable foreign key checks", "error", err)
 			}
@@ -260,6 +262,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 			}
 			for _, stmt := range createStmts {
 				stmt = rewriteCreateTableTarget(stmt, imp.cfg.Table)
+				common.LogInteractionSQL(stmt)
 				taggedStmt := common.TagSQL(stmt)
 				common.Logger.Info("create table executing")
 				if _, err := imp.db.ExecContext(ctx, taggedStmt); err != nil {
@@ -282,7 +285,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 			"failed", total.Failed,
 			"bytes", common.FileSize(imp.cfg.Input),
 			"input", imp.cfg.Input,
-			"duration", time.Since(startTime).Truncate(time.Millisecond),
+			"duration", common.Seconds(time.Since(startTime)),
 			"note", "structure-only SQL file: table created, no data rows",
 		)
 		return nil
@@ -324,7 +327,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 			"updated", total.Updated,
 			"unchanged", total.Unchanged,
 			"failed", total.Failed,
-			"elapsed", total.Elapsed.Truncate(time.Second),
+			"elapsed", common.Seconds(total.Elapsed),
 		)
 	}
 	return importErr
@@ -361,8 +364,10 @@ func (imp *Importer) validateTargetColumns(ctx context.Context, cols []string) e
 		return nil
 	}
 	var exists int
+	existsSQL := "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+	common.LogInteractionSQL(existsSQL, imp.cfg.Database, imp.cfg.Table)
 	err := imp.db.QueryRowContext(ctx,
-		common.TagSQL("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"),
+		common.TagSQL(existsSQL),
 		imp.cfg.Database, imp.cfg.Table).Scan(&exists)
 	if err != nil {
 		return errors.Wrap(err, "failed to verify target table")
@@ -373,10 +378,11 @@ func (imp *Importer) validateTargetColumns(ctx context.Context, cols []string) e
 
 	placeholders := strings.Repeat("?,", len(cols))
 	placeholders = placeholders[:len(placeholders)-1]
-	q := common.TagSQL(fmt.Sprintf(
+	colsSQL := fmt.Sprintf(
 		"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND UPPER(COLUMN_NAME) IN (%s)",
 		placeholders,
-	))
+	)
+	q := common.TagSQL(colsSQL)
 	args := make([]interface{}, 0, len(cols)+2)
 	args = append(args, imp.cfg.Database, imp.cfg.Table)
 	lowered := make(map[string]string, len(cols))
@@ -385,6 +391,7 @@ func (imp *Importer) validateTargetColumns(ctx context.Context, cols []string) e
 		lowered[strings.ToUpper(c)] = c
 		args = append(args, strings.ToUpper(c))
 	}
+	common.LogInteractionSQL(colsSQL, args...)
 	rows, err := imp.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return errors.Wrap(err, "failed to verify target columns")
@@ -425,10 +432,12 @@ func (imp *Importer) countUniqueKeys(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	var n int
-	err := imp.db.QueryRowContext(ctx,
-		common.TagSQL(`SELECT COUNT(DISTINCT INDEX_NAME)
+	uniqSQL := `SELECT COUNT(DISTINCT INDEX_NAME)
 FROM information_schema.STATISTICS
-WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND (NON_UNIQUE = 0 OR INDEX_NAME = 'PRIMARY')`),
+WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND (NON_UNIQUE = 0 OR INDEX_NAME = 'PRIMARY')`
+	common.LogInteractionSQL(uniqSQL, imp.cfg.Database, imp.cfg.Table)
+	err := imp.db.QueryRowContext(ctx,
+		common.TagSQL(uniqSQL),
 		imp.cfg.Database, imp.cfg.Table).Scan(&n)
 	if err != nil {
 		return 0, errors.Wrap(err, "failed to inspect unique indexes")
@@ -447,8 +456,10 @@ func (imp *Importer) headerLooksLikeData(ctx context.Context, fields []string) (
 	if imp.cfg.Table == "" {
 		return false, nil
 	}
+	listSQL := "SELECT UPPER(COLUMN_NAME) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+	common.LogInteractionSQL(listSQL, imp.cfg.Database, imp.cfg.Table)
 	rows, err := imp.db.QueryContext(ctx,
-		common.TagSQL("SELECT UPPER(COLUMN_NAME) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"),
+		common.TagSQL(listSQL),
 		imp.cfg.Database, imp.cfg.Table)
 	if err != nil {
 		return false, errors.Wrap(err, "failed to list target table columns")
@@ -487,15 +498,17 @@ func (imp *Importer) columnInfoFor(ctx context.Context, cols []string) ([]common
 	}
 	placeholders := strings.Repeat("?,", len(cols))
 	placeholders = placeholders[:len(placeholders)-1]
-	q := common.TagSQL(fmt.Sprintf(
+	infoSQL := fmt.Sprintf(
 		"SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME IN (%s)",
 		placeholders,
-	))
+	)
+	q := common.TagSQL(infoSQL)
 	args := make([]interface{}, 0, len(cols)+2)
 	args = append(args, imp.cfg.Database, imp.cfg.Table)
 	for _, c := range cols {
 		args = append(args, c)
 	}
+	common.LogInteractionSQL(infoSQL, args...)
 	rows, err := imp.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "failed to query column types")
@@ -774,7 +787,7 @@ loop:
 		"failed", total.Failed,
 		"bytes", common.FileSize(imp.cfg.Input),
 		"input", imp.cfg.Input,
-		"duration", duration.Truncate(time.Millisecond),
+		"duration", common.Seconds(duration),
 		"rate", fmt.Sprintf("%.2f rows/sec", float64(total.Processed)/duration.Seconds()),
 	)
 
@@ -993,7 +1006,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 		"bytes", common.FileSize(imp.cfg.Input),
 		"input", imp.cfg.Input,
 		"threads", numThreads,
-		"duration", duration.Truncate(time.Millisecond),
+		"duration", common.Seconds(duration),
 		"rate", fmt.Sprintf("%.2f rows/sec", float64(total.Processed)/duration.Seconds()),
 	)
 
@@ -1001,8 +1014,9 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 }
 
 func (imp *Importer) deleteTable(ctx context.Context) error {
-	query := common.TagSQL(fmt.Sprintf("DELETE FROM `%s`", imp.cfg.Table))
-	_, err := imp.db.ExecContext(ctx, query)
+	query := fmt.Sprintf("DELETE FROM `%s`", imp.cfg.Table)
+	common.LogInteractionSQL(query)
+	_, err := imp.db.ExecContext(ctx, common.TagSQL(query))
 	return err
 }
 

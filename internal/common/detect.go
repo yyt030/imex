@@ -26,7 +26,9 @@ func (s ServerType) String() string {
 // DetectServerType detects the database server type by querying version_comment.
 func DetectServerType(db *sql.DB) (ServerType, error) {
 	var varName, versionComment string
-	err := db.QueryRow("SHOW VARIABLES LIKE 'version_comment'").Scan(&varName, &versionComment)
+	detectSQL := "SHOW VARIABLES LIKE 'version_comment'"
+	LogInteractionSQL(detectSQL)
+	err := db.QueryRow(detectSQL).Scan(&varName, &versionComment)
 	if err != nil {
 		// If we can't determine the server type, assume MySQL
 		return ServerMySQL, nil

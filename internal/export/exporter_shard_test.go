@@ -116,7 +116,7 @@ func TestExportShard_ReleasesConnectionBeforePipeDrain(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		n, err := e.exportShard(context.Background(), 0,
+		n, err := e.exportShard(context.Background(), 0, 0,
 			&ShardInfo{
 				Columns:   []string{"note"},
 				Mins:      []interface{}{int64(1)},
@@ -194,7 +194,7 @@ func TestExportShard_EmptyShardReleasesConnectionAndClosesPipe(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := e.exportShard(context.Background(), 0,
+		_, err := e.exportShard(context.Background(), 0, 0,
 			&ShardInfo{
 				Columns:   []string{"note"},
 				Mins:      []interface{}{int64(1)},

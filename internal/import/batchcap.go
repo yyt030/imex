@@ -112,7 +112,9 @@ func estimateRowBytes(row []interface{}) int64 {
 func fetchMaxAllowedPacket(db *sql.DB) (int64, error) {
 	var name string
 	var value int64
-	row := db.QueryRow(common.TagSQL("SHOW VARIABLES LIKE 'max_allowed_packet'"))
+	showSQL := "SHOW VARIABLES LIKE 'max_allowed_packet'"
+	common.LogInteractionSQL(showSQL)
+	row := db.QueryRow(common.TagSQL(showSQL))
 	if err := row.Scan(&name, &value); err != nil {
 		return defaultMaxAllowedPacket, err
 	}

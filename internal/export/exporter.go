@@ -111,7 +111,7 @@ func (e *Exporter) Export(ctx context.Context) error {
 				"rows", curr.Processed,
 				"rate", fmt.Sprintf("%.2f rows/sec", curr.RatePerSec()),
 				"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
-				"elapsed", curr.Elapsed.Truncate(time.Second),
+				"elapsed", common.Seconds(curr.Elapsed),
 			)
 		}
 	})
@@ -184,6 +184,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 
 	// Execute query with attribution tag
 	taggedQuery := common.TagSQL(e.config.Query)
+	common.LogInteractionSQL(e.config.Query)
 	rows, err := e.db.QueryContext(ctx, taggedQuery)
 	if err != nil {
 		preview := common.SQLPreview(e.config.Query, nil)
@@ -396,7 +397,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	// still going.
 	e.stopMonitor()
 
-	common.Logger.Info("export completed", "rows", rowCount, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", float64(rowCount)/duration.Seconds()))
+	common.Logger.Info("export completed", "rows", rowCount, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "duration", common.Seconds(duration), "rate", fmt.Sprintf("%.2f rows/sec", float64(rowCount)/duration.Seconds()))
 
 	return nil
 }
@@ -466,7 +467,9 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	}
 
 	// Get columns from a sample query with attribution tag
-	sampleRows, err := e.db.QueryContext(ctx, common.TagSQL(e.config.Query+" LIMIT 0"))
+	sampleQuery := e.config.Query + " LIMIT 0"
+	common.LogInteractionSQL(sampleQuery)
+	sampleRows, err := e.db.QueryContext(ctx, common.TagSQL(sampleQuery))
 	if err != nil {
 		return errors.Wrap(err, "failed to get columns")
 	}
@@ -490,6 +493,7 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	// consumes the pipes in range order, so a worker must never sit on a late
 	// range while the range the writer is waiting for is still unclaimed.
 	type shardResult struct {
+		workerID int
 		shardIdx int
 		rowCount int64
 		err      error
@@ -502,16 +506,16 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	}
 	nextRange := int64(-1)
 	for w := 0; w < workers; w++ {
-		go func() {
+		go func(workerID int) {
 			for {
 				idx := int(atomic.AddInt64(&nextRange, 1))
 				if idx >= len(shardRanges) {
 					return
 				}
-				rowCount, err := e.exportShard(ctx, idx, shardInfo, shardRanges[idx], columns, serverType, pipes[idx])
-				resultCh <- shardResult{shardIdx: idx, rowCount: rowCount, err: err}
+				rowCount, err := e.exportShard(ctx, workerID, idx, shardInfo, shardRanges[idx], columns, serverType, pipes[idx])
+				resultCh <- shardResult{workerID: workerID, shardIdx: idx, rowCount: rowCount, err: err}
 			}
-		}()
+		}(w)
 	}
 
 	// Consume the shards in order while they are still running.
@@ -531,13 +535,13 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	for i := 0; i < len(shardRanges); i++ {
 		result := <-resultCh
 		if result.err != nil {
-			common.Logger.Error("shard export failed", "shard", result.shardIdx, "error", result.err)
+			common.Logger.Error("shard export failed", "worker", result.workerID, "shard", result.shardIdx, "error", result.err)
 			if exportErr == nil {
 				exportErr = result.err
 			}
 		} else {
 			totalRows += result.rowCount
-			common.Logger.Info("shard export completed", "shard", result.shardIdx)
+			common.Logger.Info("shard export completed", "worker", result.workerID, "shard", result.shardIdx)
 		}
 	}
 
@@ -558,14 +562,14 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	e.stopMonitor()
 
 	total := e.stats.Snapshot()
-	common.Logger.Info("parallel export completed", "rows", total.Processed, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "shards", len(shardRanges), "duration", duration.Truncate(time.Millisecond), "rate", fmt.Sprintf("%.2f rows/sec", total.RatePerSec()))
+	common.Logger.Info("parallel export completed", "rows", total.Processed, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "shards", len(shardRanges), "workers", workers, "duration", common.Seconds(duration), "rate", fmt.Sprintf("%.2f rows/sec", total.RatePerSec()))
 
 	return nil
 }
 
 // exportShard serializes one shard into its pipe; the stream writer owns the
 // output file and consumes the pipes in shard order.
-func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *ShardInfo, shardRange ShardRange, columns []string, serverType common.ServerType, out *shardPipe) (rowCount int64, err error) {
+func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, shardInfo *ShardInfo, shardRange ShardRange, columns []string, serverType common.ServerType, out *shardPipe) (rowCount int64, err error) {
 	// Build shard-specific query using SQL parser
 	shardQuery, err := e.sqlParser.BuildShardedQuery(e.config.Query, shardInfo, shardRange)
 	if err != nil {
@@ -580,12 +584,15 @@ func (e *Exporter) exportShard(ctx context.Context, shardIdx int, shardInfo *Sha
 
 	// Execute shard query with attribution tag
 	taggedShardQuery := common.TagSQL(shardQuery)
+	if common.DebugEnabled() {
+		common.Logger.Debug("db interaction", "worker", workerID, "shard", shardIdx, "sql", common.SQLPreview(shardQuery, nil))
+	}
 	rows, err := db.QueryContext(ctx, taggedShardQuery)
 	if err != nil {
 		preview := common.SQLPreview(shardQuery, nil)
 		db.Close()
-		common.Logger.Error("shard query failed", "shard", shardIdx, "error", err, "sql", preview)
-		return 0, errors.Wrapf(err, "failed to execute shard query (SQL: %s)", preview)
+		common.Logger.Error("shard query failed", "worker", workerID, "shard", shardIdx, "error", err, "sql", preview)
+		return 0, errors.Wrapf(err, "failed to execute shard query (worker %d, SQL: %s)", workerID, preview)
 	}
 
 	// releaseDB ends this shard's consistent snapshot. It has to happen before the
@@ -841,7 +848,9 @@ func (e *Exporter) getCreateTableStatement(schema, tableName string) (string, er
 	if schema != "" {
 		target = "`" + schema + "`." + target
 	}
-	query := common.TagSQL("SHOW CREATE TABLE " + target)
+	createQuery := "SHOW CREATE TABLE " + target
+	common.LogInteractionSQL(createQuery)
+	query := common.TagSQL(createQuery)
 	row := e.db.QueryRowContext(context.Background(), query)
 
 	var name, createStmt string

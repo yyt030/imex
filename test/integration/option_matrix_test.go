@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -708,6 +709,71 @@ func textKeyRows(t *testing.T, env *cliEnv, table string) []string {
 		t.Fatalf("read %s: %v", table, err)
 	}
 	return out
+}
+
+// TestOptionMatrixDebugEchoesInteractionSQL pins the three operator-facing log
+// changes: (1) the final total time always reads in plain seconds with three
+// decimals, (2) the statements the tool exchanges with the server are printed,
+// but only under --log-level debug and never as raw values, and (3) every
+// parallel worker's log line carries a worker id so a failing shard is
+// attributable. A default (info) run must stay silent on the SQL and must not
+// mention a single batch INSERT.
+func TestOptionMatrixDebugEchoesInteractionSQL(t *testing.T) {
+	env := newCLILive(t)
+	src := env.liveTable(t, "dbgsql_src")
+	env.exec(t, "CREATE TABLE `"+src+"` (id BIGINT PRIMARY KEY, v VARCHAR(32)) DEFAULT CHARSET=utf8mb4")
+
+	var values strings.Builder
+	const rows = 600
+	for i := 1; i <= rows; i++ {
+		if i > 1 {
+			values.WriteString(", ")
+		}
+		fmt.Fprintf(&values, "(%d, 'row-%d')", i, i)
+	}
+	env.exec(t, "INSERT INTO `"+src+"` (id, v) VALUES "+values.String())
+
+	// Default verbosity: the SQL conversation stays hidden. This is what keeps a
+	// normal run as quiet as it was before the debug echo existed.
+	infoOut, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
+		"-o", filepath.Join(env.dir, "dbgsql_info.sql"), "--threads", "4", "--log-level", "info", "--create")
+	if code != 0 {
+		t.Fatalf("info-level parallel export: exit %d\n%s", code, infoOut)
+	}
+	if strings.Contains(infoOut, "db interaction") {
+		t.Errorf("info-level run leaked interaction SQL:\n%s", infoOut)
+	}
+
+	dbg := filepath.Join(env.dir, "dbgsql_debug.sql")
+	out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
+		"-o", dbg, "--threads", "4", "--log-level", "debug", "--create")
+	if code != 0 {
+		t.Fatalf("debug parallel export: exit %d\n%s", code, out)
+	}
+
+	// (2) interaction SQL present, and it is the real shape the server saw.
+	for _, want := range []string{"db interaction", "SHOW CREATE TABLE", "information_schema"} {
+		if !strings.Contains(strings.ToLower(out), strings.ToLower(want)) {
+			t.Errorf("debug run missing %q in the SQL echo\n%s", want, out)
+		}
+	}
+	// The batch INSERT is data, not conversation: it must not be echoed even here.
+	if strings.Contains(out, "db interaction") && regexp.MustCompile(`db interaction.*INSERT INTO`).MatchString(out) {
+		t.Errorf("a bulk INSERT was echoed as an interaction statement:\n%s", out)
+	}
+
+	// (3) each completed shard is attributable to a worker.
+	if !strings.Contains(out, "worker=") {
+		t.Errorf("parallel export log carries no worker id:\n%s", out)
+	}
+	if strings.Count(out, "shard export completed") < 2 {
+		t.Errorf("expected more than one shard to complete\n%s", out)
+	}
+
+	// (1) the completion total is fixed-unit seconds with three decimals.
+	if !regexp.MustCompile(`duration=[0-9]+\.[0-9]{3}s`).MatchString(out) {
+		t.Errorf("completion duration not rendered as N.NNNs:\n%s", out)
+	}
 }
 
 // insertHeader returns the "INSERT INTO ... VALUES " prefix shared by the
