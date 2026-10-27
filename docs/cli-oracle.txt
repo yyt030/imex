@@ -44,6 +44,13 @@
 # hand and have no "was this flag set" to ask. The `## export` body was regenerated from
 # the tree again and the diff is empty: two help lines changed wording, nothing moved in
 # the column alignment, and no option was added or removed.
+# Re-baselined note 5 (2026-10-27): no body was regenerated for the v0.2.0 release tag;
+# the `## version` snapshot's first line reads `imex version 0.1.0` because that is what
+# 4934dd2 built with, and the tree now stamps `0.2.0` via the same ldflags path. Treat
+# that one line the way the Go version line (1.26.9 in the snapshot vs. every build since
+# go1.26.10) is already treated — an intentional environmental drift, not a contract change.
+# The `## export` body is unaffected by the version bump: no flag was added, removed, or
+# reworded by the release commit itself, so `imex export --help` still diffs empty.
 # Frozen baseline, kept verbatim as a regression reference. The intentional
 # deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --extended-insert and lost --single-row-insert (one INSERT per
