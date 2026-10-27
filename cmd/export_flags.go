@@ -8,11 +8,6 @@ import (
 	"github.com/imex/internal/config"
 )
 
-// legacySingleRowInsert holds the deprecated --single-row-insert value. The
-// layout it asked for is the default now, so nothing reads it except the
-// contradiction check in cmd/validate.go.
-var legacySingleRowInsert bool
-
 // exportDefaultCharset is a temp variable for the --default-charset flag.
 // The struct field exportCfg.DefaultCharset already has "utf8mb4" from NewExportConfig().
 // We use "" as the flag default so cobra doesn't show "(default ...)" in help.
@@ -75,11 +70,6 @@ func registerExportFlags(cmd *cobra.Command) {
 	// SQL format modifiers
 	f.IntVar(&exportCfg.StatementSize, "statement-size", config.DefaultStatementSize, "Max bytes per INSERT statement (only bounds merged statements: without --extended-insert a longer row just warns)")
 	f.BoolVar(&exportCfg.ExtendedInsert, "extended-insert", false, "Merge rows into multi-row INSERT statements bounded by --statement-size")
-	// --single-row-insert is the old spelling of what one-row-per-statement export
-	// is now by default. It stays accepted so existing scripts do not die on
-	// "unknown flag", and it does nothing unless combined with --extended-insert
-	// (which validate reports as a usage error).
-	f.BoolVar(&legacySingleRowInsert, "single-row-insert", false, "Deprecated: one INSERT statement per row is now the default")
 	f.BoolVar(&exportCfg.Create, "create", false, "Output a CREATE TABLE statement (SQL export is data-only by default)")
 	f.BoolVar(&exportCfg.NoData, "no-data", false, "Do not output INSERT statements")
 

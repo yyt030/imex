@@ -458,8 +458,7 @@ const statementCapSlack = 4
 
 // TestOptionMatrixSQLBatching asserts the SQL layout contract from both sides:
 // the default writes one INSERT per row, --extended-insert merges them (bounded
-// by --statement-size), the deprecated --single-row-insert is now just the
-// default, and every layout still round-trips to the same rows.
+// by --statement-size), and every layout still round-trips to the same rows.
 func TestOptionMatrixSQLBatching(t *testing.T) {
 	env := newCLILive(t)
 	src, _ := env.makePair(t, "sqlbatch")
@@ -484,9 +483,11 @@ func TestOptionMatrixSQLBatching(t *testing.T) {
 	}{
 		// The narrowest row statement here is over 160 bytes and the widest is near
 		// 800, so a 512-byte cap has to be compared against those: it merges the
-		// narrow rows and still leaves the wide row on its own line. A smaller cap
-		// would sit below every row and merge nothing, which proves nothing.
-		{"旧单行选项仍是默认布局", []string{"--single-row-insert"}, 10, 0},
+		// narrow rows and still leaves the wide row on its own line. A cap below
+		// every row merges nothing at all and the file is back to one INSERT per
+		// row, which the writer now warns about once (pinned in
+		// internal/export/sql_writer_test.go) — the shape is what this table checks.
+		{"--extended-insert 上限低于单行时退回逐行布局", []string{"--extended-insert", "--statement-size", "64"}, 10, 0},
 		{"--extended-insert 合并成多行语句", []string{"--extended-insert"}, -1, 0},
 		{"--extended-insert 按 512 字节攒批", []string{"--extended-insert", "--statement-size", "512"}, -1, 512},
 		{"单给 --statement-size 不改变默认布局", []string{"--statement-size", "512"}, 10, 0},

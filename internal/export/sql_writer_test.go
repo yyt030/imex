@@ -3,6 +3,7 @@ package export
 import (
 	"bytes"
 	"database/sql"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +11,17 @@ import (
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
+
+// captureWriterWarnings redirects the package logger into a buffer for the
+// duration of a test so the layout warnings can be asserted instead of eyeballed.
+func captureWriterWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	orig := common.Logger
+	common.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	t.Cleanup(func() { common.Logger = orig })
+	return &logs
+}
 
 func TestSQLWriter_SetNamesHeader(t *testing.T) {
 	var buf bytes.Buffer
@@ -379,5 +391,106 @@ func TestSQLWriter_SkipTableLocks(t *testing.T) {
 	}
 	if !strings.Contains(out, "SET NAMES") || !strings.Contains(out, "INSERT INTO") {
 		t.Errorf("preamble and data must survive:\n%s", out)
+	}
+}
+
+func TestSQLWriter_ExtendedInsertNeverMergedWarns(t *testing.T) {
+	// --statement-size below one row's own width makes the merge rule flush before
+	// a second tuple can join, so the merged layout silently collapses to the
+	// single-row layout it was meant to avoid. That has to be said out loud.
+	logs := captureWriterWarnings(t)
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 64,
+		false, true, common.ServerMySQL, "", "utf8mb4")
+	w.WriteHeader(nil)
+
+	for i := 1; i <= 3; i++ {
+		if err := w.WriteRow([]interface{}{int64(i), strings.Repeat("x", 40)}); err != nil {
+			t.Fatalf("WriteRow: %v", err)
+		}
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatalf("WriteFooter: %v", err)
+	}
+
+	out := buf.String()
+	if got := strings.Count(out, "INSERT INTO"); got != 3 {
+		t.Fatalf("expected one statement per row once merging is impossible, got %d in:\n%s", got, out)
+	}
+	if strings.Contains(out, "), (") {
+		t.Errorf("rows merged despite --statement-size 64:\n%s", out)
+	}
+	if n := strings.Count(logs.String(), "--extended-insert never merged"); n != 1 {
+		t.Errorf("expected exactly one never-merged warning, got %d in:\n%s", n, logs.String())
+	}
+}
+
+func TestSQLWriter_ExtendedInsertMergedStaysSilent(t *testing.T) {
+	logs := captureWriterWarnings(t)
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, config.DefaultStatementSize,
+		false, true, common.ServerMySQL, "", "utf8mb4")
+	w.WriteHeader(nil)
+
+	for i := 1; i <= 3; i++ {
+		if err := w.WriteRow([]interface{}{int64(i), "row"}); err != nil {
+			t.Fatalf("WriteRow: %v", err)
+		}
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatalf("WriteFooter: %v", err)
+	}
+
+	if got := strings.Count(buf.String(), "INSERT INTO"); got != 1 {
+		t.Fatalf("expected all three rows in one statement, got %d in:\n%s", got, buf.String())
+	}
+	if logs.String() != "" {
+		t.Errorf("a layout that really merged must not warn: %s", logs.String())
+	}
+}
+
+func TestSQLWriter_ExtendedInsertSingleRowDoesNotWarn(t *testing.T) {
+	// One row has nothing to merge with whatever --statement-size says, so the
+	// never-merged warning would only be noise here.
+	logs := captureWriterWarnings(t)
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 1,
+		false, true, common.ServerMySQL, "", "utf8mb4")
+	w.WriteHeader(nil)
+	if err := w.WriteRow([]interface{}{int64(1), "row"}); err != nil {
+		t.Fatalf("WriteRow: %v", err)
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatalf("WriteFooter: %v", err)
+	}
+	if logs.String() != "" {
+		t.Errorf("a single-row dump must not be reported as a failed merge: %s", logs.String())
+	}
+}
+
+func TestSQLWriter_SingleRowInsertWarnsOnceOnly(t *testing.T) {
+	// The other side of the layout switch keeps its own warning, deduplicated to
+	// one line per file, and never emits the merged-layout warning.
+	logs := captureWriterWarnings(t)
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 64,
+		false, true, common.ServerMySQL, "", "utf8mb4")
+	w.SetSingleRowInsert(true)
+	w.WriteHeader(nil)
+
+	for i := 1; i <= 3; i++ {
+		if err := w.WriteRow([]interface{}{int64(i), strings.Repeat("x", 40)}); err != nil {
+			t.Fatalf("WriteRow: %v", err)
+		}
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatalf("WriteFooter: %v", err)
+	}
+
+	if n := strings.Count(logs.String(), "single-row INSERT exceeds"); n != 1 {
+		t.Errorf("expected one oversized-statement warning, got %d in:\n%s", n, logs.String())
+	}
+	if strings.Contains(logs.String(), "--extended-insert never merged") {
+		t.Errorf("single-row layout must not report a failed merge: %s", logs.String())
 	}
 }

@@ -23,12 +23,19 @@
 # diff is empty once more; the flag keeps the same column alignment and the same
 # help text, and no --no-replace alias is kept, so `imex export --no-replace` is now
 # an unknown-flag usage error (exit 2).
+# Re-baselined note 3 (2026-10-27): export's deprecated --single-row-insert was
+# removed outright, under the same no-compat-layer policy that deleted --no-create
+# (row 55) and refused a --no-replace alias (row 58). It had been inert since row 47
+# made the one-row-per-statement layout the default, and the only code left that read
+# it was the mutex check against --extended-insert, so `imex export --single-row-insert`
+# is now an unknown-flag usage error (exit 2) and the SQL scope group is down to four
+# options. The `## export` body was regenerated from the tree again and the diff is
+# empty: exactly one help line left the block and the column alignment is unchanged.
 # Frozen baseline, kept verbatim as a regression reference. The intentional
 # deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
-# export gained --single-row-insert and then --extended-insert (one INSERT per
-# row is now the default layout, so --single-row-insert only reads "Deprecated:
-# one INSERT statement per row is now the default" and changes nothing, while
-# merging is what --extended-insert opts into), --messages/-m changed meaning
+# export gained --extended-insert and lost --single-row-insert (one INSERT per
+# row is the default layout, so merging is what --extended-insert opts into, and
+# the removed flag is covered by note 3 below), --messages/-m changed meaning
 # (help is now "Redirect the command log to this file; with it, nothing is
 # printed to stderr"; the option no longer writes a DB2-style SQL3xxxN report —
 # it receives the run's command log and takes it away from the terminal), and
@@ -52,15 +59,16 @@
 # but still rejects it on export). On 2026-10-26 every format-scoped option also
 # gained a generated scope marker at the end of its own help text — "(only with
 # --format del)" on the nine DEL layout options, "(only with --format sql)" on the
-# five SQL layout options (--create took over --no-create's slot among the five from row 52), "(not with --format parquet)" on --hex-blob and
+# four SQL layout options (--create took over --no-create's slot from row 52 and
+# --single-row-insert was removed per note 3), "(not with --format parquet)" on --hex-blob and
 # --no-hex-blob — appended from internal/config/formatscope.go, the same registry
 # cmd/validate.go rejects with, so `--help` can no longer advertise an option for a
 # format that refuses it. Diff `imex <cmd> --help` against this file and expect
 # only those lines. For `export` the diff is now empty: every export delta listed
-# below (the fourteen marked options — nine DEL plus five SQL, after --create took
-# --no-create's slot in the SQL group, --messages,
+# below (the thirteen marked options — nine DEL plus four SQL, after --create took
+# --no-create's slot in the SQL group and --single-row-insert left it, --messages,
 # --progress-interval, --batch-size, --pipeline-buffer, --echo-sql-values,
-# --statement-size/--single-row-insert/--extended-insert, plus this cycle's --query
+# --statement-size/--extended-insert, plus this cycle's --query
 # reword, new --query-file, new --create and the removed --no-create) has been folded
 # into the re-baselined `## export` body. For `import` expect fourteen added or
 # changed lines (the nine marked options, --messages, --progress-interval,
@@ -72,7 +80,7 @@
 # code change: `imex version` now reports the Go toolchain the binary was built
 # with, and go.mod requires go 1.26.10, so the "Go version:" line below (go1.26.9)
 # is expected to differ on every build since 2026-10-26. Last verified against the
-# working tree on 2026-10-26.
+# working tree on 2026-10-27.
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.
@@ -147,7 +155,6 @@ Flags:
       --row-del string                  Row delimiter (only with --format del) (default "\n")
       --session-var stringArray         Set a MySQL/OceanBase session variable before export (repeatable), e.g. --session-var "sql_mode=STRICT_TRANS_TABLES" --session-var foreign_key_checks=0
       --shard-key string                Column name for sharding (auto-detect primary key if empty)
-      --single-row-insert               Deprecated: one INSERT statement per row is now the default (only with --format sql)
   -S, --socket string                   UNIX domain socket path
       --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)

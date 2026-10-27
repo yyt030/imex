@@ -41,6 +41,11 @@ type SQLWriter struct {
 	// up to statementSize.
 	singleRow      bool
 	oversizeWarned bool
+	// mergedTuples counts the rows taken into the batched layout and everMerged
+	// records whether one statement ever held more than one tuple. Together they
+	// detect the layout silently collapsing to one INSERT per row.
+	mergedTuples int
+	everMerged   bool
 	// skipTableLocks suppresses LOCK TABLES/UNLOCK TABLES. Parallel export
 	// writes shard fragments that are concatenated later, and a lock statement
 	// per fragment would release the table lock in the middle of the dump.
@@ -242,9 +247,11 @@ func (s *SQLWriter) appendValueTuple() error {
 
 	if s.batchCount > 0 {
 		s.batchBuf.WriteString(", ")
+		s.everMerged = true
 	}
 	s.batchBuf.WriteString(s.valueBuf.String())
 	s.batchCount++
+	s.mergedTuples++
 	return nil
 }
 
@@ -271,6 +278,20 @@ func (s *SQLWriter) warnOversizedStatement(size int) {
 	s.oversizeWarned = true
 	common.Logger.Warn("single-row INSERT exceeds --statement-size and is written whole",
 		"statement_bytes", size, "statement_size", s.statementSize)
+}
+
+// warnNeverMerged reports once per output file that the merged layout requested
+// by --extended-insert never put two rows in the same statement. The flush rule
+// in appendValueTuple fires before a second tuple can join, because every row is
+// already wider than --statement-size on its own, so the dump comes out byte for
+// byte identical to the default single-row layout. The user asked for merging and
+// silently did not get it, which is the same situation warnOversizedStatement
+// exists for on the other side of the layout switch. A file with a single row is
+// excluded: one row cannot merge with anything whatever the size limit is, so
+// nothing there contradicts the flag.
+func (s *SQLWriter) warnNeverMerged() {
+	common.Logger.Warn("--extended-insert never merged rows: every row alone exceeds --statement-size, so the dump is one INSERT per row",
+		"statement_size", s.statementSize, "rows", s.mergedTuples)
 }
 
 // flushBatch writes the current batch INSERT statement
@@ -300,6 +321,9 @@ func (s *SQLWriter) Flush() error {
 func (s *SQLWriter) WriteFooter() error {
 	// Flush any remaining batched INSERT statements
 	if s.writeData {
+		if !s.singleRow && s.mergedTuples >= 2 && !s.everMerged {
+			s.warnNeverMerged()
+		}
 		if err := s.flushBatch(); err != nil {
 			return err
 		}

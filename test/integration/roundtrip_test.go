@@ -434,9 +434,10 @@ func TestDelRoundTrip_HexLooksLikeTextIsPreserved(t *testing.T) {
 	}
 }
 
-// TestSQLRoundTrip_SingleRowInsert covers the --single-row-insert layout: one
-// INSERT per row, still exactly one physical line each, and the reader has to
-// recover every row from the many-statement file.
+// TestSQLRoundTrip_SingleRowInsert covers the single-row layout the exporter uses
+// unless --extended-insert is given: one INSERT per row, still exactly one
+// physical line each, and the reader has to recover every row from the
+// many-statement file.
 func TestSQLRoundTrip_SingleRowInsert(t *testing.T) {
 	columns := []string{"id", "v"}
 	rows := [][]interface{}{

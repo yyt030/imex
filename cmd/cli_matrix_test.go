@@ -38,11 +38,6 @@ func TestCLIMatrix(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "valid export with single-row-insert and format sql",
-			args:    []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql", "--single-row-insert"},
-			wantErr: false,
-		},
-		{
 			name:    "valid import minimal",
 			args:    []string{"import", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-i", "/tmp/in.del", "-t", "users"},
 			wantErr: false,
@@ -138,10 +133,10 @@ func TestCLIMatrix(t *testing.T) {
 			errSubstr: "--statement-size can only be used with --format sql",
 		},
 		{
-			name:      "format del with single-row-insert rejected",
-			args:      []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.del", "-q", "SELECT 1", "-f", "del", "--single-row-insert"},
+			name:      "removed single-row-insert is an unknown flag",
+			args:      []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql", "--single-row-insert"},
 			wantErr:   true,
-			errSubstr: "--single-row-insert can only be used with --format sql",
+			errSubstr: "unknown flag",
 		},
 		{
 			name:    "valid export with extended-insert and format sql",
@@ -155,16 +150,10 @@ func TestCLIMatrix(t *testing.T) {
 			errSubstr: "--extended-insert can only be used with --format sql",
 		},
 		{
-			name:      "single-row-insert with extended-insert rejected",
-			args:      []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql", "--single-row-insert", "--extended-insert"},
+			name:      "format parquet with extended-insert rejected",
+			args:      []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.parquet", "-q", "SELECT 1", "-f", "parquet", "--extended-insert"},
 			wantErr:   true,
-			errSubstr: "cannot be used together",
-		},
-		{
-			name:      "format parquet with single-row-insert rejected",
-			args:      []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.parquet", "-q", "SELECT 1", "-f", "parquet", "--single-row-insert"},
-			wantErr:   true,
-			errSubstr: "--single-row-insert can only be used with --format sql",
+			errSubstr: "--extended-insert can only be used with --format sql",
 		},
 		{
 			name:      "mode create with format del rejected",
@@ -379,10 +368,10 @@ func TestCLILogFormatEnvOverrideRejected(t *testing.T) {
 	}
 }
 
-// TestCLIInsertLayout pins the flipped SQL default: nothing given means one row
-// per INSERT (ExtendedInsert false), --extended-insert opts back into merged
-// statements, and the deprecated --single-row-insert parses without changing the
-// default it now merely restates.
+// TestCLIInsertLayout pins the SQL layout defaults: nothing given means one row
+// per INSERT (ExtendedInsert false) and --extended-insert opts back into merged
+// statements. The old --single-row-insert spelling is gone (see the CLI matrix),
+// so giving it must not silently fall back to the default layout.
 func TestCLIInsertLayout(t *testing.T) {
 	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb",
 		"-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql"}
@@ -399,13 +388,6 @@ func TestCLIInsertLayout(t *testing.T) {
 	}
 	if !exportCfg.ExtendedInsert {
 		t.Error("--extended-insert did not reach the config")
-	}
-
-	if err := validateOnly(t, "export", append(append([]string{}, base...), "--single-row-insert")); err != nil {
-		t.Fatalf("deprecated --single-row-insert must still parse: %v", err)
-	}
-	if exportCfg.ExtendedInsert {
-		t.Error("--single-row-insert must not enable merged statements")
 	}
 }
 

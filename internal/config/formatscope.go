@@ -93,7 +93,6 @@ func ExportOptionScopes() OptionScopes {
 		sqlOnly("create"),
 		sqlOnly("no-data"),
 		sqlOnly("statement-size"),
-		sqlOnly("single-row-insert"),
 		sqlOnly("extended-insert"),
 		delOnly("char-del"),
 		delOnly("col-del"),

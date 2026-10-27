@@ -22,7 +22,7 @@
 - **批量优化**：导入使用批量 INSERT（1000 行/批次），提升写入性能
 - **单行 SQL 布局**：`--format sql` 默认每行一条 INSERT，文件逐行可切分；攒批统一由导入侧按 `--batch-size` 完成，导出侧的 `--extended-insert` 只用于换取更小的文件体积
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
-- **密码加密**：支持 AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
+- **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -282,12 +282,11 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
 | `--statement-size` | 单条 INSERT 语句最大字节数（只有 `--extended-insert` 时是攒批上限；默认单行布局下一行无法再拆，超过它只记一次告警） | `8388608`（8MiB） |
-| `--extended-insert` | 把多行合并进一条 INSERT（按 `--statement-size` 分组，等价 mysqldump 默认行为） | `false` |
-| `--single-row-insert` | 已废弃：每行一条 INSERT 现在是默认布局，该选项保留但不再改变任何行为（与 `--extended-insert` 同时给出报用法错误） | `false` |
+| `--extended-insert` | 把多行合并进一条 INSERT（按 `--statement-size` 分组，等价 mysqldump 默认行为）；若 `--statement-size` 低于单行语句宽度则一条也合不成，产物退回每行一条 INSERT 并记一次告警 | `false` |
 | `--create` | 输出 CREATE TABLE 语句（SQL 导出默认只导数据，需要自带建表语句时才加；与 `--format sql` 绑定，其他格式传入报用法错误） | `false` |
 | `--no-data` | 不输出 INSERT 语句 | `false` |
 
-> SQL 导出默认只写 `INSERT` 数据语句；加 `--create` 才附带 `CREATE TABLE`。无论哪种，文件描述的始终是**一张真实表**，因此 `--format sql` 只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。`--query`/`--query-file` 里若表名带了 schema（`db.tbl`），导出会剥离 schema、只按裸表名写 `CREATE`/`INSERT`/`LOCK TABLES`，而 `SHOW CREATE TABLE` 仍按查询点名的 schema 查找，因此不会再出现把连接的 `--database` 二次拼接导致的 `Error 1054/1146`；`--mode create` 依赖文件里的 `CREATE TABLE`，故这类导出必须带 `--create`。`--no-create` 已随默认值反转一并移除（结构本就是 opt-in，留一个反向开关只是给 `--create` 一个否决口），传入它会得到 `unknown flag: --no-create` 并退出 2。
+> SQL 导出默认只写 `INSERT` 数据语句；加 `--create` 才附带 `CREATE TABLE`。无论哪种，文件描述的始终是**一张真实表**，因此 `--format sql` 只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。`--query`/`--query-file` 里若表名带了 schema（`db.tbl`），导出会剥离 schema、只按裸表名写 `CREATE`/`INSERT`/`LOCK TABLES`，而 `SHOW CREATE TABLE` 仍按查询点名的 schema 查找，因此不会再出现把连接的 `--database` 二次拼接导致的 `Error 1054/1146`；`--mode create` 依赖文件里的 `CREATE TABLE`，故这类导出必须带 `--create`。`--no-create` 已随默认值反转一并移除（结构本就是 opt-in，留一个反向开关只是给 `--create` 一个否决口），传入它会得到 `unknown flag: --no-create` 并退出 2；`--single-row-insert` 同样已删除——自默认布局改成每行一条 INSERT 起它就不再改变任何行为，只剩与 `--extended-insert` 互相否决这一处用途，传入它会得到 `unknown flag: --single-row-insert` 并退出 2。
 
 ### import - 数据导入
 
@@ -376,19 +375,19 @@ imex encrypt <password>
 - `password`：要加密的明文密码（必填）
 
 **环境变量：**
-- `IMEX_KEY`：加密密钥（必填，经 SHA-256 派生为 AES-256-GCM 密钥）
+- `IMEX_KEY`：加密密钥（必填，与每条密文的随机盐一起经 PBKDF2-HMAC-SHA256（600000 次迭代）派生为 32 字节 AES-256-GCM 密钥；应为高熵随机串，例如 `openssl rand -base64 32`）
 
 **示例：**
 
 ```bash
 export IMEX_KEY="my-secret-key"
 imex encrypt "my-password"
-# 输出: ENC:CiQ0mGHx0IasPOwmBKX99/9ZyjeG+QMl0Ee0uH3tYg+84S3BPOR5RqtS8w==
+# 输出: ENC:SOQZx8oP6Am7l4lmk8EShfO8pjKEW02FPd4U928cLPLFgcebkdXuaus8dgCIcRUSyQHE1okGmQ==
 ```
 
 **注意：**
 - 解密在 export/import 起始处自动完成（`common.ResolvePassword`），不提供公开的 decrypt 命令，以降低安全风险；`-p` 的值不是 `ENC:` 开头时按明文处理。
-- 密文带随机 nonce，同一明文 + 同一密钥每次结果都不同，不要拿密文做等值比较。
+- 密文带随机盐与随机 nonce，同一明文 + 同一密钥每次结果都不同，不要拿密文做等值比较；`imex export`/`imex import` 每次进程只在起始处解密一次（实测带 `ENC:` 口令连本地真实库导出 2 行为 0.35–0.42 s，同命令写明文口令为 0.00 s）。
 - `IMEX_KEY` 未设置或与实际密钥不符时，命令失败并退出 1，错误形如 `failed to resolve password: password is encrypted but IMEX_KEY environment variable is not set` / `failed to decrypt: wrong key or corrupted data`。
 - `IMEX_KEY` 本身也是凭据，此机制只解决"密码在命令行可见"，不解决密钥托管。
 
@@ -562,12 +561,11 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 | `--format` / `--mode` | 各自枚举白名单 | 退出码 2 |
 | `--default-charset` | 字符集白名单；非 `utf8mb4` 不可用于 `parquet`；`gbk`/`gb18030` 不可用于 `sql`（按字节转义不安全） | `invalid --default-charset` / 格式冲突，退出码 2 |
 | `--hex-blob` + `--no-hex-blob` | 二者互斥 | `mutually exclusive`，退出码 2 |
-| `--single-row-insert` + `--extended-insert` | 二者互斥（前者只是默认布局的旧名，同时给出无法判定要哪种布局） | `--single-row-insert and --extended-insert cannot be used together`，退出码 2 |
 | `--char-del` `--col-del` `--row-del` `--escape` `--no-escape` `--timestamp-fmt` `--date-fmt` `--no-char-del` `--no-col-names` | 仅 `--format del` 生效（SQL/Parquet 写端不使用这些修饰） | `--xxx can only be used with --format del`，退出码 2 |
 | `--hex-blob` / `--no-hex-blob` + `--format parquet` | Parquet 二进制列原生按 `binary` 存储，两个开关都不改变输出 | `--hex-blob cannot be used with --format parquet`，退出码 2 |
 | `encrypt` 的位置参数 | 恰好 1 个（密码明文） | `imex encrypt accepts 1 argument(s), received N`，退出码 2 |
 
-关联校验：`--create`/`--no-data`/`--statement-size`/`--extended-insert`/`--single-row-insert` 仅对 `--format sql` 生效（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`；导出侧 `-q`/`--query` 与 `--query-file` 互斥，且必须恰好给出一个（都不给或只给空语句都是用法错误，退出码 2）。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
+关联校验：`--create`/`--no-data`/`--statement-size`/`--extended-insert` 仅对 `--format sql` 生效（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`；导出侧 `-q`/`--query` 与 `--query-file` 互斥，且必须恰好给出一个（都不给或只给空语句都是用法错误，退出码 2）。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
 
 ### OceanBase 租户连接
 
@@ -686,7 +684,7 @@ IMEX_ECHO_SQL_VALUES=1 imex import ...   # 环境变量方式
 
 ### 密码加密
 
-为避免在 `ps` 命令中泄露明文密码，可以使用 AES-256-GCM 加密密码：
+为避免在 `ps` 命令中泄露明文密码，可以使用 PBKDF2-HMAC-SHA256 + AES-256-GCM 加密密码：
 
 ```bash
 # 1. 设置加密密钥（环境变量）
@@ -694,10 +692,10 @@ export IMEX_KEY="your-secret-key"
 
 # 2. 加密密码
 imex encrypt "my-password"
-# 输出: ENC:CiQ0mGHx0IasPOwmBKX99/9ZyjeG+QMl0Ee0uH3tYg+84S3BPOR5RqtS8w==
+# 输出: ENC:GWmxdaDgE9vyGSiE5SVPKTidlv5WX+Fmhhr79qvsPu39e9fGUuiUT9nfCDXtre0RToSljtNCdA==
 
 # 3. 使用加密后的密码执行导出/导入
-imex export -h 127.0.0.1 -u root -p "ENC:CiQ0mGHx0IasPOwmBKX99/9ZyjeG+QMl0Ee0uH3tYg+84S3BPOR5RqtS8w==" \
+imex export -h 127.0.0.1 -u root -p "ENC:GWmxdaDgE9vyGSiE5SVPKTidlv5WX+Fmhhr79qvsPu39e9fGUuiUT9nfCDXtre0RToSljtNCdA==" \
   -D mydb -o backup.sql -q "SELECT * FROM users"
 ```
 
@@ -719,14 +717,17 @@ done
 
 **安全特性：**
 - ✅ `ps` 命令看不到明文密码（只显示 `ENC:` 开头的密文）
-- ✅ AES-256-GCM 加密（每次加密使用随机 nonce，相同密码加密结果不同）
+- ✅ AES-256-GCM 加密，密钥经 PBKDF2-HMAC-SHA256（600000 次迭代）从 `IMEX_KEY` 与每条密文独立的 16 字节随机盐派生（相同密码两次加密结果必不同；离线尝试密钥的代价实测从约 94 万次/秒降到约 3 次/秒）
 - ✅ 密钥通过环境变量传递（不暴露在命令行）
 - ✅ 自动解密（export/import 命令自动识别 `ENC:` 前缀并解密）
 
 **注意事项：**
 - 加密密钥必须通过 `IMEX_KEY` 环境变量设置
 - 密钥丢失将无法解密密码，请妥善保管
-- 建议在自动化脚本中使用密钥管理服务（如 Vault）存储密钥
+- 建议在自动化脚本中使用密钥管理服务（如 Vault）存储密钥，由运行环境注入 `IMEX_KEY`
+- 工具只从 `IMEX_KEY` 环境变量读密钥，**不提供 `--key-file` 之类的密钥文件选项**：密钥托管属部署侧职责
+- `IMEX_KEY` 是这套机制里唯一的秘密：PBKDF2 只抬高猜测成本，不会把人可记忆的口令变成强密钥
+- 2026-10-26 之前的 `ENC:` 密文全部失效（布局改为 `salt ‖ nonce ‖ 密文+标签`，无版本位、不做兼容），需用当前版本重新执行一次 `imex encrypt`
 
 ## 文件格式示例
 
@@ -811,6 +812,9 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | `--query` 写成带 schema 的限定名（形如 db.tbl，两段各带反引号）时 SQL 导出必然失败：表名解析交回的是**已带反引号的限定串**，`SHOW CREATE TABLE` 又把它当裸名包一层反引号并前置连接自己的 `--database`，服务端把整串当作默认库里的单个标识符（HEAD 构建的二进制实测退出 1：`Error 1146 (42S02): Table 'imex_test.imex_test.zzq_evi' doesn't exist`）。另有两点不便：SQL 导出默认总带 `CREATE TABLE`，想只要数据没有开关；长 SQL 只能写在命令行上 | 三项：① 表名解析统一交回**裸表名**（`ExtractTableName`/`SimpleTableName` 断言 `sqlparser.TableName` 后取其 `Name`），新增 `ExtractTableRef()` 把 schema 与表名拆开、只供 `SHOW CREATE TABLE` 使用（`getCreateTableStatement(schema, tableName)`，schema 为空不加前缀），单线程与并行分片两条预取路径同一口径——产物里的 `CREATE`/`INSERT`/`LOCK TABLES` 因此永远引用裸表名，同一个文件可以导进任意库；分片键探测本就按 `TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?` 过滤，带前缀反而匹配不到主键。② SQL 导出改为**默认仅数据**，新增 `--create` 显式带回建表，并**删掉 `--no-create`**（结构已是 opt-in，反向开关唯一的作用就是否决 `--create`，留着只多一个状态组合；传入它现在报 `unknown flag: --no-create` 退出 2），该选项登记为 SQL 专属（`--create -f del` 与其它格式越界同口径退出 2），配置回显由 `no_create` 改打 `create`；要用 `import --mode create` 建表，导出就必须加 `--create`。③ 新增 `--query-file` 从文件读 SQL（首尾空白与行尾分号自动去掉），与 `-q` **互斥**：两者都给、两者都不给、文件为空、文件不存在均为用法错误退出 2，回显只在真正走文件时打 `query_file`。实测（本地 MariaDB，HEAD 与工作区两个二进制跑同一条命令）：工作区默认导出退出 0、产物 `CREATE TABLE` 0 行 / `INSERT` 3 行；`--create` 退出 0、产物首块即该表的建表语句、全文件库名出现 **0** 次；删掉源表后用 `import -f sql --mode create` 回灌同一文件 `inserted=3` 且 `COUNT(*)=3`；`--no-create` 无论单独给还是跟着 `--create` 给，都是 `unknown flag` 退出 2。测试：新增 `TestSQLParser_ExtractTableRef`，`TestSQLParser_SimpleTableName` 的限定名期望由 `db.users` 改为 `users`（钉住缺陷本身），`option_matrix_test.go` 的 `TestOptionMatrixNoDataNoCreate` 重写为四个子用例（默认仅数据可导入、`--create` 结构+数据、`--create --no-data` 配 `--mode create`、默认仅数据配 `--mode create` 必须失败），新增 `test/integration/export_cli_test.go`（4 用例：schema 限定查询导出回灌、`--create` 默认矩阵、`--query-file` 正例与四条负例、parquet 走 `--query-file`）；`docs/cli-oracle.txt` 的 `## export` 段按新帮助文本整体重新基线（实测逐字节相同） |
 | 工程名 `gomydump` 与工具定位（导入 + 导出）不再贴合，且各处叫法混用：模块名、二进制名、环境变量、帮助与日志回显、文档、测试库名与表前缀（实测表前缀还写成 `gmydump_it_`，少一个 `o`）不完全一致 | 全线改名为 **imex**（ImEx = Import + Export）：`go.mod` 模块路径 `github.com/imex`，命令词与二进制 `imex`，环境变量前缀 `IMEX_`（`IMEX_KEY`、`IMEX_QUIET`、`IMEX_LOG_FORMAT`、`IMEX_ERROR_STACK`、`IMEX_ECHO_SQL_VALUES`、`IMEX_NO_SQL_TAG`），SQL 归因注释 `/* imex:<commit> */`，启动横幅 `imex starting`，版本行 `imex version 0.1.0`，`Makefile` 的 `BINARY` 与 ldflags 注入路径、`Dockerfile` 的 `ENTRYPOINT ["/app/imex"]`，集成测试改用 `IMEX_TEST_DSN`、测试库 `imex_test` 与表前缀 `imex_it_`。归因注释**只写不读**（导入侧不反向识别它），旧导出文件里的 `/* gomydump:... */` 仍按普通 SQL 注释忽略，**旧产物照常导入**；本轮无 flag、退出码、文件格式变更，也不留旧名兼容层。实测：`imex version` 输出 `imex version 0.1.0`，`--log-level debug` 首条记录 `INFO imex starting ... command=export`，MariaDB general log 收到 `/* imex:9389a88 */ SHOW CREATE TABLE ...` 与 `/* imex:9389a88 */ SELECT ...`；代码、`Makefile`、`Dockerfile`、`go.mod` 对 `gomydump`/`GOMYDUMP`/`gmydump` 三种写法命中 **0**（文档里仅剩本条与需求文档变更记录 56 对旧名的引述）。`gofmt -l` 空、`go vet ./...` 干净、`go test -race -count=1 ./...` 七包全通过，真实库 `./test/integration` 104 条 PASS（含子用例）、0 SKIP，测试资产数量不变（39 个 `_test.go`、201 个 `Test*`、6 个 `Fuzz*`、12 个 `Benchmark*`）。同日收尾把仓库外也统一：工作副本目录名与产物前缀一并改为 `imex`（发布与保留脚本同时识别改名前的 `gomydump-` 前缀，否则旧批次清不掉），仓库内旧名产物 `bin/gomydump*` 与 `dist/gomydump-*` 删除。详见需求文档变更记录 56、57 |
 | 导出侧「拒绝覆盖已有输出文件」的选项名 `--no-replace` 与语义不符：它不涉及 REPLACE，却与 `--format sql` 的 REPLACE 语句、`import --mode replace` 三个 replace 撞名 | 改名为 `--no-overwrite` 并全线同步（flag 注册名、配置字段 `NoOverwrite`、配置回显键 `no_overwrite`、报错文案、集成用例名、README 与需求文档选项表、`cli-oracle.txt` 的 `## export` 段重新基线）；不留别名——实测旧名报 `unknown flag: --no-replace` 且退出 2，行为不变——实测带该选项命中已存在文件退出 1 且既有文件原样存活，不带则正常覆盖。详见需求文档变更记录 58 |
+| 口令加密的密钥派生是单次 `sha256(IMEX_KEY)`，无盐、无工作因子：实测拿到一条 `ENC:` 密文就能以 **939,822 次/秒** 离线尝试密钥候选（GCM 标签可当场验真伪），且同一密钥下所有密文共用同一把派生密钥 | 改为 stdlib `crypto/pbkdf2`（HMAC-SHA256、600000 次迭代、go 1.26.10 内置无新依赖）+ 每条密文独立的 16 字节随机盐，密文布局 `salt ‖ nonce ‖ 密文+标签`。按用户口径不加版本位、不兼容旧串：旧 `ENC:` 一律报 `wrong key or corrupted data` 并退出 1，且实测不创建输出文件。代价为每次进程一次性约 0.3 s（实测带密文口令连真实库导出 0.35–0.42 s，明文口令 0.00 s）。新增 `internal/common/password_test.go`（9 个用例，此前该路径零测试）。详见需求文档变更记录 60 |
+| `--extended-insert` 配一个低于单行语句宽度的 `--statement-size` 时静默退回逐行布局：合并判定是「当前批非空且加入下一元组将超上限才 flush」，于是每条语句永远只有 1 个元组，产物与默认单行布局逐字节相同，用户要求的合并一条也没发生却**零告警**（同一尺寸下默认单行布局反而会告警一次） | `internal/export/sql_writer.go` 的写入器补记两个状态——批量化布局累计的行数，以及是否曾把两个元组放进同一条语句；`WriteFooter` 在累计行数达到 2 且从未合并时记一次 WARN（`--extended-insert never merged rows: every row alone exceeds --statement-size, so the dump is one INSERT per row`，带 `statement_size` 与 `rows`），两种布局的告警由此对称，单行布局原有的「单行超限只告警一次」不变。单行的产物无法再拆，因此这里只出声、不改写行为。**实测**（本地 MariaDB，`bench_lay` 20 万行 3 列，`-f sql`）：`--extended-insert --statement-size 64` 产物 17,224,453 B / 200,000 条语句，与默认单行布局**逐字节相同**（md5 `01cfcd0ba049a7194be925f1a490e389`），改动前告警 **0** 条、改动后 **1** 条；`--statement-size 400` → 8,690,869 B / 22,217 条（无告警），`1000` → 8,015,845 B / 8,154 条，默认 `8388608` → 7,624,501 B / 1 条（体积 -55.8%，gzip 后 1,859,386 B 对 1,677,322 B）。同一份数据导入：单行文件 766 ms 对合并文件 814 ms（差异在噪声内），即文件布局不影响导入速度（`internal/import/sql_reader.go` 把元组拆回行后按 `--batch-size` 重新攒批），`--extended-insert` 的收益只在体积与第三方工具直接消费（例如管道给 `mysql` 客户端）。`--batch-size` 侧同样复核过：导入 100/200/500/1000/5000/10000/21845 分别为 1022 / 901 / 821 / 813 / 739 / 756 / 807 ms（20 万行逐次重导，每次行数都对得上），500 以上进入平坦区，只有病态小值（100）慢约 38%，默认 1000 无需调整；导出侧 1000/50/50000 为 109/114/166 ms，`--threads 4 --batch-size 50000` 为 122 ms 且该路径根本不读这两个选项（会记一条忽略 info）。测试：`internal/export/sql_writer_test.go` 新增 `captureWriterWarnings`（把 `common.Logger` 临时换成 `slog` 的 warn 级内存 handler）与 4 个用例——合并不可能的尺寸必须恰好 1 条合并告警且产物逐行、默认尺寸真正合并必须静默、单行文件不得误报合并失败、单行布局仍只告警一次且不出现合并告警；`test/integration/option_matrix_test.go:TestOptionMatrixSQLBatching` 增加`--extended-insert --statement-size 64` 退回逐行布局的产物形态断言 |
+| `--single-row-insert` 自第 47 项把「每行一条 INSERT」变成默认布局后就是纯 no-op：`legacySingleRowInsert` 由 cobra 写入后全仓库无人读取，唯一读它的 `validateInsertLayout` 判的仍是它自己与 `--extended-insert` 的互斥 | 删除该选项，不做兼容层（与 `--no-create` 直接删除、`--no-replace` 不留别名同口径）：`cmd/export_flags.go` 的死变量与注册、`cmd/validate.go` 的 `validateInsertLayout` 及其调用点、`internal/config/formatscope.go` 的 `sqlOnly("single-row-insert")` 登记四处同时消失，SQL 专属组由五项减为四项，`--help` 的范围标记也少一行。内部 API `SQLWriter.SetSingleRowInsert` **保留**——它由 `internal/export/exporter.go` 按 `!cfg.ExtendedInsert` 真实驱动默认布局，与同名 CLI 选项不是一回事。**实测**：`imex export ... -f sql --single-row-insert` 报 `unknown flag: --single-row-insert` 且退出 **2**；与 `--extended-insert` 同时给出同样退出 **2**（文案由互斥改为未知选项）；`imex export --help` 与 `docs/cli-oracle.txt` 的 `## export` 段重新基线后 diff 为空（只少那一行，最长名仍是 `--socket-*-timeout`，列对齐未变）；全仓库 `single-row-insert` 在代码与构建脚本中命中 **0**，只剩「已删除选项是未知选项」这一条用例名与该用例的 argv。测试：`cmd/cli_matrix_test.go` 删掉旧选项合法 / 与 `--extended-insert` 互斥 / 配 `--format parquet` 越界三条矩阵用例，改为一条「已删除选项即未知选项」，parquet 越界的覆盖转由 `--extended-insert` 承担，`TestCLIInsertLayout` 去掉废弃项段落；`internal/config/formatscope_test.go` 的 `AppliesTo` 矩阵把该行换成 `extended-insert` 两行（SQL 为 true、parquet 为 false）；`test/integration/roundtrip_test.go` 的注释不再点名已删除的选项；`test/integration/option_matrix_test.go` 的旧选项用例换成上面那条退化布局用例。文档：README 导出标志表与参数校验表各删一行、SQL 输出说明补删除理由与未知选项后果、关联校验段更新 SQL 专属清单；requirements.md 选项表与适用性段、DB2 映射行、选项演进表第 4 行的注、10 节测试场景行、11.1 三行计数、`docs/cli-oracle.txt` 头注（新增 Re-baselined note 3，nine DEL plus five SQL / fourteen marked 改为 nine plus four / thirteen）同步。测试资产 40 个 `_test.go` / 214 个 `Test*`（`internal/export` 70→74），6 个 `Fuzz*`、12 个 `Benchmark*` 不变 |
 
 ## 项目结构
 
@@ -845,7 +849,7 @@ imex/
 │   │   ├── usage.go             # 用法错误分类（退出码 2）
 │   │   ├── log.go               # 日志模块（java/text 两种格式、版本信息、启动日志）
 │   │   ├── stats.go             # 吞吐统计、速率计算与定时进度计时器（停止时排空在写的记录）
-│   │   ├── password.go          # 密码加密/解密（AES-256-GCM）
+│   │   ├── password.go          # 密码加密/解密（PBKDF2-HMAC-SHA256 派生 + AES-256-GCM）
 │   │   └── detect.go            # 服务器类型检测
 │   ├── export/
 │   │   ├── exporter.go          # 导出调度器（单线程流水线、并行分片与合并、hex-blob 判定）
