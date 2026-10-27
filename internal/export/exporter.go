@@ -7,6 +7,7 @@ import (
 	"github.com/pkg/errors"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -431,17 +432,24 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 
 	common.Logger.Info("parallel export detected", "table", tableName, "shard_key", shardInfo.Columns, "threads", e.config.Threads)
 
-	// Generate shard ranges
-	shardRanges := GenerateShardRanges(shardInfo, e.config.Threads)
+	// Generate shard ranges: more ranges than workers, so a range that turns out
+	// bigger than the estimate is drained by a worker instead of by a whole slot.
+	numRanges := shardRangeCount(e.config.Threads)
+	shardRanges := planShardRanges(e.db, tableName, shardInfo, numRanges)
 	if len(shardRanges) <= 1 {
 		common.Logger.Warn("only 1 shard range, falling back to single-threaded export")
 		return e.exportSingle(ctx, startTime)
 	}
+	if len(shardRanges) < numRanges {
+		common.Logger.Info("shard ranges fewer than planned", "planned", numRanges, "ranges", len(shardRanges))
+	}
 
 	// The parallel path never reads --batch-size/--pipeline-buffer: shard
 	// look-ahead comes from a fixed byte budget divided across the shards
-	// (shardStreamQueueBlocks), not from those two. Report it, because otherwise
-	// `--threads 8 --batch-size 50000` silently changes nothing.
+	// (shardStreamQueueBlocks), not from those two. The CLI refuses the pair when
+	// --threads>1 rather than dropping the instruction on the floor
+	// (cmd.validateParallelExportOptions), so this notice is what a caller driving
+	// the library directly gets instead of a refusal.
 	if e.pipelineOptionsIgnoredByParallel() {
 		blocks := shardStreamQueueBlocks(len(shardRanges))
 		common.Logger.Info("parallel export ignores pipeline options",
@@ -477,7 +485,10 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 		pipes[i] = newShardPipe(ctx, queueBlocks, shardBlockSize)
 	}
 
-	// Start parallel export goroutines
+	// Start the shard workers: threads goroutines claim ranges in ascending order
+	// from a shared cursor. Claiming in order matters — the stream writer below
+	// consumes the pipes in range order, so a worker must never sit on a late
+	// range while the range the writer is waiting for is still unclaimed.
 	type shardResult struct {
 		shardIdx int
 		rowCount int64
@@ -485,11 +496,22 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	}
 	resultCh := make(chan shardResult, len(shardRanges))
 
-	for i, shardRange := range shardRanges {
-		go func(shardIdx int, shardRange ShardRange) {
-			rowCount, err := e.exportShard(ctx, shardIdx, shardInfo, shardRange, columns, serverType, pipes[shardIdx])
-			resultCh <- shardResult{shardIdx: shardIdx, rowCount: rowCount, err: err}
-		}(i, shardRange)
+	workers := e.config.Threads
+	if workers > len(shardRanges) {
+		workers = len(shardRanges)
+	}
+	nextRange := int64(-1)
+	for w := 0; w < workers; w++ {
+		go func() {
+			for {
+				idx := int(atomic.AddInt64(&nextRange, 1))
+				if idx >= len(shardRanges) {
+					return
+				}
+				rowCount, err := e.exportShard(ctx, idx, shardInfo, shardRanges[idx], columns, serverType, pipes[idx])
+				resultCh <- shardResult{shardIdx: idx, rowCount: rowCount, err: err}
+			}
+		}()
 	}
 
 	// Consume the shards in order while they are still running.

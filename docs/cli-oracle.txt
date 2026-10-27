@@ -31,6 +31,19 @@
 # is now an unknown-flag usage error (exit 2) and the SQL scope group is down to four
 # options. The `## export` body was regenerated from the tree again and the diff is
 # empty: exactly one help line left the block and the column alignment is unchanged.
+# Re-baselined note 4 (2026-10-27): export's --batch-size and --pipeline-buffer stopped
+# being inert next to --threads>1 and became a usage error (exit 2) naming the option
+# that was refused. The parallel path never read either one — shard look-ahead comes from
+# a fixed byte budget divided across the ranges — so a run carrying `--threads 8 --batch-size
+# 50000` used to log `parallel export ignores pipeline options` and export anyway, which
+# reports a dropped instruction instead of refusing it. Only an explicitly passed flag is
+# refused: `--threads 4` on its own stays valid, and `--batch-size 1000` with --threads>1 is
+# refused even at its default value, because what is being refused is the request, not the
+# number. Import keeps both options at every thread count (its parallel path really does
+# read them). The library still logs the notice for callers that build ExportConfig by
+# hand and have no "was this flag set" to ask. The `## export` body was regenerated from
+# the tree again and the diff is empty: two help lines changed wording, nothing moved in
+# the column alignment, and no option was added or removed.
 # Frozen baseline, kept verbatim as a regression reference. The intentional
 # deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --extended-insert and lost --single-row-insert (one INSERT per
@@ -48,10 +61,11 @@
 # reworded on 2026-10-25 to say what the options actually govern: --statement-size
 # now reads "Max bytes per INSERT statement (only bounds merged statements: without
 # --extended-insert a longer row just warns)" because the default one-row layout
-# turned it into an alert threshold, and --batch-size/--pipeline-buffer now end in
-# "(single-threaded export; --threads>1 ignores it and says so)" because the
-# parallel path sizes shard look-ahead from its own byte budget and now records
-# `parallel export ignores pipeline options` when either was moved. import gained
+# turned it into an alert threshold, and --batch-size/--pipeline-buffer were marked
+# as single-threaded-only because the parallel path sizes shard look-ahead from its
+# own byte budget. Note 4 below moved both from "ignored with a log record" to
+# "refused as a usage error", which is the wording the re-baselined body carries.
+# import gained
 # --statement-size on 2026-10-25 as well, with a different meaning from export's
 # same-named option: there it is an optional ceiling in bytes on each INSERT the
 # importer builds, default 0 meaning "no extra cap", and it may only lower the
@@ -123,7 +137,7 @@ Aliases:
   export, exp
 
 Flags:
-      --batch-size int                  Rows per reader->writer hand-off batch (single-threaded export; --threads>1 ignores it and says so) (default 1000)
+      --batch-size int                  Rows per reader->writer hand-off batch (single-threaded export only; passing it with --threads>1 is a usage error) (default 1000)
       --char-del string                 String delimiter (only with --format del) (default "\"")
       --col-del string                  Column delimiter (only with --format del) (default ",")
       --connect-timeout duration        TCP connect timeout (maps to JDBC connectTimeout) (default 5s)
@@ -147,7 +161,7 @@ Flags:
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Output file path (required)
   -p, --password string                 Database password
-      --pipeline-buffer int             Hand-off queue depth, in batches (single-threaded export; --threads>1 ignores it and says so) (default 10)
+      --pipeline-buffer int             Hand-off queue depth, in batches (single-threaded export only; passing it with --threads>1 is a usage error) (default 10)
   -P, --port int                        TCP/IP port (default 3306)
       --progress-interval duration      How often to write the periodic progress record (must be positive; --quiet drops the records entirely) (default 5s)
   -q, --query string                    SQL SELECT statement (mutually exclusive with --query-file)

@@ -80,8 +80,8 @@ func registerExportFlags(cmd *cobra.Command) {
 	// Pipeline hand-off controls. Both are read only by the single-threaded path;
 	// a parallel shard sizes its look-ahead from a fixed byte budget divided
 	// across shards, so exportParallel reports when these were moved.
-	f.IntVar(&exportCfg.BatchSize, "batch-size", config.DefaultBatchSize, "Rows per reader->writer hand-off batch (single-threaded export; --threads>1 ignores it and says so)")
-	f.IntVar(&exportCfg.PipelineBuffer, "pipeline-buffer", config.DefaultPipelineBuffer, "Hand-off queue depth, in batches (single-threaded export; --threads>1 ignores it and says so)")
+	f.IntVar(&exportCfg.BatchSize, "batch-size", config.DefaultBatchSize, "Rows per reader->writer hand-off batch (single-threaded export only; passing it with --threads>1 is a usage error)")
+	f.IntVar(&exportCfg.PipelineBuffer, "pipeline-buffer", config.DefaultPipelineBuffer, "Hand-off queue depth, in batches (single-threaded export only; passing it with --threads>1 is a usage error)")
 
 	// Parallel export
 	f.IntVar(&exportCfg.Threads, "threads", 1, "Number of parallel export tasks (1 = no parallelism)")

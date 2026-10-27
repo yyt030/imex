@@ -228,8 +228,35 @@ func validateDelimiters(charDel, colDel, rowDel, escape string) error {
 	return nil
 }
 
+// validateParallelExportOptions rejects the two hand-off options on a run that
+// will not read them. The parallel export path serialises each shard straight
+// into its pipe: there is no reader->writer batch to size and no queue to
+// deepen, so accepting the flags would mean storing values nothing reads and
+// reporting success to a user whose instruction was silently dropped. Only an
+// explicitly passed flag counts, so the defaults stay usable together with
+// --threads.
+//
+// The library still logs this case (see pipelineOptionsIgnoredByParallel),
+// because a caller building ExportConfig by hand has no "was this set" to ask.
+func validateParallelExportOptions(cmd *cobra.Command, threads int) error {
+	if threads <= 1 {
+		return nil
+	}
+	for _, name := range parallelExportIgnoredOptions {
+		if cmd.Flags().Changed(name) {
+			return common.Usagef("--%s only applies to a single-threaded export: with --threads %d every shard streams its own rows straight to the output, so the option changes nothing. Drop --%s, or use --threads 1",
+				name, threads, name)
+		}
+	}
+	return nil
+}
+
+// parallelExportIgnoredOptions are the export flags the sharded path never
+// reads, in the order they are reported.
+var parallelExportIgnoredOptions = []string{"batch-size", "pipeline-buffer"}
+
 // validateExportConfig performs all validation for export.
-// Order: threads → batch-size → pipeline-buffer → rest.
+// Order: threads → batch-size → pipeline-buffer → parallel-path conflicts → rest.
 func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 	if err := validateThreads(cfg.Threads); err != nil {
 		return err
@@ -238,6 +265,9 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 		return err
 	}
 	if err := validatePipelineBuffer(cfg.PipelineBuffer); err != nil {
+		return err
+	}
+	if err := validateParallelExportOptions(cmd, cfg.Threads); err != nil {
 		return err
 	}
 	if err := validatePort(cfg.Port); err != nil {

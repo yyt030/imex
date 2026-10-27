@@ -26,12 +26,15 @@ package integration
 //	  go test -count=1 ./test/integration -run OptionMatrix -v
 
 import (
+	"crypto/md5"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -536,9 +539,14 @@ func TestOptionMatrixSQLBatching(t *testing.T) {
 // byte-identical for the same reason plus one more: a row is a whole statement,
 // so a shard boundary never leaves an open INSERT to flush. With
 // --extended-insert the boundary does cost something, and the invariant is
-// bounded and exact -- at most threads-1 additional statements, and the byte
-// difference is precisely the size of those headers -- so neither rows nor
-// escaping can drift.
+// bounded and exact -- at most one additional statement per shard boundary, and
+// the byte difference is precisely the size of those headers -- so neither rows
+// nor escaping can drift.
+//
+// The bound counts boundaries, not threads: parallel export plans twice as many
+// ranges as there are workers (shardRangeCount), so that a range which turns out
+// bigger than the row estimate is drained by one worker instead of stalling a
+// whole slot.
 func TestOptionMatrixParallelOutput(t *testing.T) {
 	env := newCLILive(t)
 	src, _ := env.makePair(t, "parout")
@@ -575,9 +583,14 @@ func TestOptionMatrixParallelOutput(t *testing.T) {
 			nSerial := strings.Count(mergedText, header)
 			nParallel := strings.Count(got, header)
 			extra := nParallel - nSerial
-			if extra < 0 || extra > 4 { // 4 shards => at most 3 boundaries, 1 to spare
-				t.Errorf("parallel dump has %d INSERT headers vs %d serial, extra=%d out of bounds",
-					nParallel, nSerial, extra)
+			n, err := strconv.Atoi(threads)
+			if err != nil {
+				t.Fatalf("unparsable thread count %q: %v", threads, err)
+			}
+			maxRanges := 2 * n // shardRangeCount(threads), below its cap
+			if extra < 0 || extra > maxRanges-1 {
+				t.Errorf("parallel dump has %d INSERT headers vs %d serial, extra=%d out of bounds for %d ranges",
+					nParallel, nSerial, extra, maxRanges)
 			}
 			// Each extra statement costs exactly one header: the row separator ", "
 			// and the statement terminator + newline ";\n" are the same width.
@@ -592,6 +605,109 @@ func TestOptionMatrixParallelOutput(t *testing.T) {
 			assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
 		})
 	}
+}
+
+// TestOptionMatrixTextShardKeyParallelExport is the live half of boundary
+// sampling. A CHAR key has no numeric boundaries to cut, so a parallel export of
+// it used to collapse to one range and read the table single-threaded whatever
+// --threads said; the ranges now come from the key distribution instead.
+//
+// Only a real server can answer the two questions that matter here: whether the
+// probe statement it has to run (`SELECT `k` FROM t WHERE `k` > ? ORDER BY `k`
+// LIMIT 1 OFFSET n`) is accepted at all, and whether the boundaries it returns
+// still cover the key space exactly once. Both are pinned by requiring the
+// parallel dump to be byte-identical to the serial one, and by importing it back.
+func TestOptionMatrixTextShardKeyParallelExport(t *testing.T) {
+	env := newCLILive(t)
+	src := env.liveTable(t, "parstr_src")
+	dst := env.liveTable(t, "parstr_dst")
+
+	env.exec(t, fmt.Sprintf("CREATE TABLE `%s` (`k` char(32) NOT NULL, `v` varchar(64) NOT NULL, PRIMARY KEY (`k`))", src))
+	env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
+
+	// md5-derived keys sort all over the domain, which is what makes UUID/hash
+	// primary keys the case equal-width splitting cannot express.
+	var values strings.Builder
+	const rows = 240
+	for i := 0; i < rows; i++ {
+		if i > 0 {
+			values.WriteString(", ")
+		}
+		sum := md5.Sum([]byte(fmt.Sprintf("key-%d", i)))
+		key := hex.EncodeToString(sum[:])
+		fmt.Fprintf(&values, "('%s', 'v-%03d')", key, i)
+	}
+	env.exec(t, fmt.Sprintf("INSERT INTO `%s` (k, v) VALUES %s", src, values.String()))
+
+	serial := readFile(t, env.cliExport(t, src, "sql", "parstr_serial.sql"))
+	if got := strings.Count(serial, "INSERT INTO "); got != rows {
+		t.Fatalf("serial dump has %d statements, want one per row (%d)", got, rows)
+	}
+
+	parallel := readFile(t, env.cliExport(t, src, "sql", "parstr_parallel.sql", "--threads", "4"))
+	if parallel != serial {
+		t.Errorf("parallel dump of a text key is not byte-identical to serial (%d vs %d bytes)",
+			len(parallel), len(serial))
+	}
+
+	if got := readFile(t, env.cliExport(t, src, "del", "parstr_parallel.del", "--threads", "4")); got !=
+		readFile(t, env.cliExport(t, src, "del", "parstr_serial.del")) {
+		t.Error("parallel DEL dump of a text key is not byte-identical to serial")
+	}
+
+	// The whole point is that this run shards: a fallback to one range would hide
+	// behind a byte-identical file and cost nothing but the parallelism.
+	out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
+		"-o", filepath.Join(env.dir, "parstr_logged.sql"), "--threads", "4", "--log-level", "info")
+	if code != 0 {
+		t.Fatalf("logged parallel export: exit %d\n%s", code, out)
+	}
+	if strings.Contains(out, "only 1 shard range") {
+		t.Errorf("text key still collapsed to a single range:\n%s", out)
+	}
+	if got := strings.Count(out, "shard export completed"); got < 2 {
+		t.Errorf("shards completed = %d, want the run to have read more than one range\n%s", got, out)
+	}
+
+	env.cliImport(t, dst, "sql", filepath.Join(env.dir, "parstr_parallel.sql"))
+	// The dumps cannot be compared here: each one names its own table. The rows
+	// are what the split promised to keep, so the two tables are read back and
+	// compared directly.
+	if got, want := textKeyRows(t, env, dst), textKeyRows(t, env, src); len(got) != len(want) {
+		t.Fatalf("imported table has %d rows, want %d", len(got), len(want))
+	} else {
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("row %d = %q, want %q (the sampled ranges did not cover the key space exactly once)",
+					i, got[i], want[i])
+			}
+		}
+	}
+}
+
+// textKeyRows reads a (k, v) table back in key order, so a split-and-merge export
+// can be compared against the rows the server holds.
+func textKeyRows(t *testing.T, env *cliEnv, table string) []string {
+	t.Helper()
+
+	rows, err := env.db.Query("SELECT k, v FROM `" + table + "` ORDER BY k")
+	if err != nil {
+		t.Fatalf("read %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			t.Fatalf("scan %s: %v", table, err)
+		}
+		out = append(out, k+"|"+v)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read %s: %v", table, err)
+	}
+	return out
 }
 
 // insertHeader returns the "INSERT INTO ... VALUES " prefix shared by the

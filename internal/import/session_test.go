@@ -299,3 +299,93 @@ func TestWriteSessionReplayFailureIsReported(t *testing.T) {
 		t.Fatalf("execs = %v, want one failed attempt plus one failed replay", drv.execs)
 	}
 }
+
+// TestReplayBudgetDividesAcrossWriters pins the memory rule: the replay cap is a
+// budget for the process, not one per writer, so N parallel writers retain the
+// documented total rather than N times it. The floor keeps a run with many
+// threads from committing after every batch.
+func TestReplayBudgetDividesAcrossWriters(t *testing.T) {
+	cases := []struct {
+		threads int
+		want    int
+	}{
+		{1, DefaultMaxPendingBytes},
+		{2, DefaultMaxPendingBytes / 2},
+		{4, DefaultMaxPendingBytes / 4},
+		{8, minReplayBudget},
+		{64, minReplayBudget},
+		{0, DefaultMaxPendingBytes},
+		{-1, DefaultMaxPendingBytes},
+	}
+	for _, tc := range cases {
+		if got := replayBudget(tc.threads); got != tc.want {
+			t.Errorf("replayBudget(%d) = %d, want %d", tc.threads, got, tc.want)
+		}
+	}
+	if DefaultMaxPendingBytes/minReplayBudget != 8 {
+		t.Errorf("the floor must divide the budget evenly, got %d of %d",
+			minReplayBudget, DefaultMaxPendingBytes)
+	}
+}
+
+// newTestSessionThreads is newTestSession for a run with parallel writers, which
+// is the only thing that decides how much replay data a session may retain.
+func newTestSessionThreads(t *testing.T, commitCount int64, threads int) (*writeSession, *scriptedDriver) {
+	t.Helper()
+	db, drv := newScriptedDB(t)
+	imp := newTestImporter()
+	imp.cfg.ImportThreads = threads
+	sess := newWriteSession(imp, db, context.Background(), commitCount, "test")
+	sess.policy = common.RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond}
+	if err := sess.begin(); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(sess.rollback)
+	return sess, drv
+}
+
+func TestWriteSessionRetainsItsShareOfTheReplayBudget(t *testing.T) {
+	single, _ := newTestSessionThreads(t, 1000, 1)
+	if single.maxPendingBytes != DefaultMaxPendingBytes {
+		t.Errorf("single-threaded budget = %d, want the full %d",
+			single.maxPendingBytes, DefaultMaxPendingBytes)
+	}
+
+	four, _ := newTestSessionThreads(t, 1000, 4)
+	if four.maxPendingBytes != DefaultMaxPendingBytes/4 {
+		t.Errorf("4-thread budget = %d, want %d", four.maxPendingBytes, DefaultMaxPendingBytes/4)
+	}
+}
+
+// TestWriteSessionCommitsAtItsOwnByteCap is the property the division is for: a
+// writer stops retaining replay data at its share of the budget even while
+// --commit-count would let the transaction run far longer. Without the per-writer
+// budget the same run holds four times the memory, which is what a 4-thread
+// import of wide rows measured before (peak RSS 374 MB).
+func TestWriteSessionCommitsAtItsOwnByteCap(t *testing.T) {
+	sess, drv := newTestSessionThreads(t, 1<<40, 4)
+	payload := strings.Repeat("x", sess.maxPendingBytes/2)
+
+	if err := sess.write("INSERT A", []interface{}{payload}, 10); err != nil {
+		t.Fatalf("write A: %v", err)
+	}
+	if err := sess.maybeCommit(); err != nil {
+		t.Fatalf("maybeCommit A: %v", err)
+	}
+	if drv.commits != 0 {
+		t.Fatalf("commits after half the budget = %d, want 0", drv.commits)
+	}
+
+	if err := sess.write("INSERT B", []interface{}{payload}, 10); err != nil {
+		t.Fatalf("write B: %v", err)
+	}
+	if err := sess.maybeCommit(); err != nil {
+		t.Fatalf("maybeCommit B: %v", err)
+	}
+	if drv.commits != 1 {
+		t.Fatalf("commits at the byte cap = %d, want 1", drv.commits)
+	}
+	if sess.pendingBytes != 0 || len(sess.pending) != 0 {
+		t.Errorf("session kept %d bytes / %d batches after committing", sess.pendingBytes, len(sess.pending))
+	}
+}

@@ -593,3 +593,89 @@ func resetChangedFlags(cmds ...*cobra.Command) {
 func newImportConfigForTest() *config.ImportConfig {
 	return config.NewImportConfig()
 }
+
+// TestCLIParallelExportRejectsPipelineOptions pins the contract the parallel
+// export path now has: the two hand-off options belong to the single-threaded
+// pipeline, so a run that asks for both at once is refused as a usage error
+// instead of accepting values nothing reads and logging that it ignored them.
+//
+// "Explicitly passed" is what decides, not the value: --batch-size 1000 together
+// with --threads 4 is refused too, because the user did ask for the option and
+// the answer is that the sharded path cannot honour it whatever the number is.
+func TestCLIParallelExportRejectsPipelineOptions(t *testing.T) {
+	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb",
+		"-o", "/tmp/out.del", "-q", "SELECT 1"}
+	with := func(extra ...string) []string {
+		return append(append([]string{}, base...), extra...)
+	}
+
+	cases := []struct {
+		name      string
+		args      []string
+		wantErr   bool
+		errSubstr string
+	}{
+		{"threads alone is accepted", with("--threads", "4"), false, ""},
+		{"threads with batch-size", with("--threads", "4", "--batch-size", "50000"), true, "--batch-size"},
+		{"threads with pipeline-buffer", with("--threads", "4", "--pipeline-buffer", "32"), true, "--pipeline-buffer"},
+		{
+			// The flag is refused at its own default: what matters is that it was
+			// passed, not which value came with it.
+			name: "threads with batch-size at the default", args: with("--threads", "4", "--batch-size", "1000"),
+			wantErr: true, errSubstr: "--batch-size",
+		},
+		{"threads 1 with batch-size", with("--threads", "1", "--batch-size", "50000"), false, ""},
+		{"batch-size without threads", with("--batch-size", "50000"), false, ""},
+		{
+			name:      "invalid threads is still reported first",
+			args:      with("--threads", "0", "--batch-size", "50000"),
+			wantErr:   true,
+			errSubstr: "invalid --threads",
+		},
+		{
+			name:      "invalid batch-size is reported before the conflict",
+			args:      with("--threads", "4", "--batch-size", "0"),
+			wantErr:   true,
+			errSubstr: "invalid --batch-size",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateOnly(t, "export", tc.args)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("validateOnly: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected an error containing %q, got nil", tc.errSubstr)
+			}
+			if !strings.Contains(err.Error(), tc.errSubstr) {
+				t.Errorf("error = %q, want it to contain %q", err, tc.errSubstr)
+			}
+			if !common.IsUsageError(err) {
+				t.Errorf("a refused option combination must be a usage error (exit 2), got %v", err)
+			}
+		})
+	}
+}
+
+// TestCLIImportKeepsPipelineOptionsWithThreads is the other half of the same
+// rule: the parallel importer really does read both options — its reader hands
+// batches to N writers through a queue of --pipeline-buffer depth — so nothing
+// there may be rejected.
+func TestCLIImportKeepsPipelineOptionsWithThreads(t *testing.T) {
+	args := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb",
+		"-i", "/tmp/in.del", "-t", "users",
+		"--threads", "4", "--batch-size", "50000", "--pipeline-buffer", "32"}
+
+	if err := validateOnly(t, "import", args); err != nil {
+		t.Fatalf("import with all three options: %v", err)
+	}
+	if importCfg.BatchSize != 50000 || importCfg.PipelineBuffer != 32 || importCfg.ImportThreads != 4 {
+		t.Errorf("config lost a value: batch=%d buffer=%d threads=%d",
+			importCfg.BatchSize, importCfg.PipelineBuffer, importCfg.ImportThreads)
+	}
+}

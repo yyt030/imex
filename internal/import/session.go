@@ -20,7 +20,34 @@ const DefaultIdleCommitTimeout = 30 * time.Second
 // wide BLOB/TEXT payloads, so a batch count alone does not bound memory. When
 // the retained batches reach this many bytes the transaction is committed
 // early, shrinking the replay window as well.
+//
+// The cap is a process-wide one, not a per-writer one: see replayBudget.
 const DefaultMaxPendingBytes = 64 << 20
+
+// minReplayBudget is the floor replayBudget divides DefaultMaxPendingBytes
+// down to. Past it a worker's own commit window would be smaller than a single
+// --statement-size batch, so the byte cap would start firing on every batch and
+// turn --commit-count into a dead option.
+const minReplayBudget = 8 << 20
+
+// replayBudget returns how much replay data one writer may retain.
+//
+// The cap used to be per session, which meant a run with N parallel writers
+// retained N x DefaultMaxPendingBytes: measured peak RSS of a 4-thread import of
+// wide rows was 208 MB, all of it replay buffers, and the multiplier grew with
+// --threads. Dividing keeps the retained total at the documented budget for any
+// thread count; the floor exists so a run with many workers does not commit
+// after every batch.
+func replayBudget(threads int) int {
+	if threads < 1 {
+		threads = 1
+	}
+	budget := DefaultMaxPendingBytes / threads
+	if budget < minReplayBudget {
+		budget = minReplayBudget
+	}
+	return budget
+}
 
 // pendingBatch is one INSERT that has been applied inside the current
 // transaction but not yet committed. MySQL rolls the whole transaction back
@@ -80,7 +107,7 @@ func newWriteSession(imp *Importer, db *sql.DB, ctx context.Context, commitCount
 		db:              db,
 		ctx:             ctx,
 		commitCount:     commitCount,
-		maxPendingBytes: DefaultMaxPendingBytes,
+		maxPendingBytes: replayBudget(imp.cfg.ImportThreads),
 		label:           label,
 		policy:          common.DefaultRetryPolicy(),
 	}
@@ -182,7 +209,7 @@ func (s *writeSession) maybeCommit() error {
 	}
 	if byteLimit && !rowLimit {
 		common.Logger.Debug("committing transaction at replay buffer limit",
-			"session", s.label, "bytes", DefaultMaxPendingBytes)
+			"session", s.label, "bytes", s.maxPendingBytes)
 	}
 	return s.begin()
 }
