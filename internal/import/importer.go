@@ -59,18 +59,12 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 	}
 	common.ApplyPoolHardening(db)
 
-	// Test connection with retry
-	var pingErr error
-	for i := 0; i < 3; i++ {
-		if pingErr = db.Ping(); pingErr == nil {
-			break
-		}
-		common.Logger.Warn("database ping failed, retrying", "attempt", i+1, "error", pingErr)
-		time.Sleep(time.Duration(i+1) * time.Second)
-	}
-	if pingErr != nil {
+	// Test the connection. Only a failure a reconnect can heal is retried; a
+	// server rejection (bad credentials, unknown database, unknown session
+	// variable) returns on the first try — see common.PingWithRetry.
+	if pingErr := common.PingWithRetry(db); pingErr != nil {
 		db.Close()
-		return nil, errors.Wrap(pingErr, "failed to ping database after 3 attempts")
+		return nil, pingErr
 	}
 
 	return &Importer{

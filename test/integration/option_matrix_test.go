@@ -38,6 +38,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 
@@ -1225,6 +1226,88 @@ func (c *cliEnv) csSnapshot(t *testing.T, table string) string {
 		t.Fatalf("iterate %s: %v", table, err)
 	}
 	return strings.Join(out, " ")
+}
+
+// TestOptionMatrixConnectionRejectionIsNotRetried pins the ping contract on the
+// real binary, for both commands.
+//
+// A rejection the server decided — wrong credentials here, and the same class as
+// an unknown database or an unknown session variable — cannot be healed by
+// dialling again, so it must fail on the first attempt: no "database ping failed,
+// retrying" record, no wait, and the server's own reason as the last word. The
+// old hand-rolled three-try loop waited a fixed 6.0 s (measured 2026-10-28, this
+// bed) and buried 1045 under "failed to ping database after 3 attempts".
+//
+// The bound itself is asserted in internal/common/ping_test.go; what only a live
+// server can prove is the classification — that 1045 really is rejected by the
+// server rather than by a local check, and that the CLI still exits 1 (a runtime
+// error, not a usage error) when it is.
+func TestOptionMatrixConnectionRejectionIsNotRetried(t *testing.T) {
+	env := newCLILive(t)
+
+	mc, err := mysql.ParseDSN(os.Getenv("IMEX_TEST_DSN"))
+	if err != nil {
+		t.Fatalf("parse DSN: %v", err)
+	}
+	host, port, db := mc.Addr, "", mc.DBName
+	if mc.Net != "unix" {
+		host, port, err = net.SplitHostPort(mc.Addr)
+		if err != nil {
+			t.Fatalf("split %q: %v", mc.Addr, err)
+		}
+	}
+	bad := []string{"-u", mc.User, "-p", "definitely-not-the-password", "-D", db, "--log-level", "warn"}
+	if mc.Net == "unix" {
+		bad = append([]string{"-S", mc.Addr}, bad...)
+	} else {
+		bad = append([]string{"-h", host, "-P", port}, bad...)
+	}
+
+	src, _ := env.makePair(t, "pingrej")
+	input := env.cliExport(t, src, "del", "pingrej.del")
+	missing := filepath.Join(env.dir, "never-written.del")
+
+	withBadCreds := func(extra ...string) []string {
+		args := append([]string{}, bad...)
+		return append(args, extra...)
+	}
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"export", withBadCreds("-q", "SELECT * FROM `"+src+"`", "-f", "del", "-o", missing)},
+		{"import", withBadCreds("-i", input, "-t", src)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			out, code := env.runCLI(t, append([]string{tc.name}, tc.args...)...)
+			elapsed := time.Since(start)
+
+			if code != 1 {
+				t.Errorf("a server rejection is a runtime error, exit = %d\n%s", code, firstLines(out, 6))
+			}
+			if strings.Contains(out, "ping failed, retrying") {
+				t.Errorf("permanent rejection was retried:\n%s", firstLines(out, 8))
+			}
+			if !strings.Contains(out, "failed to ping database after 1 attempt:") {
+				t.Errorf("want an honest single-attempt count:\n%s", firstLines(out, 8))
+			}
+			if !strings.Contains(out, "Error 1045") {
+				t.Errorf("the server's reason must survive the wrap:\n%s", firstLines(out, 8))
+			}
+			// The wait is the symptom the fix removed: three tries plus their
+			// 1 s + 2 s + 3 s sleeps measured 6.0 s. The bound is loose on
+			// purpose so a loaded machine cannot flip this; a regression to the
+			// old loop would blow straight through it.
+			if elapsed >= 3*time.Second {
+				t.Errorf("run took %s, retried a permanent error", elapsed)
+			}
+			if _, err := os.Stat(filepath.Join(env.dir, "never-written.del")); err == nil {
+				t.Error("export created an output file despite failing to connect")
+			}
+		})
+	}
 }
 
 // rowCount and ids are small helpers for the slice/mode assertions.

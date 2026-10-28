@@ -124,7 +124,7 @@ func TestExportShard_ReleasesConnectionBeforePipeDrain(t *testing.T) {
 				IsNumeric: []bool{true},
 			},
 			ShardRange{Mins: []interface{}{int64(1)}, Maxs: []interface{}{int64(2)}},
-			[]string{"note"}, common.ServerMySQL, p)
+			[]string{"note"}, p)
 		done <- outcome{rows: n, err: err}
 	}()
 
@@ -202,7 +202,7 @@ func TestExportShard_EmptyShardReleasesConnectionAndClosesPipe(t *testing.T) {
 				IsNumeric: []bool{true},
 			},
 			ShardRange{Mins: []interface{}{int64(1)}, Maxs: []interface{}{int64(2)}},
-			[]string{"note"}, common.ServerMySQL, p)
+			[]string{"note"}, p)
 		done <- err
 	}()
 

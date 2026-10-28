@@ -13,7 +13,7 @@ import (
 
 // TestLogMessageStyle locks the log vocabulary: every record emitted through the
 // global logger uses a lowercase single-line message, so one grep pattern works
-// across export/import/shard/worker lines and the java/text layouts stay
+// across export/import/shard/worker lines and the console/text layouts stay
 // consistent. The previous mix ("Export completed" next to "export
 // configuration" and "Starting export") meant a case-sensitive grep silently
 // missed half the records, and two lines reported the same event.

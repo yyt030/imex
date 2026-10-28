@@ -523,7 +523,7 @@ func teeLogToFile(t *testing.T, path string) func() {
 
 // assertMessageFile checks that a --messages file is exactly the run's command
 // log: the wanted records are present, no DB2-style report survives, and every
-// line is a log record in the default java layout.
+// line is a log record in the default console layout.
 func assertMessageFile(t *testing.T, path string, wants ...string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -550,7 +550,7 @@ func assertMessageFile(t *testing.T, path string, wants ...string) {
 	}
 }
 
-// logRecordLine matches the java layout's fixed prefix:
+// logRecordLine matches the console layout's fixed prefix:
 // "2026-01-02 15:04:05.123 [1234] INFO message ...".
 var logRecordLine = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[\d+\] [A-Z]+ `)
 

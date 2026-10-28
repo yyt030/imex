@@ -26,7 +26,7 @@ func captureWriterWarnings(t *testing.T) *bytes.Buffer {
 func TestSQLWriter_SetNamesHeader(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
-		true, true, common.ServerMySQL, "CREATE TABLE `t` (`id` int);", "utf8mb4")
+		true, true, "CREATE TABLE `t` (`id` int);", "utf8mb4")
 	if err := w.WriteHeader([]string{"id"}); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestSQLWriter_SetNamesHeader(t *testing.T) {
 func TestSQLWriter_NoHeaderWithoutCreateOrData(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
-		false, false, common.ServerMySQL, "", "utf8mb4")
+		false, false, "", "utf8mb4")
 	if err := w.WriteHeader([]string{"id"}); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestSQLWriter_NoHeaderWithoutCreateOrData(t *testing.T) {
 func TestSQLWriter_HeaderWithDataOnly(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "latin1")
+		false, true, "", "latin1")
 	if err := w.WriteHeader([]string{"id"}); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestSQLWriter_HeaderWithDataOnly(t *testing.T) {
 func TestSQLWriter_HeaderWithCreateOnly(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
-		true, false, common.ServerMySQL, "CREATE TABLE `t` (`id` int);", "utf8")
+		true, false, "CREATE TABLE `t` (`id` int);", "utf8")
 	if err := w.WriteHeader([]string{"id"}); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestSQLWriter_HeaderWithCreateOnly(t *testing.T) {
 func TestSQLWriter_EscapeHandling(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"s"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.WriteHeader(nil)
 
 	// Test: newline, carriage return, tab, backslash, single quote
@@ -131,7 +131,7 @@ func TestSQLWriter_EscapeHandling(t *testing.T) {
 func TestSQLWriter_OneInsertPerLine(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"s"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.WriteHeader(nil)
 	w.WriteRow([]interface{}{"hello\nworld"})
 	w.WriteRow([]interface{}{"foo\rbar"})
@@ -158,7 +158,7 @@ func TestSQLWriter_OneInsertPerLine(t *testing.T) {
 func TestSQLWriter_HexBlobEncoding(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "data"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.SetBinaryFormat([]bool{false, true}, true)
 	w.WriteHeader(nil)
 
@@ -196,7 +196,7 @@ func TestSQLWriter_HexBlobEncoding(t *testing.T) {
 func TestSQLWriter_HexBlobDisabled(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"data"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.SetBinaryFormat([]bool{true}, false) // binary column but hex disabled
 	w.WriteHeader(nil)
 	w.WriteRawRow([]sql.RawBytes{sql.RawBytes("raw\x00bytes")})
@@ -215,7 +215,7 @@ func TestSQLWriter_StatementSizeBatching(t *testing.T) {
 	// Use a very small statement size to force batch splitting
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "name"}, 80,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.WriteHeader(nil)
 
 	// Write enough rows to exceed the 80-byte statement size
@@ -236,7 +236,7 @@ func TestSQLWriter_StatementSizeSingleRowOverflow(t *testing.T) {
 	// A single row that exceeds statementSize should still be written (graceful degradation)
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"data"}, 10,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.WriteHeader(nil)
 
 	// This single value exceeds the 10-byte budget
@@ -252,7 +252,7 @@ func TestSQLWriter_StatementSizeSingleRowOverflow(t *testing.T) {
 func TestSQLWriter_WithoutCreateSkipsCreateTable(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "CREATE TABLE `t` (`id` int);", "utf8mb4")
+		false, true, "CREATE TABLE `t` (`id` int);", "utf8mb4")
 	w.WriteHeader([]string{"id"})
 	w.WriteRow([]interface{}{1})
 	w.WriteFooter()
@@ -269,7 +269,7 @@ func TestSQLWriter_WithoutCreateSkipsCreateTable(t *testing.T) {
 func TestSQLWriter_NoDataSkipsInserts(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
-		true, false, common.ServerMySQL, "CREATE TABLE `t` (`id` int);", "utf8mb4")
+		true, false, "CREATE TABLE `t` (`id` int);", "utf8mb4")
 	w.WriteHeader([]string{"id"})
 	w.WriteRow([]interface{}{1}) // should be ignored
 	w.WriteFooter()
@@ -287,7 +287,7 @@ func TestSQLWriter_YearNormalization(t *testing.T) {
 	// YEAR "0000" should pass through as-is (normalization happens upstream)
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"y"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.WriteHeader(nil)
 	w.WriteRawRow([]sql.RawBytes{sql.RawBytes("0000")})
 	w.WriteFooter()
@@ -301,7 +301,7 @@ func TestSQLWriter_YearNormalization(t *testing.T) {
 func TestSQLWriter_SingleRowInsert(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.SetSingleRowInsert(true)
 	w.WriteHeader(nil)
 
@@ -341,7 +341,7 @@ func TestSQLWriter_SingleRowInsert(t *testing.T) {
 func TestSQLWriter_SingleRowInsertRawRows(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.SetSingleRowInsert(true)
 	w.WriteHeader(nil)
 
@@ -360,7 +360,7 @@ func TestSQLWriter_SingleRowInsertOverridesStatementSize(t *testing.T) {
 	// irrelevant now, but the layout must stay valid either way.
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 1,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.SetSingleRowInsert(true)
 	w.WriteHeader(nil)
 	w.WriteRow([]interface{}{int64(1), strings.Repeat("x", 50)})
@@ -376,21 +376,33 @@ func TestSQLWriter_SingleRowInsertOverridesStatementSize(t *testing.T) {
 	}
 }
 
-func TestSQLWriter_SkipTableLocks(t *testing.T) {
-	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "utf8mb4")
-	w.SetSkipTableLocks(true)
-	w.WriteHeader(nil)
-	w.WriteRow([]interface{}{int64(1)})
-	w.WriteFooter()
+func TestSQLWriterWritesNoTableLocks(t *testing.T) {
+	// The dump used to carry a LOCK TABLES ... WRITE / UNLOCK TABLES pair. The
+	// lock statement came before CREATE TABLE, so the file could not be replayed
+	// into an empty schema: the standard mysql client stopped on the second line
+	// with ERROR 1146 (table does not exist). The pair is not written at all now,
+	// for either layout, with or without --create.
+	for _, create := range []bool{false, true} {
+		var buf bytes.Buffer
+		w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize,
+			create, true, "CREATE TABLE `t` (`id` int);", "utf8mb4")
+		if err := w.WriteHeader(nil); err != nil {
+			t.Fatalf("WriteHeader(create=%v): %v", create, err)
+		}
+		if err := w.WriteRow([]interface{}{int64(1)}); err != nil {
+			t.Fatalf("WriteRow(create=%v): %v", create, err)
+		}
+		if err := w.WriteFooter(); err != nil {
+			t.Fatalf("WriteFooter(create=%v): %v", create, err)
+		}
 
-	out := buf.String()
-	if strings.Contains(out, "LOCK TABLES `") || strings.Contains(out, "UNLOCK TABLES;") {
-		t.Errorf("shard fragment must not contain lock statements:\n%s", out)
-	}
-	if !strings.Contains(out, "SET NAMES") || !strings.Contains(out, "INSERT INTO") {
-		t.Errorf("preamble and data must survive:\n%s", out)
+		out := buf.String()
+		if strings.Contains(out, "LOCK TABLES") || strings.Contains(out, "UNLOCK TABLES") {
+			t.Errorf("dump must not contain lock statements (create=%v):\n%s", create, out)
+		}
+		if !strings.Contains(out, "SET NAMES") || !strings.Contains(out, "INSERT INTO") {
+			t.Errorf("preamble and data must survive (create=%v):\n%s", create, out)
+		}
 	}
 }
 
@@ -401,7 +413,7 @@ func TestSQLWriter_ExtendedInsertNeverMergedWarns(t *testing.T) {
 	logs := captureWriterWarnings(t)
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 64,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.WriteHeader(nil)
 
 	for i := 1; i <= 3; i++ {
@@ -429,7 +441,7 @@ func TestSQLWriter_ExtendedInsertMergedStaysSilent(t *testing.T) {
 	logs := captureWriterWarnings(t)
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, config.DefaultStatementSize,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.WriteHeader(nil)
 
 	for i := 1; i <= 3; i++ {
@@ -455,7 +467,7 @@ func TestSQLWriter_ExtendedInsertSingleRowDoesNotWarn(t *testing.T) {
 	logs := captureWriterWarnings(t)
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 1,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.WriteHeader(nil)
 	if err := w.WriteRow([]interface{}{int64(1), "row"}); err != nil {
 		t.Fatalf("WriteRow: %v", err)
@@ -474,7 +486,7 @@ func TestSQLWriter_SingleRowInsertWarnsOnceOnly(t *testing.T) {
 	logs := captureWriterWarnings(t)
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 64,
-		false, true, common.ServerMySQL, "", "utf8mb4")
+		false, true, "", "utf8mb4")
 	w.SetSingleRowInsert(true)
 	w.WriteHeader(nil)
 

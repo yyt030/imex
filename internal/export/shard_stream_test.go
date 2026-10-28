@@ -266,7 +266,7 @@ func TestShardStream_OutputOrderIsShardOrderNotFinishOrder(t *testing.T) {
 		}()
 	}
 
-	if err := e.writeShardStream(pipes, []string{"id"}, 0); err != nil {
+	if err := e.writeShardStream(pipes, []string{"id"}); err != nil {
 		t.Fatalf("writeShardStream: %v", err)
 	}
 	producers.Wait()

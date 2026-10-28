@@ -43,11 +43,11 @@ var (
 	// by --quiet / IMEX_QUIET.
 	Quiet bool
 
-	// LogFormat selects the record layout: "java" (the default, a fixed-width
+	// LogFormat selects the record layout: "console" (the default, a fixed-width
 	// `time level detail` line resembling a JUL formatter, which greps and
 	// tail-friendly) or "text" (slog's own key=value handler). Controlled by
 	// --log-format / IMEX_LOG_FORMAT.
-	LogFormat = "java"
+	LogFormat = "console"
 )
 
 // logSink is the single destination every log record goes through.
@@ -123,7 +123,7 @@ func init() {
 	// Provide a usable default logger so early failures (before InitLogger runs
 	// inside a subcommand) can still be reported at ERROR level, in the default
 	// layout.
-	Logger = newLogger(config.LogLevelInfo, LogFormatJava)
+	Logger = newLogger(config.LogLevelInfo, LogFormatConsole)
 }
 
 // LogVersion prints the version banner. It must be the first log line of a run.
@@ -167,20 +167,20 @@ func newLogger(level config.LogLevel, format string) *slog.Logger {
 	if format == LogFormatText {
 		return slog.New(slog.NewTextHandler(logSink, opts))
 	}
-	return slog.New(&javaHandler{level: slogLevel, pid: os.Getpid()})
+	return slog.New(&consoleHandler{level: slogLevel, pid: os.Getpid()})
 }
 
 // Layout names accepted by --log-format.
 const (
-	LogFormatJava = "java"
-	LogFormatText = "text"
+	LogFormatConsole = "console"
+	LogFormatText    = "text"
 )
 
 // validLogFormat is the set --log-format accepts; cmd/validate.go's
 // validateLogFormat is called from the root command's PersistentPreRunE so a
 // typo fails with exit code 2 instead of silently falling back.
 func ValidLogFormat(s string) bool {
-	return s == LogFormatJava || s == LogFormatText
+	return s == LogFormatConsole || s == LogFormatText
 }
 
 // currentLevel reads the level back out of the active handler so ApplyLogFormat
@@ -204,7 +204,7 @@ func currentLevel() config.LogLevel {
 	}
 }
 
-// javaHandler renders one record per line as
+// consoleHandler renders one record per line as
 //
 //	2026-01-02 15:04:05.123 [pid] LEVEL message key=value ...
 //
@@ -212,15 +212,15 @@ func currentLevel() config.LogLevel {
 // output directly greppable and familiar to operators coming from a JUL-style
 // MySQL/OceanBase log. It is the default layout; "text" keeps slog's own
 // key=value handler for machine parsing.
-type javaHandler struct {
+type consoleHandler struct {
 	level slog.Level
 	pid   int
 	attrs []slog.Attr
 }
 
-func (h *javaHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
+func (h *consoleHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
 
-func (h *javaHandler) Handle(_ context.Context, r slog.Record) error {
+func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	defer bufferPool.Put(buf)
 
@@ -253,13 +253,13 @@ func (h *javaHandler) Handle(_ context.Context, r slog.Record) error {
 	return err
 }
 
-func (h *javaHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+func (h *consoleHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	nh := *h
 	nh.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
 	return &nh
 }
 
-func (h *javaHandler) WithGroup(name string) slog.Handler {
+func (h *consoleHandler) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return h
 	}

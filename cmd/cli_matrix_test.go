@@ -177,7 +177,7 @@ func TestCLIMatrix(t *testing.T) {
 			// logFormat is a package-level flag target: pflag only writes it when
 			// the flag is given, so a case passing --log-format bogus would leave
 			// that value in place for every following case.
-			logFormat = "java"
+			logFormat = "console"
 			// cobra.Cmd.Flags().Changed() is per-Flag state and the command tree
 			// is package-level, so a case that sets --statement-size would
 			// otherwise still look "changed" to the next case.
@@ -213,7 +213,7 @@ func validateOnly(t *testing.T, sub string, args []string) error {
 	t.Helper()
 	*exportCfg = *newExportConfigForTest()
 	*importCfg = *newImportConfigForTest()
-	logFormat = "java"
+	logFormat = "console"
 	resetChangedFlags(exportCmd, importCmd, rootCmd)
 
 	if sub == "export" {
@@ -346,25 +346,69 @@ func TestCLIDELFlagRejectedExitCode(t *testing.T) {
 
 // TestCLILogFormatEnvOverrideRejected covers the IMEX_LOG_FORMAT path: the
 // env value goes through the same membership check as the flag, so a typo
-// cannot silently fall back to the java layout.
+// cannot silently fall back to the console layout.
 func TestCLILogFormatEnvOverrideRejected(t *testing.T) {
-	t.Setenv("IMEX_LOG_FORMAT", "javaness")
+	t.Setenv("IMEX_LOG_FORMAT", "consoleness")
 	*exportCfg = *newExportConfigForTest()
 	*importCfg = *newImportConfigForTest()
-	logFormat = "java"
+	logFormat = "console"
 	resetChangedFlags(exportCmd, importCmd, rootCmd)
 
 	rootCmd.SetArgs([]string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb",
 		"-o", "/tmp/out.del", "-q", "SELECT 1"})
 	err := rootCmd.Execute()
 	if err == nil {
-		t.Fatal("expected usage error for IMEX_LOG_FORMAT=javaness, got nil")
+		t.Fatal("expected usage error for IMEX_LOG_FORMAT=consoleness, got nil")
 	}
 	if !strings.Contains(err.Error(), "invalid --log-format") {
 		t.Errorf("unexpected error: %v", err)
 	}
 	if !common.IsUsageError(err) {
 		t.Errorf("error %q must be a usage error (exit code 2)", err)
+	}
+}
+
+// TestCLILogFormatEnvOverridesFlag pins the precedence between --log-format and
+// IMEX_LOG_FORMAT: the environment variable wins when both are given, which is
+// how every other IMEX_* switch behaves (env is an override, not a default that
+// the command line can veto). The flag still works on its own.
+func TestCLILogFormatEnvOverridesFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		flag string
+		want string
+	}{
+		{"neither given keeps the built-in default", "", "", common.LogFormatConsole},
+		{"env only", common.LogFormatText, "", common.LogFormatText},
+		{"flag only", "", common.LogFormatText, common.LogFormatText},
+		{"both given, env wins", common.LogFormatConsole, common.LogFormatText, common.LogFormatConsole},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("IMEX_LOG_FORMAT", c.env)
+			*exportCfg = *newExportConfigForTest()
+			*importCfg = *newImportConfigForTest()
+			logFormat = common.LogFormatConsole
+			common.LogFormat = common.LogFormatConsole
+			resetChangedFlags(exportCmd, importCmd, rootCmd)
+
+			args := []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb",
+				"-o", "/tmp/logfmt-out.del", "-q", "SELECT 1",
+				// Deliberately invalid: option validation rejects it before any
+				// connection is attempted, so this test never depends on whether a
+				// server happens to be listening.
+				"--progress-interval", "1ms"}
+			if c.flag != "" {
+				args = append(args, "--log-format", c.flag)
+			}
+			rootCmd.SetArgs(args)
+			// The run itself is expected to fail; only the resolved layout matters.
+			_ = rootCmd.Execute()
+			if got := common.LogFormat; got != c.want {
+				t.Fatalf("common.LogFormat = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 
@@ -538,7 +582,7 @@ func TestCLIImportStatementSize(t *testing.T) {
 func TestCLIEncryptArgsCountIsUsageError(t *testing.T) {
 	*exportCfg = *newExportConfigForTest()
 	*importCfg = *newImportConfigForTest()
-	logFormat = "java"
+	logFormat = "console"
 	resetChangedFlags(exportCmd, importCmd, rootCmd)
 	defer resetChangedFlags(exportCmd, importCmd, rootCmd)
 

@@ -8,7 +8,7 @@ import (
 )
 
 // captureStreams redirects os.Stdout and os.Stderr into temp files for the
-// duration of fn. Both are resolved at write time by fmt and by the java log
+// duration of fn. Both are resolved at write time by fmt and by the console log
 // handler, so the swap catches everything the command prints.
 func captureStreams(t *testing.T, fn func()) (stdout, stderr string) {
 	t.Helper()
@@ -52,7 +52,7 @@ func captureStreams(t *testing.T, fn func()) (stdout, stderr string) {
 // stdout text: it prints the same fields the run banner carries, so a log
 // record ahead of it would only duplicate them and break `version | grep`.
 func TestCLIVersionPrintsNoLogRecord(t *testing.T) {
-	logFormat = "java"
+	logFormat = "console"
 	resetChangedFlags(exportCmd, importCmd, rootCmd)
 	defer resetChangedFlags(exportCmd, importCmd, rootCmd)
 
@@ -81,7 +81,7 @@ func TestCLIVersionPrintsNoLogRecord(t *testing.T) {
 // of any run that touches a database or writes a file.
 func TestCLIRunBannerStillLogged(t *testing.T) {
 	*exportCfg = *newExportConfigForTest()
-	logFormat = "java"
+	logFormat = "console"
 	resetChangedFlags(exportCmd, importCmd, rootCmd)
 	defer resetChangedFlags(exportCmd, importCmd, rootCmd)
 

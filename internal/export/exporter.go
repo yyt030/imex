@@ -61,18 +61,14 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	db.SetConnMaxIdleTime(0)
 	db.SetConnMaxLifetime(0)
 
-	// Test connection with retry
-	var pingErr error
-	for i := 0; i < 3; i++ {
-		if pingErr = db.Ping(); pingErr == nil {
-			break
-		}
-		common.Logger.Warn("database ping failed, retrying", "attempt", i+1, "error", pingErr)
-		time.Sleep(time.Duration(i+1) * time.Second)
-	}
-	if pingErr != nil {
+	// Test the connection. Only a failure a reconnect can heal is retried; a
+	// server rejection (bad credentials, unknown database, unknown session
+	// variable) returns on the first try — see common.PingWithRetry. Before this,
+	// a typo in --session-var or a wrong password waited a fixed 6 seconds and was
+	// reported as a connectivity failure.
+	if pingErr := common.PingWithRetry(db); pingErr != nil {
 		db.Close()
-		return nil, errors.Wrap(pingErr, "failed to ping database after 3 attempts")
+		return nil, pingErr
 	}
 
 	// Enable consistent snapshot for transactional consistency
@@ -181,14 +177,6 @@ func (e *Exporter) warnIfShardKeyIgnored() {
 func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err error) {
 	e.warnIfShardKeyIgnored()
 
-	// Detect server type BEFORE opening the streaming cursor: the single
-	// export connection (MaxOpenConns=1) is held for the whole result set,
-	// so any metadata query issued after this point would deadlock.
-	serverType, err := common.DetectServerType(e.db)
-	if err != nil {
-		return errors.Wrap(err, "failed to detect server type")
-	}
-
 	// For SQL format, pre-fetch the CREATE TABLE statement while the
 	// connection is still free. Only when the dump was asked to carry it
 	// (--create).
@@ -283,7 +271,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		if err != nil {
 			return errors.Wrap(err, "failed to extract table name")
 		}
-		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, e.config.Create, !e.config.NoData, serverType, createStmt, e.config.DefaultCharset)
+		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, e.config.Create, !e.config.NoData, createStmt, e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		writer = sqlWriter
@@ -502,12 +490,6 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 			"applies_to", "single-threaded export only")
 	}
 
-	// Detect server type
-	serverType, err := common.DetectServerType(e.db)
-	if err != nil {
-		return errors.Wrap(err, "failed to detect server type")
-	}
-
 	// Get columns from a sample query with attribution tag
 	sampleQuery := e.config.Query + " LIMIT 0"
 	common.LogInteractionSQL(sampleQuery)
@@ -554,14 +536,14 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 				if idx >= len(shardRanges) {
 					return
 				}
-				rowCount, err := e.exportShard(ctx, workerID, idx, shardInfo, shardRanges[idx], columns, serverType, pipes[idx])
+				rowCount, err := e.exportShard(ctx, workerID, idx, shardInfo, shardRanges[idx], columns, pipes[idx])
 				resultCh <- shardResult{workerID: workerID, shardIdx: idx, rowCount: rowCount, err: err}
 			}
 		}(w)
 	}
 
 	// Consume the shards in order while they are still running.
-	streamErr := e.writeShardStream(pipes, columns, serverType)
+	streamErr := e.writeShardStream(pipes, columns)
 	if streamErr != nil {
 		common.Logger.Error("shard stream failed", "error", streamErr)
 		for _, pipe := range pipes {
@@ -611,7 +593,7 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 
 // exportShard serializes one shard into its pipe; the stream writer owns the
 // output file and consumes the pipes in shard order.
-func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, shardInfo *ShardInfo, shardRange ShardRange, columns []string, serverType common.ServerType, out *shardPipe) (rowCount int64, err error) {
+func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, shardInfo *ShardInfo, shardRange ShardRange, columns []string, out *shardPipe) (rowCount int64, err error) {
 	// Build shard-specific query using SQL parser
 	shardQuery, err := e.sqlParser.BuildShardedQuery(e.config.Query, shardInfo, shardRange)
 	if err != nil {
@@ -677,8 +659,8 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 	binaryFlags := common.BinaryColumnFlags(colTypes)
 	hex := effectiveHexBlob(e.config)
 
-	// Create writer for this shard (writeCreate=false: preamble written by the
-	// stream writer, which owns the one LOCK/UNLOCK pair and the header)
+	// Create writer for this shard (writeCreate=false: the preamble and the
+	// CREATE TABLE statement are written by the stream writer)
 	var writer Writer
 	switch e.config.Format {
 	case "del":
@@ -690,12 +672,9 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 		if err != nil {
 			return 0, errors.Wrap(err, "failed to extract table name")
 		}
-		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, false, !e.config.NoData, serverType, "", e.config.DefaultCharset)
+		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, false, !e.config.NoData, "", e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
-		// A fragment of a parallel dump must not lock or unlock the table on its
-		// own; the merge step wraps the concatenated result in one pair.
-		sqlWriter.SetSkipTableLocks(true)
 		writer = sqlWriter
 	default:
 		return 0, errors.Errorf("unsupported format: %s", e.config.Format)
@@ -810,7 +789,7 @@ func (e *Exporter) createShardConnection() (*sql.DB, error) {
 // footer. Consuming the pipes one at a time is what fixes the byte order; the
 // shards stay concurrent because each of them keeps producing until its own
 // queue fills up.
-func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string, serverType common.ServerType) error {
+func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string) error {
 	// Create final output file
 	outputFile, err := os.Create(e.config.Output)
 	if err != nil {
@@ -849,7 +828,7 @@ func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string, server
 			}
 		}
 		sqlWriter = NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize,
-			e.config.Create, !e.config.NoData, serverType, createStmt, e.config.DefaultCharset)
+			e.config.Create, !e.config.NoData, createStmt, e.config.DefaultCharset)
 		if err := sqlWriter.WriteHeader(columns); err != nil {
 			return errors.Wrap(err, "failed to write header")
 		}

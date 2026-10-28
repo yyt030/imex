@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 	"github.com/imex/internal/export"
 	_import "github.com/imex/internal/import"
@@ -28,7 +27,7 @@ func sqlRoundTrip(t *testing.T, columns []string, rows [][]interface{}, statemen
 
 	var buf bytes.Buffer
 	w := export.NewSQLWriter(&buf, "t", columns, statementSize, false, true,
-		common.ServerMySQL, "", config.DefaultCharset)
+		"", config.DefaultCharset)
 	w.SetBinaryFormat(binaryFlags, hexBlob)
 	if err := w.WriteHeader(columns); err != nil {
 		t.Fatalf("WriteHeader: %v", err)
@@ -449,7 +448,7 @@ func TestSQLRoundTrip_SingleRowInsert(t *testing.T) {
 
 	var buf bytes.Buffer
 	w := export.NewSQLWriter(&buf, "t", columns, config.DefaultStatementSize, false, true,
-		common.ServerMySQL, "", config.DefaultCharset)
+		"", config.DefaultCharset)
 	w.SetSingleRowInsert(true)
 	if err := w.WriteHeader(columns); err != nil {
 		t.Fatalf("WriteHeader: %v", err)

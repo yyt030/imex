@@ -88,8 +88,8 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false,
 		"Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)")
 
-	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "java",
-		"Log layout: java (default: time level detail) or text (slog key=value), also via IMEX_LOG_FORMAT")
+	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "console",
+		"Log layout: console (default: human-readable fixed-width) or text (slog key=value), also via IMEX_LOG_FORMAT")
 
 	rootCmd.PersistentFlags().BoolVar(&noSQLTag, "no-sql-tag", false,
 		"Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)")
@@ -108,7 +108,7 @@ func init() {
 		if v := os.Getenv("IMEX_LOG_FORMAT"); strings.TrimSpace(v) != "" {
 			logFormat = strings.TrimSpace(v)
 		}
-		// A typo here would otherwise silently fall back to the java layout,
+		// A typo here would otherwise silently fall back to the console layout,
 		// while every other parameter mismatch is a usage error. Check it before
 		// applying, so the failure itself is still reported in a valid layout.
 		if err := validateLogFormat(logFormat); err != nil {

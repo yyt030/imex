@@ -15,7 +15,7 @@ import (
 )
 
 // captureStderr redirects os.Stderr into a temp file for the duration of fn and
-// returns what was written. The java handler resolves os.Stderr at write time,
+// returns what was written. The console handler resolves os.Stderr at write time,
 // so replacing the package variable is enough.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
@@ -42,9 +42,9 @@ func captureStderr(t *testing.T, fn func()) string {
 // The configuration line logs the DEL delimiters themselves, so a raw newline
 // (row_del="\n") used to split one record into several lines and an unquoted
 // double quote (char_del="") made the following tokens unreadable.
-func TestJavaHandlerKeepsOneRecordPerLine(t *testing.T) {
+func TestConsoleHandlerKeepsOneRecordPerLine(t *testing.T) {
 	out := captureStderr(t, func() {
-		logger := newLogger(config.LogLevelInfo, LogFormatJava)
+		logger := newLogger(config.LogLevelInfo, LogFormatConsole)
 		logger.Info("export configuration",
 			"char_del", `"`,
 			"col_del", ",",
@@ -104,7 +104,7 @@ func TestApplyLogFormatPreservesLevel(t *testing.T) {
 
 	defer func(orig string) { LogFormat = orig; InitLogger(config.LogLevelInfo) }(LogFormat)
 	for i, l := range levels {
-		LogFormat = LogFormatJava
+		LogFormat = LogFormatConsole
 		InitLogger(l)
 		before := enabledLevels()
 		ApplyLogFormat()
@@ -135,7 +135,7 @@ func enabledLevels() string {
 // LogVersion must actually emit the banner in the current layout: it is the
 // documented first line of every run.
 func TestLogVersionEmitsBanner(t *testing.T) {
-	LogFormat = LogFormatJava
+	LogFormat = LogFormatConsole
 	InitLogger(config.LogLevelInfo)
 	ApplyLogFormat()
 
@@ -156,7 +156,7 @@ func TestLogVersionEmitsBanner(t *testing.T) {
 // it hands the log back.
 func TestLogFileTakesOverFromStderr(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.log")
-	logger := newLogger(config.LogLevelInfo, LogFormatJava)
+	logger := newLogger(config.LogLevelInfo, LogFormatConsole)
 
 	out := captureStderr(t, func() {
 		if err := OpenLogFile(path); err != nil {
@@ -241,7 +241,7 @@ func TestLogFileFollowsHandlersBuiltEarlier(t *testing.T) {
 // owns serialization: concurrent writers must never interleave two records.
 func TestLogFileSerializesConcurrentRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "concurrent.log")
-	logger := newLogger(config.LogLevelInfo, LogFormatJava)
+	logger := newLogger(config.LogLevelInfo, LogFormatConsole)
 
 	if err := OpenLogFile(path); err != nil {
 		t.Fatalf("open log file: %v", err)
@@ -304,7 +304,7 @@ func TestLogFileSerializesConcurrentRecords(t *testing.T) {
 func TestLogFileReplaceKeepsOnlyTheNewest(t *testing.T) {
 	first := filepath.Join(t.TempDir(), "first.log")
 	second := filepath.Join(t.TempDir(), "second.log")
-	logger := newLogger(config.LogLevelInfo, LogFormatJava)
+	logger := newLogger(config.LogLevelInfo, LogFormatConsole)
 
 	captureStderr(t, func() {
 		if err := OpenLogFile(first); err != nil {

@@ -106,7 +106,7 @@ func validateLogLevel(level string) error {
 // validateLogFormat checks that the log format is valid.
 func validateLogFormat(format string) error {
 	if !common.ValidLogFormat(format) {
-		return common.Usagef("invalid --log-format %q: must be one of java/text", format)
+		return common.Usagef("invalid --log-format %q: must be one of console/text", format)
 	}
 	return nil
 }

@@ -24,8 +24,8 @@ const maxPlaceholders = 65535
 // fallback matches a real OB server rather than an invented one. V4.x documents
 // 16,777,216 instead, and this constant cannot be made version-aware: the only
 // way to learn which OB a server is runs through SHOW VARIABLES as well
-// (common.DetectServerType reads version_comment), so the same failure that
-// forces the fallback also hides the version.
+// (version_comment), so the same failure that forces the fallback also hides the
+// version.
 const defaultMaxAllowedPacket int64 = 4 << 20
 
 // packetSafetyMargin is the fraction of max_allowed_packet the batches stay

@@ -141,6 +141,17 @@
 # memory. No code path, exit code, output format, environment variable or statement changed, and
 # none of the four bodies below was regenerated: `## export` still diffs empty (87 lines),
 # `## import` still has the same sixteen delta lines, `## root` and `## version` untouched.
+# Re-baselined note 11 (2026-10-28): the default layout name --log-format java was renamed
+# console. "java" named an implementation language, not a format: the layout is a fixed-width
+# human-readable line, and operators should read the value as "what the line looks like". No
+# alias is kept (same policy as --no-create, --no-replace, --single-row-insert), so
+# `--log-format java` and `IMEX_LOG_FORMAT=java` are now usage errors with exit code 2 and the
+# message `invalid --log-format "java": must be one of console/text`; `text` is untouched. The
+# persistent-flag line therefore changed in all three bodies that carry it (export/import/root):
+# after substituting the new text the diffs are unchanged -- export still empty (87 lines),
+# import still sixteen delta lines, root still two -- because the same line changed on both
+# sides. The internal handler was renamed javaHandler -> consoleHandler and the constant
+# LogFormatJava -> LogFormatConsole; neither name was exported beyond the package's own tests.
 # Frozen baseline, kept verbatim as a regression reference. The intentional
 # deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --extended-insert and lost --single-row-insert (one INSERT per
@@ -278,7 +289,7 @@ Flags:
 Global Flags:
       --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, or to the --messages file when one is given.
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via IMEX_LOG_FORMAT (default "java")
+      --log-format string   Log layout: console (default: human-readable fixed-width) or text (slog key=value), also via IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)
       --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)
 ## import
@@ -347,7 +358,7 @@ Flags:
 Global Flags:
       --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via IMEX_LOG_FORMAT (default "java")
+      --log-format string   Log layout: console (default: human-readable fixed-width) or text (slog key=value), also via IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)
       --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)
 ## root
@@ -379,7 +390,7 @@ Flags:
       --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
   -h, --help                help for imex
-      --log-format string   Log layout: java (default: time level detail) or text (slog key=value), also via IMEX_LOG_FORMAT (default "java")
+      --log-format string   Log layout: console (default: human-readable fixed-width) or text (slog key=value), also via IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)
       --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)
 

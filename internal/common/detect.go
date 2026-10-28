@@ -3,7 +3,6 @@ package common
 import (
 	"context"
 	"database/sql"
-	"strings"
 
 	"github.com/pkg/errors"
 )
@@ -23,39 +22,4 @@ func MaxConnections(ctx context.Context, db *sql.DB) (int, error) {
 		return 0, errors.Wrap(err, "failed to read max_connections")
 	}
 	return value, nil
-}
-
-// ServerType represents the type of database server.
-type ServerType int
-
-const (
-	ServerMySQL ServerType = iota
-	ServerOceanBase
-)
-
-// String returns the string representation of the server type.
-func (s ServerType) String() string {
-	switch s {
-	case ServerOceanBase:
-		return "OceanBase"
-	default:
-		return "MySQL"
-	}
-}
-
-// DetectServerType detects the database server type by querying version_comment.
-func DetectServerType(db *sql.DB) (ServerType, error) {
-	var varName, versionComment string
-	detectSQL := "SHOW VARIABLES LIKE 'version_comment'"
-	LogInteractionSQL(detectSQL)
-	err := db.QueryRow(detectSQL).Scan(&varName, &versionComment)
-	if err != nil {
-		// If we can't determine the server type, assume MySQL
-		return ServerMySQL, nil
-	}
-
-	if strings.Contains(strings.ToLower(versionComment), "oceanbase") {
-		return ServerOceanBase, nil
-	}
-	return ServerMySQL, nil
 }

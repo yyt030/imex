@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
 
@@ -55,72 +54,36 @@ func readOut(t *testing.T, path string) string {
 	return string(b)
 }
 
-func TestWriteShardStream_SQLWritesOneLockPair(t *testing.T) {
+// TestWriteShardStreamSQLHasNoTableLocks pins the preamble of a parallel SQL
+// dump: the charset header leads, both shard bodies follow in order, and there
+// is no LOCK TABLES/UNLOCK TABLES pair anywhere. The pair used to be written by
+// this merge step (and suppressed per shard); it is gone because it made the
+// dump unreplayable into an empty schema.
+func TestWriteShardStreamSQLHasNoTableLocks(t *testing.T) {
 	e := streamTestExporter(t, "sql", false, false, false)
 
 	pipes := []*shardPipe{
 		filledPipe(t, "INSERT INTO `users` (`id`) VALUES (1);\n", 1<<20),
 		filledPipe(t, "INSERT INTO `users` (`id`) VALUES (2);\n", 1<<20),
 	}
-	if err := e.writeShardStream(pipes, []string{"id"}, common.ServerMySQL); err != nil {
+	if err := e.writeShardStream(pipes, []string{"id"}); err != nil {
 		t.Fatalf("writeShardStream: %v", err)
 	}
 
 	out := readOut(t, e.config.Output)
-	if got := strings.Count(out, "LOCK TABLES `"); got != 1 {
-		t.Errorf("expected exactly one LOCK TABLES, got %d in:\n%s", got, out)
-	}
-	if got := strings.Count(out, "UNLOCK TABLES;"); got != 1 {
-		t.Errorf("expected exactly one UNLOCK TABLES, got %d in:\n%s", got, out)
+	if strings.Contains(out, "LOCK TABLES") || strings.Contains(out, "UNLOCK TABLES") {
+		t.Errorf("dump must not contain lock statements:\n%s", out)
 	}
 	if got := strings.Count(out, "SET NAMES"); got != 1 {
 		t.Errorf("expected exactly one SET NAMES header, got %d in:\n%s", got, out)
 	}
 
-	// Order matters: preamble, both shards, then the unlock.
-	lockIdx := strings.Index(out, "LOCK TABLES")
+	// The charset header still leads, and the shards stay in order behind it.
+	header := strings.Index(out, "SET NAMES")
 	firstRow := strings.Index(out, "VALUES (1)")
 	secondRow := strings.Index(out, "VALUES (2)")
-	unlockIdx := strings.Index(out, "UNLOCK TABLES;")
-	if !(lockIdx >= 0 && lockIdx < firstRow && firstRow < secondRow && secondRow < unlockIdx) {
+	if !(header >= 0 && header < firstRow && firstRow < secondRow) {
 		t.Errorf("unexpected statement order in:\n%s", out)
-	}
-}
-
-// TestWriteShardStream_DataOnlyStillLocks guards the previous behaviour, where a
-// SQL export without a CREATE TABLE statement dropped LOCK TABLES but still
-// emitted UNLOCK TABLES.
-func TestWriteShardStream_DataOnlyStillLocks(t *testing.T) {
-	e := streamTestExporter(t, "sql", false, false, false)
-
-	pipes := []*shardPipe{filledPipe(t, "INSERT INTO `users` (`id`) VALUES (1);\n", 1<<20)}
-	if err := e.writeShardStream(pipes, []string{"id"}, common.ServerMySQL); err != nil {
-		t.Fatalf("writeShardStream: %v", err)
-	}
-
-	out := readOut(t, e.config.Output)
-	if !strings.Contains(out, "LOCK TABLES `users` WRITE;") {
-		t.Errorf("missing LOCK TABLES pair:\n%s", out)
-	}
-	if !strings.Contains(out, "UNLOCK TABLES;") {
-		t.Errorf("missing UNLOCK TABLES:\n%s", out)
-	}
-}
-
-func TestWriteShardStream_OceanBaseSkipsLocks(t *testing.T) {
-	e := streamTestExporter(t, "sql", false, false, false)
-
-	pipes := []*shardPipe{filledPipe(t, "INSERT INTO `users` (`id`) VALUES (1);\n", 1<<20)}
-	if err := e.writeShardStream(pipes, []string{"id"}, common.ServerOceanBase); err != nil {
-		t.Fatalf("writeShardStream: %v", err)
-	}
-
-	out := readOut(t, e.config.Output)
-	if strings.Contains(out, "LOCK TABLES `") || strings.Contains(out, "UNLOCK TABLES;") {
-		t.Errorf("OceanBase dump must not lock tables:\n%s", out)
-	}
-	if !strings.Contains(out, "SET NAMES") {
-		t.Errorf("charset header missing:\n%s", out)
 	}
 }
 
@@ -140,7 +103,7 @@ func TestWriteShardStream_DelHeaderOnlyWhenColumnNamesRequested(t *testing.T) {
 				filledPipe(t, "1,\"a\"\n", 1<<20),
 				filledPipe(t, "2,\"b\"\n", 1<<20),
 			}
-			if err := e.writeShardStream(pipes, []string{"id", "name"}, common.ServerMySQL); err != nil {
+			if err := e.writeShardStream(pipes, []string{"id", "name"}); err != nil {
 				t.Fatalf("writeShardStream: %v", err)
 			}
 			out := readOut(t, e.config.Output)
@@ -163,7 +126,7 @@ func TestWriteShardStream_KeepsBlockBoundariesIntact(t *testing.T) {
 	// 3 blocks per shard, each shard carrying a marker per block.
 	pipeA := filledPipe(t, "AAAA1\nAAAA2\nAAAA3\n", 6)
 	pipeB := filledPipe(t, "BBBB1\nBBBB2\nBBBB3\n", 6)
-	if err := e.writeShardStream([]*shardPipe{pipeA, pipeB}, []string{"id"}, common.ServerMySQL); err != nil {
+	if err := e.writeShardStream([]*shardPipe{pipeA, pipeB}, []string{"id"}); err != nil {
 		t.Fatalf("writeShardStream: %v", err)
 	}
 

@@ -23,7 +23,6 @@ type SQLWriter struct {
 	statementSize int
 	writeCreate   bool
 	writeData     bool
-	serverType    common.ServerType
 	// createStmt is the pre-fetched CREATE TABLE statement. The exporter must
 	// obtain it before opening the streaming cursor, because the single
 	// export connection is held by the open result set.
@@ -46,24 +45,13 @@ type SQLWriter struct {
 	// detect the layout silently collapsing to one INSERT per row.
 	mergedTuples int
 	everMerged   bool
-	// skipTableLocks suppresses LOCK TABLES/UNLOCK TABLES. Parallel export
-	// writes shard fragments that are concatenated later, and a lock statement
-	// per fragment would release the table lock in the middle of the dump.
-	skipTableLocks bool
-}
-
-// SetSkipTableLocks suppresses the LOCK TABLES/UNLOCK TABLES pair. Used by the
-// shard writers of a parallel export, whose output is merged under a single
-// lock written by the merge step.
-func (s *SQLWriter) SetSkipTableLocks(on bool) {
-	s.skipTableLocks = on
 }
 
 // NewSQLWriter creates a new SQL format writer.
 // createStmt must be provided by the caller (via SHOW CREATE TABLE) before the
 // result-set cursor is opened; it is used only when writeCreate is true.
 // charset is the connection charset used for the SET NAMES header line.
-func NewSQLWriter(w io.Writer, tableName string, columns []string, statementSize int, writeCreate, writeData bool, serverType common.ServerType, createStmt string, charset string) *SQLWriter {
+func NewSQLWriter(w io.Writer, tableName string, columns []string, statementSize int, writeCreate, writeData bool, createStmt string, charset string) *SQLWriter {
 	return &SQLWriter{
 		bw:            bufio.NewWriterSize(w, 256*1024),
 		tableName:     tableName,
@@ -71,7 +59,6 @@ func NewSQLWriter(w io.Writer, tableName string, columns []string, statementSize
 		statementSize: statementSize,
 		writeCreate:   writeCreate,
 		writeData:     writeData,
-		serverType:    serverType,
 		createStmt:    createStmt,
 		charset:       charset,
 	}
@@ -94,14 +81,6 @@ func (s *SQLWriter) WriteHeader(columns []string) error {
 	// connection charset, and imex's own importer skips this line.
 	if s.writeCreate || s.writeData {
 		if _, err := fmt.Fprintf(s.bw, "/*!40101 SET NAMES %s */;\n", s.charset); err != nil {
-			return err
-		}
-	}
-
-	// Write LOCK TABLES statement for MySQL (skip for OceanBase)
-	// Lock table when we're going to write data to ensure consistency
-	if s.serverType == common.ServerMySQL && s.writeData && !s.skipTableLocks {
-		if _, err := fmt.Fprintf(s.bw, "LOCK TABLES `%s` WRITE;\n", s.tableName); err != nil {
 			return err
 		}
 	}
@@ -317,7 +296,7 @@ func (s *SQLWriter) Flush() error {
 	return s.bw.Flush()
 }
 
-// WriteFooter completes the SQL file with UNLOCK TABLES
+// WriteFooter flushes the last batched INSERT and the buffered writer.
 func (s *SQLWriter) WriteFooter() error {
 	// Flush any remaining batched INSERT statements
 	if s.writeData {
@@ -325,13 +304,6 @@ func (s *SQLWriter) WriteFooter() error {
 			s.warnNeverMerged()
 		}
 		if err := s.flushBatch(); err != nil {
-			return err
-		}
-	}
-
-	// Write UNLOCK TABLES statement for MySQL (skip for OceanBase)
-	if s.serverType == common.ServerMySQL && s.writeData && !s.skipTableLocks {
-		if _, err := fmt.Fprintln(s.bw, "UNLOCK TABLES;"); err != nil {
 			return err
 		}
 	}
