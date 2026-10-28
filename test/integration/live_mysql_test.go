@@ -634,7 +634,9 @@ func (e *liveEnv) growTable(t *testing.T, table string, times int) {
 // summary, and stopping waits for the goroutine to leave report. The cadence is
 // --progress-interval now, so the phases run on a 1 ms clock instead of the
 // shipped 5 s, and the last phase drives the compiled binary to prove the flag
-// actually reaches the ticker.
+// actually reaches the ticker. The library path may still be driven below the CLI
+// floor, but argv may not: validation refuses anything under
+// config.MinProgressInterval, so the CLI leg uses the 10 ms minimum.
 func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
 	env := newCLILive(t)
 	dir := t.TempDir()
@@ -679,7 +681,7 @@ func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
 	cliLog := filepath.Join(dir, "cli-export.log")
 	cliFile := filepath.Join(dir, "cli-order.del")
 	out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "del", "-o", cliFile,
-		"--log-level", "info", "--progress-interval", "1ms", "--messages", cliLog)
+		"--log-level", "info", "--progress-interval", "10ms", "--messages", cliLog)
 	if code != 0 {
 		t.Fatalf("CLI export with --progress-interval: exit %d\n%s", code, out)
 	}
@@ -688,7 +690,7 @@ func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
 	if strings.Contains(text, " started ") {
 		t.Errorf("the run still logs a start record next to the config echo:\n%s", text)
 	}
-	if !strings.Contains(text, "progress_interval=1ms") {
+	if !strings.Contains(text, "progress_interval=10ms") {
 		t.Errorf("config echo does not carry the resolved cadence:\n%s", text)
 	}
 }
@@ -863,7 +865,7 @@ func TestLive_ImportStatementSizeCapsStatements(t *testing.T) {
 	}
 
 	assertMessageFile(t, base.messages, "import batch byte cap resolved",
-		"statement_size=0", "limiting_factor=max_allowed_packet")
+		"statement_size=0", "limiting_factor="+defaultCapFactor(t, env.db))
 	assertMessageFile(t, on.messages, "import batch byte cap resolved",
 		"statement_size=65536", "limiting_factor=statement-size")
 

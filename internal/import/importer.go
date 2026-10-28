@@ -30,6 +30,12 @@ type Importer struct {
 	packetOnce    sync.Once
 	maxBatchBytes int64
 
+	// queueDepth is the configured --pipeline-buffer, kept exactly as the operator
+	// wrote it; maxQueuedBatchBytes only decides when the run reports what that depth
+	// costs in bytes (see resolveQueueDepth). It is resolved with the byte budget,
+	// before either import path builds its channel.
+	queueDepth int
+
 	// stopMonitor ends the periodic progress record. It is held on the struct
 	// because the summaries are logged by the import methods, which must stop the
 	// monitor first: a progress record after "import completed" reads as a run
@@ -625,7 +631,11 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 		err  error
 	}
 
-	rowCh := make(chan rowBatch, imp.cfg.PipelineBuffer) // buffer pipeline-buffer batches
+	// Depth is --pipeline-buffer as configured. One batch can hold the whole byte
+	// budget, so the depth is also the memory the queue may retain; past
+	// maxQueuedBatchBytes the run says so on the log and imports anyway (see
+	// resolveQueueDepth).
+	rowCh := make(chan rowBatch, imp.queueDepth)
 	errCh := make(chan error, 1)
 
 	// Stage 1: Reader goroutine - 从文件读取数据
@@ -818,14 +828,24 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 		data [][]interface{}
 	}
 
-	// Bounded hand-off channel: readers block once workers fall behind, which
-	// caps in-memory rows at roughly (cap(batchCh) + numThreads) * batchSize.
-	batchCh := make(chan rowBatch, imp.cfg.PipelineBuffer)
+	// The queue is the single reader's hand-off to all workers: one shared channel of
+	// batches, so its depth is a memory question while --threads is a concurrency
+	// question. A queued batch holds up to maxBatchBytes of parsed rows, and past
+	// maxQueuedBatchBytes the depth is reported, not changed (see batchcap.go).
+	batchCh := make(chan rowBatch, imp.queueDepth)
 	errCh := make(chan error, numThreads+1)
+
+	// wg covers *both* stages. errCh is closed after wg.Wait() below, and the
+	// reader sends to errCh on its error and cancellation paths; leaving the
+	// reader out of the group let close(errCh) race with those sends, which
+	// panicked the process (exit code 2, partial import, no error record).
+	var wg sync.WaitGroup
 
 	// Stage 1: single reader goroutine (the Reader is not safe for concurrent
 	// use) reads rows, applies skip/limit, and emits fixed-size batches.
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		defer close(batchCh)
 
 		batch := make([][]interface{}, 0, batchSize)
@@ -883,10 +903,11 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 	}()
 
 	// Stage 2: worker goroutines, each with its own connection/transaction.
-	var wg sync.WaitGroup
 
 	// Build the DSN once for all workers (BuildDSN embeds charset/session vars).
 	dsn := common.BuildDSN(&imp.cfg.Config)
+	warnIfThreadsExceedCapacity(ctx, imp.db, numThreads)
+	warnIfReplayWindowScales(numThreads)
 
 	for i := 0; i < numThreads; i++ {
 		wg.Add(1)

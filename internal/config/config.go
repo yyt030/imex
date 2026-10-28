@@ -61,6 +61,16 @@ const (
 // records altogether instead of making them rarer.
 const DefaultProgressInterval = 5 * time.Second
 
+// MinProgressInterval is the lowest --progress-interval the CLI accepts. The
+// record is one line of ~170 bytes, and a ticker only fires as fast as its
+// consumer can drain it, so a nanosecond-scale interval is not "very frequent
+// progress" but an unbounded write loop: a 10-row import that took 4ms produced
+// 780 progress records and 132 KB of log at --progress-interval 1ns (8 records,
+// 1.6 KB at 1ms). A long run at that setting writes gigabytes. The floor is well
+// below any interval that is useful as a heartbeat and above the rate at which
+// the log can be written.
+const MinProgressInterval = 10 * time.Millisecond
+
 // DelModifier holds DEL format modifier options.
 type DelModifier struct {
 	CharDel      string // string delimiter (wraps string values)
@@ -160,7 +170,7 @@ type ExportConfig struct {
 
 	// Parallel export options
 	Threads  int    // number of parallel export threads (1 = no parallelism)
-	ShardKey string // column name for sharding (auto-detect primary key if empty)
+	ShardKey string // column name for sharding (auto-detect primary key if empty; only exportParallel reads it — a single-threaded run warns that it is ignored)
 }
 
 // ImportConfig holds import-specific options.

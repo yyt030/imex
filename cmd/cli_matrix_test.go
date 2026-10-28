@@ -392,10 +392,14 @@ func TestCLIInsertLayout(t *testing.T) {
 }
 
 // TestCLIProgressInterval pins the cadence option: absent flag keeps the
-// shipped 5 s default on both subcommands, a positive value reaches the config
-// verbatim, and a non-positive value is a usage error rather than a panic in
-// time.NewTicker — an operator who writes 0 means "never", which is what
-// --quiet already says, so the option does not take on that meaning too.
+// shipped 5 s default on both subcommands, a value at or above the floor reaches
+// the config verbatim, and anything else is a usage error. Two floors are pinned
+// here: a non-positive value, which would panic time.NewTicker (an operator who
+// writes 0 means "never", which is what --quiet already says, so the option does
+// not take on that meaning too), and config.MinProgressInterval, because a
+// nanosecond-scale interval is not frequent progress but an unbounded
+// log-writing loop — measured 780 records and 132 KB of log out of a 10-row,
+// 4 ms import at 1ns.
 func TestCLIProgressInterval(t *testing.T) {
 	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb"}
 	exportArgs := append(append([]string{}, base...), "-o", "/tmp/out.del", "-q", "SELECT 1")
@@ -419,8 +423,9 @@ func TestCLIProgressInterval(t *testing.T) {
 		want    time.Duration
 		wantErr string
 	}{
-		{value: "1ms", want: time.Millisecond},
+		{value: "10ms", want: 10 * time.Millisecond},
 		{value: "30s", want: 30 * time.Second},
+		{value: "1ms", wantErr: "invalid --progress-interval"},
 		{value: "0", wantErr: "invalid --progress-interval"},
 		{value: "-1s", wantErr: "invalid --progress-interval"},
 	} {

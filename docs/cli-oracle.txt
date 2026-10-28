@@ -51,6 +51,96 @@
 # go1.26.10) is already treated — an intentional environmental drift, not a contract change.
 # The `## export` body is unaffected by the version bump: no flag was added, removed, or
 # reworded by the release commit itself, so `imex export --help` still diffs empty.
+# Re-baselined note 6 (2026-10-27): import's --mode description was reworded to state
+# what each value does, because `replace` does not use MySQL's REPLACE syntax at all:
+# it empties the target table with a DELETE and then inserts plain rows (see the
+# replace-mode paragraph in docs/requirements.md 2.2.4). The old text only listed the
+# four names. Nothing else changed, so `## import` now has fifteen intentional deltas
+# (the fourteen listed below plus this line); `## export` still diffs empty.
+# Re-baselined note 7 (2026-10-27): --progress-interval gained a floor of 10 ms on both
+# subcommands, so its help line now reads "(minimum 10ms; --quiet drops the records
+# entirely)" in place of "(must be positive; ...)". The floor is a measured cost: a 1 ns
+# interval passed the old "positive" check and wrote 1355 progress records (175 KB of log)
+# for a 6400-row export, i.e. the option that spaces a log could also delete it. 1ms and
+# 9ms are now usage errors, exit 2 (`invalid --progress-interval 1ms: must be >= 10ms`);
+# 0 and a negative duration keep their own "must be > 0" wording. The `## export` body was
+# regenerated from the tree for that single line and the diff is empty again. Two more
+# import help lines were reworded this round without changing the option set:
+# --pipeline-buffer now says the depth is lowered when that many batches would exceed the
+# queue memory envelope (measured on a 200 MB file: depth 1024 peaked at 280 MB RSS in
+# 4.09 s, the lowered depth 17 at 112 MB in 4.11 s; the run reports requested=1024
+# effective=17 against a 1 GiB envelope), and --statement-size now names the 64 MiB driver
+# interpolation ceiling that the default byte budget is clamped to (on this bed a 128 MB
+# max_allowed_packet resolves to batch_bytes=60397977 limiting_factor=driver_packet_cap).
+# For `import` expect sixteen added or changed lines now (the fifteen from note 6 plus
+# --pipeline-buffer). The remaining fixes this round touch records and exit codes only, not
+# help: workers past max_connections and the --threads-scaled replay window are WARNed
+# before any data moves, delimiter values that make the file layout ambiguous and an
+# explicit --shard-key the table does not have are refused with exit 2 (both used to be
+# accepted), and a failing parallel import worker no longer crashes the process with
+# "panic: send on closed channel" under exit 2 — it reports the insert failure and exits 1.
+# Re-baselined note 8 (2026-10-27): export's --shard-key line was reworded to say who reads
+# the option — "(only a parallel export reads and validates it: with --threads 1, or after a
+# fallback to single-threaded, it is ignored; auto-detect primary key if empty)". The wording
+# is now the observable behaviour, not an aspiration: a single-threaded run that was given a
+# shard key used to export happily while its configuration record echoed shard_key=nosuchcol
+# as a setting the run applies, and the column was never checked because only the sharded path
+# validates it. That route now prints WARN "single-threaded export ignores --shard-key"
+# (fields shard_key, threads, fallback, hint) and the record carries shard_key_ignored=true
+# when threads<=1 at the time it is written; a --threads>1 request that falls back later prints
+# no such field but does get the WARN with fallback=true. Exit codes and file bytes are
+# unchanged — the same 5000-row fixture exports md5 bc78091aa71e with the option given at
+# --threads 1, without it, and on the --threads 4 parallel route (the fallback case runs a
+# different query, a JOIN, so its 46-byte product is not part of that comparison). The
+# `## export` body was regenerated for that single
+# line and the diff is empty again (87 lines, byte-for-byte); no flag was added or removed, so
+# `## import` stays at the sixteen delta lines note 7 set.
+# Re-baselined note 9 (2026-10-28): import's --pipeline-buffer line was reworded again, and
+# note 7's description of that line ("the depth is lowered when that many batches would exceed
+# the queue memory envelope ... reports requested=1024 effective=17") is SUPERSEDED. The tool
+# no longer converts a user option into another number: --threads is concurrency and
+# --pipeline-buffer is the depth of the ONE queue all workers share (internal/import/
+# importer.go: single reader fills batchCh, workers consume), so the depth is honoured as
+# given and the 1 GiB figure is a reporting threshold, not a clamp. The line now reads
+# "Hand-off queue depth, in batches (0 = synchronous hand-off; a depth whose batches could
+# exceed 1 GiB of retained rows is imported as given and reported)". Measured on this bed with
+# --threads 32 --pipeline-buffer 1024: the configuration record echoes pipeline_buffer=1024,
+# `lowering` appears 0 times, and the run says
+# `the hand-off queue may retain more than the memory envelope, importing at the configured
+# depth requested=1024 batch_bytes=60397977 queued_bytes=61847528448
+# envelope_bytes=1073741824` before any data moves, then imports at depth 1024 (exit 0).
+# The same round also dropped the 64 KiB floor under the per-batch byte budget, which had been
+# raising batch_bytes ABOVE the server's own ceiling: with max_allowed_packet resolved to
+# 39936 the old code reported batch_bytes=65536 and the import died with
+# `Error 1153 (08S01): Got a packet bigger than 'max_allowed_packet' bytes`, 0 of 5,000 rows
+# landing, while the record blamed limiting_factor=max_allowed_packet; the floor is gone so the
+# same command now resolves batch_bytes=35942 and lands all 5,000 rows. That change is in code
+# and docs only - --statement-size's help line was not touched. No flag was added or removed
+# and no exit code changed, so `## export` is still byte-for-byte empty (87 lines) and
+# `## import` is still sixteen delta lines: the --pipeline-buffer line counts once, its text
+# simply changed. `## root` and `## version` untouched.
+# Re-baselined note 10 (2026-10-28): NO help line changed this round - only the measurement bed
+# did. The test server was reporting max_allowed_packet = 128 MB, which is that sandbox's own
+# value and has never been an OceanBase tenant default (4,194,304 on V2.1.x/V2.2.x/V3.1.x/V3.2.x,
+# 16,777,216 in the V4.x tuning doc, and the diagnosis doc itself concedes "有的版本为 4M，有的版本
+# 为 16M"). The bed was set to the OB V4.x default and every number quoted from the old bed was
+# re-taken: @@global.max_allowed_packet = 16777216, @@max_connections = 151. The import batch
+# budget now resolves to batch_bytes=15099494 limiting_factor=max_allowed_packet - the 64 MiB
+# driver interpolation ceiling is not the decider on a 16 MB server packet, and it only binds
+# above 67,108,864 B, which is now measured at both sides of the boundary (67,108,864 resolves to
+# batch_bytes=60397977 and still records max_allowed_packet; 67,109,888 records driver_packet_cap).
+# The 1 GiB hand-off queue line therefore moved: floor(1 GiB / 15,099,494) = 71, measured silent at
+# depth 71 and priced from depth 72 (queued_bytes=1087163568), and --threads 32 --pipeline-buffer
+# 1024 now says requested=1024 batch_bytes=15099494 queued_bytes=15461881856
+# envelope_bytes=1073741824 before any data moves, then imports at the configured depth, exit 0.
+# The fields quoted in note 9 (batch_bytes=60397977 queued_bytes=61847528448) and the RSS figures
+# quoted in notes 7 and 9 (280 MB / depth 17 at 112 MB / 147,340-292,356 KB) are 128 MB-bed
+# history and are marked as such in README and docs/requirements.md; the peak-RSS ranges measured
+# on the 16M bed overlap between depth 1024 (76,616-152,040 KB) and depth 10 (122,740-149,412 KB),
+# which is the point of re-taking them: with a 15 MB budget the queue depth no longer decides peak
+# memory. No code path, exit code, output format, environment variable or statement changed, and
+# none of the four bodies below was regenerated: `## export` still diffs empty (87 lines),
+# `## import` still has the same sixteen delta lines, `## root` and `## version` untouched.
 # Frozen baseline, kept verbatim as a regression reference. The intentional
 # deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --extended-insert and lost --single-row-insert (one INSERT per
@@ -91,9 +181,10 @@
 # --progress-interval, --batch-size, --pipeline-buffer, --echo-sql-values,
 # --statement-size/--extended-insert, plus this cycle's --query
 # reword, new --query-file, new --create and the removed --no-create) has been folded
-# into the re-baselined `## export` body. For `import` expect fourteen added or
+# into the re-baselined `## export` body. For `import` expect sixteen added or
 # changed lines (the nine marked options, --messages, --progress-interval,
-# --skip-count, --echo-sql-values, --statement-size). For `root` expect two
+# --skip-count, --echo-sql-values, --statement-size, --mode and, since note 7,
+# --pipeline-buffer). For `root` expect two
 # changed lines: the Features bullet now reads "Command log file (--messages)"
 # in place of "Message file logging", and it carries the same --echo-sql-values
 # rewording as import's Global Flags block. One further delta is
@@ -101,7 +192,7 @@
 # code change: `imex version` now reports the Go toolchain the binary was built
 # with, and go.mod requires go 1.26.10, so the "Go version:" line below (go1.26.9)
 # is expected to differ on every build since 2026-10-26. Last verified against the
-# working tree on 2026-10-27.
+# working tree on 2026-10-28 (see note 10, which changed no body line).
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.
@@ -170,12 +261,12 @@ Flags:
   -p, --password string                 Database password
       --pipeline-buffer int             Hand-off queue depth, in batches (single-threaded export only; passing it with --threads>1 is a usage error) (default 10)
   -P, --port int                        TCP/IP port (default 3306)
-      --progress-interval duration      How often to write the periodic progress record (must be positive; --quiet drops the records entirely) (default 5s)
+      --progress-interval duration      How often to write the periodic progress record (minimum 10ms; --quiet drops the records entirely) (default 5s)
   -q, --query string                    SQL SELECT statement (mutually exclusive with --query-file)
       --query-file string               Read the SQL SELECT statement from this file (mutually exclusive with -q)
       --row-del string                  Row delimiter (only with --format del) (default "\n")
       --session-var stringArray         Set a MySQL/OceanBase session variable before export (repeatable), e.g. --session-var "sql_mode=STRICT_TRANS_TABLES" --session-var foreign_key_checks=0
-      --shard-key string                Column name for sharding (auto-detect primary key if empty)
+      --shard-key string                Column name for sharding (only a parallel export reads and validates it: with --threads 1, or after a fallback to single-threaded, it is ignored; auto-detect primary key if empty)
   -S, --socket string                   UNIX domain socket path
       --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)

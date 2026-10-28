@@ -1,7 +1,9 @@
 package _import
 
 import (
+	"context"
 	"database/sql"
+	"math"
 	"time"
 
 	"github.com/imex/internal/common"
@@ -17,7 +19,13 @@ const maxPlaceholders = 65535
 // defaultMaxAllowedPacket is assumed when the server value cannot be read
 // (permission errors, proxies that hide SHOW VARIABLES). It is deliberately
 // conservative: under-splitting batches only costs a few more round-trips,
-// while over-splitting nothing would fail mid-import.
+// while over-splitting nothing would fail mid-import. The number is also the
+// OceanBase tenant default for V2.1.x/V2.2.x/V3.1.x/V3.2.x (4,194,304), so the
+// fallback matches a real OB server rather than an invented one. V4.x documents
+// 16,777,216 instead, and this constant cannot be made version-aware: the only
+// way to learn which OB a server is runs through SHOW VARIABLES as well
+// (common.DetectServerType reads version_comment), so the same failure that
+// forces the fallback also hides the version.
 const defaultMaxAllowedPacket int64 = 4 << 20
 
 // packetSafetyMargin is the fraction of max_allowed_packet the batches stay
@@ -26,6 +34,60 @@ const defaultMaxAllowedPacket int64 = 4 << 20
 // row separators, and the type/length prefixes the driver puts in front of each
 // parameter on the binary protocol.
 const packetSafetyMargin = 9 // keep batches at <= 9/10 of the packet limit
+
+// driverInterpolationCap is the client-side ceiling the MySQL driver applies to
+// an interpolated statement. go-sql-driver/mysql defaults Config.MaxAllowedPacket
+// to 64 MiB, imex does not override it (internal/common.BuildDSN), and once the
+// interpolated text passes that ceiling the driver returns driver.ErrSkip
+// (connection.go: "if len(buf)+4 > mc.maxAllowedPacket"), which makes
+// database/sql fall back to server-side prepared statements — a different
+// protocol path than the one the batching design targets, and measurably slower
+// (one 80 MiB statement took 2.078s where the same data in 8 MiB COM_QUERY
+// batches took 1.195s). A server with a large max_allowed_packet therefore gets
+// *less* suitable batches if nothing clamps the derived budget, which is what
+// driverBatchBudget is for.
+const driverInterpolationCap int64 = 64 << 20
+
+// maxQueuedBatchBytes is the memory envelope the hand-off queue is *reported*
+// against. --pipeline-buffer counts batches and one batch can be as large as the
+// byte budget, so the depth alone does not say how much parsed data the queue holds.
+// The depth stays where the operator put it: measured on a 200,688,900-byte /
+// 100,000-row import at --threads 32 with /usr/bin/time, on a server reporting the
+// OceanBase V4.x default max_allowed_packet=16M (budget 15,099,494 B), three repeats
+// of each peaked at 76,616-152,040 KB in 3.78-5.07s at depth 1024 and 122,740-149,412
+// KB in 4.45-4.83s at the default depth 10. The ranges overlap: with a 15 MB budget a
+// single batch is small enough that the reader cannot stay that far ahead of the
+// writers, so depth no longer decides peak RSS (the same file on a 128 MB server did
+// separate, 147,340-292,356 KB at depth 1024). The envelope only sets the threshold
+// at which the run says out loud what the depth costs; it does not change the depth
+// (see resolveQueueDepth). On the 16M bed that threshold is floor(1 GiB / 15,099,494)
+// = 71 batches, measured silent at 71 and priced from 72. The shipped default (10
+// batches, 150,994,940 B nominal here, 603,979,770 B even where the driver clamp
+// decides) sits inside it, so a default run never hears about it.
+const maxQueuedBatchBytes int64 = 1 << 30
+
+// driverBatchBudget is the byte budget a batch must stay under to keep the
+// statement inside the driver's interpolation ceiling. It reuses the same safety
+// margin as the server budget, so the statement skeleton and the row separators
+// are absorbed the same way.
+func driverBatchBudget() int64 {
+	return batchByteLimit(driverInterpolationCap)
+}
+
+// queuedBytes is the most parsed data the hand-off queue can retain at the given
+// depth: every queued batch is capped by the byte budget, so depth times that budget
+// is the memory the configured depth actually asks for. It saturates instead of
+// wrapping, because both sides of the product are user-scale numbers (depth up to
+// 1024, an explicit --statement-size of any width).
+func queuedBytes(depth int, maxBatchBytes int64) int64 {
+	if depth <= 0 || maxBatchBytes <= 0 {
+		return 0
+	}
+	if maxBatchBytes > int64(math.MaxInt64)/int64(depth) {
+		return math.MaxInt64
+	}
+	return int64(depth) * maxBatchBytes
+}
 
 // effectiveBatchSize clamps the configured row batch size so that
 // rows*columns stays under the protocol's placeholder ceiling. The clamp is
@@ -124,27 +186,60 @@ func fetchMaxAllowedPacket(db *sql.DB) (int64, error) {
 	return value, nil
 }
 
-// batchByteLimit converts a packet ceiling into the per-batch byte budget.
+// batchByteLimit converts a packet ceiling into the per-batch byte budget. There is
+// deliberately no floor: a minimum batch size cannot be worth more than the ceiling
+// it is derived from. Measured with the server at max_allowed_packet=39936, the
+// previous 64 KiB floor produced batch_bytes=65536 — above the server's own limit —
+// and the import failed with `Error 1153 (08S01): Got a packet bigger than
+// 'max_allowed_packet' bytes` while landing 0 of the 5,000 rows. A small ceiling
+// therefore means small batches, which is slow but correct, and shouldFlush's
+// row-count ceiling plus its flush-after-append rule keep a single wide row going out
+// alone either way.
 func batchByteLimit(maxAllowedPacket int64) int64 {
-	limit := maxAllowedPacket * int64(packetSafetyMargin) / 10
-	if limit < 64<<10 {
-		limit = 64 << 10
-	}
-	return limit
+	return maxAllowedPacket * int64(packetSafetyMargin) / 10
 }
 
 // applyStatementCap lowers the server-derived per-batch byte budget when the
 // caller gave --statement-size on the import side. It only ever lowers it: a
 // batch above max_allowed_packet*9/10 fails mid-import with error 1153, which is
-// what the packet budget exists to prevent. A value below batchByteLimit's 64 KiB
-// floor is honoured as given, because an explicit number is a deliberate choice,
-// and a single row larger than the budget still goes out as its own statement
-// (nothing here can split a row).
+// what the packet budget exists to prevent. A very small explicit value is honoured
+// as given, because an explicit number is a deliberate choice, and a single row
+// larger than the budget still goes out as its own statement (nothing here can split
+// a row).
 func applyStatementCap(packetBudget int64, statementSize int) int64 {
 	if statementSize <= 0 || int64(statementSize) >= packetBudget {
 		return packetBudget
 	}
 	return int64(statementSize)
+}
+
+// batchCeilings decides which ceiling governs the per-batch byte budget and
+// whether the result is still inside what the driver will interpolate. Three
+// ceilings compete: the server's max_allowed_packet (the only one that can be
+// queried), an explicit --statement-size (which may only lower the result), and
+// the driver's interpolation ceiling (see driverInterpolationCap), which the
+// first two know nothing about.
+//
+// A server budget above the driver ceiling is a trap rather than headroom: the
+// resulting batch leaves the interpolated COM_QUERY path and every statement
+// becomes a server-side round trip of its own. The default is therefore clamped
+// and reported as "driver_packet_cap". An explicit --statement-size above the
+// ceiling is the user's own number, so it is honoured (aboveDriverCeiling tells
+// the caller to report it) instead of being silently overridden.
+func batchCeilings(packetBudget int64, statementSize int) (budget int64, limiting string, aboveDriverCeiling bool) {
+	budget = applyStatementCap(packetBudget, statementSize)
+	explicit := statementSize > 0 && int64(statementSize) < packetBudget
+	limiting = "max_allowed_packet"
+	if explicit {
+		limiting = "statement-size"
+	}
+	if driverBudget := driverBatchBudget(); budget > driverBudget {
+		if explicit {
+			return budget, limiting, true
+		}
+		return driverBudget, "driver_packet_cap", false
+	}
+	return budget, limiting, false
 }
 
 // batchBudget returns the per-batch byte ceiling for the connected server,
@@ -160,11 +255,11 @@ func (imp *Importer) batchBudget() int64 {
 			common.Logger.Warn("could not read max_allowed_packet, assuming conservative batch limit",
 				"assumed_bytes", defaultMaxAllowedPacket, "error", err)
 		}
-		serverBudget := batchByteLimit(packet)
-		imp.maxBatchBytes = applyStatementCap(serverBudget, imp.cfg.StatementSize)
-		limiting := "max_allowed_packet"
-		if imp.maxBatchBytes != serverBudget {
-			limiting = "statement-size"
+		budget, limiting, aboveCeiling := batchCeilings(batchByteLimit(packet), imp.cfg.StatementSize)
+		imp.maxBatchBytes = budget
+		if aboveCeiling {
+			common.Logger.Warn("--statement-size is above the driver interpolation ceiling, generated statements will fall back to server-side prepared statements",
+				"statement_size", imp.cfg.StatementSize, "driver_ceiling_bytes", driverBatchBudget())
 		}
 		common.Logger.Info("import batch byte cap resolved",
 			"max_allowed_packet", packet,
@@ -174,6 +269,29 @@ func (imp *Importer) batchBudget() int64 {
 		)
 	})
 	return imp.maxBatchBytes
+}
+
+// resolveQueueDepth keeps the configured --pipeline-buffer exactly as given and
+// reports what it costs when the retained total passes maxQueuedBatchBytes. Depth and
+// --threads are separate knobs — one is a queue, the other is concurrency — and the
+// queue is shared by the workers rather than per-worker, so the cost of a depth is
+// bytes, not lost parallelism, and the only honest place to state it is the log. A
+// negative depth (a library caller, since the CLI range is 0..1024) becomes the
+// synchronous hand-off, because a channel cannot have negative capacity.
+func (imp *Importer) resolveQueueDepth(maxBatchBytes int64) int {
+	depth := imp.cfg.PipelineBuffer
+	if depth < 0 {
+		depth = 0
+	}
+	queued := queuedBytes(depth, maxBatchBytes)
+	if queued > maxQueuedBatchBytes {
+		common.Logger.Warn("the hand-off queue may retain more than the memory envelope, importing at the configured depth",
+			"requested", depth, "batch_bytes", maxBatchBytes,
+			"queued_bytes", queued, "envelope_bytes", maxQueuedBatchBytes,
+			"hint", "lower --pipeline-buffer, or lower --statement-size to shrink each batch")
+	}
+	imp.queueDepth = depth
+	return depth
 }
 
 // resolveBatchSize clamps --batch-size to the placeholder ceiling for this table
@@ -186,5 +304,48 @@ func (imp *Importer) resolveBatchSize(columns int) (int, int64) {
 			"limit", maxPlaceholders,
 		)
 	}
-	return batchSize, imp.batchBudget()
+	budget := imp.batchBudget()
+	imp.resolveQueueDepth(budget)
+	return batchSize, budget
+}
+
+// warnIfThreadsExceedCapacity reports the mismatch between --threads and the
+// server's connection ceiling before any worker starts. Every parallel writer
+// holds one connection for the whole run, so requesting more workers than the
+// server accepts is not a slowdown but a likely failure: the extra workers retry
+// a bounded number of times, and the first one to give up cancels the run while
+// the others have already committed rows. It is a warning rather than a refusal
+// because max_connections can be raised by the DBA mid-run, and because a server
+// that allows the connection still imports correctly.
+func warnIfThreadsExceedCapacity(ctx context.Context, db *sql.DB, threads int) {
+	if db == nil || threads <= 1 {
+		return
+	}
+	maxConns, err := common.MaxConnections(ctx, db)
+	if err != nil {
+		common.Logger.Debug("could not read max_connections", "error", err)
+		return
+	}
+	// +1 for the connection the import itself runs its metadata queries on.
+	if need := threads + 1; maxConns > 0 && need > maxConns {
+		common.Logger.Warn("workers exceed the server connection limit, workers that cannot connect will retry and may fail the run",
+			"threads", threads, "connections_needed", need, "max_connections", maxConns,
+			"hint", "lower --threads, or raise max_connections on the server")
+	}
+}
+
+// warnIfReplayWindowScales reports the real memory envelope of the replay buffers.
+// replayBudget divides one process-wide budget across writers but keeps a floor per
+// writer, so past eight workers the retained total grows with the thread count
+// instead of staying at the documented budget: 256 workers hold 2 GiB. The floor
+// cannot simply be dropped (a worker's window would be smaller than one batch,
+// making --commit-count a dead option), so the total is reported instead.
+func warnIfReplayWindowScales(threads int) {
+	perWriter := replayBudget(threads)
+	total := int64(threads) * int64(perWriter)
+	if threads > 1 && total > DefaultMaxPendingBytes {
+		common.Logger.Warn("parallel import replay window scales with threads",
+			"threads", threads, "per_writer_bytes", perWriter, "total_bytes", total,
+			"budgeted_total_bytes", DefaultMaxPendingBytes)
+	}
 }

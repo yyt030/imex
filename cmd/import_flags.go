@@ -36,7 +36,7 @@ func registerImportFlags(cmd *cobra.Command) {
 
 	// Progress cadence
 	f.DurationVar(&importCfg.ProgressInterval, "progress-interval", config.DefaultProgressInterval,
-		"How often to write the periodic progress record (must be positive; --quiet drops the records entirely)")
+		"How often to write the periodic progress record (minimum 10ms; --quiet drops the records entirely)")
 
 	// Session variables (repeatable)
 	f.StringArrayVar(&importCfg.SessionVars, "session-var", nil,
@@ -49,7 +49,7 @@ func registerImportFlags(cmd *cobra.Command) {
 	// Import-specific options
 	f.StringVarP(&importCfg.Input, "input", "i", "", "Input file path (required)")
 	f.StringVarP(&importCfg.Format, "format", "f", "del", "Input file format (del/sql/parquet)")
-	f.StringVarP((*string)(&importCfg.Mode), "mode", "M", "insert", "Import mode (insert/insert_update/replace/create)")
+	f.StringVarP((*string)(&importCfg.Mode), "mode", "M", "insert", "Import mode: insert, insert_update (upsert), replace (delete all rows then plain INSERT, not REPLACE INTO), create (from SQL file)")
 	f.StringVarP(&importCfg.Table, "table", "t", "", "Target table name")
 	f.StringVarP(&importCfg.Columns, "columns", "c", "", "Target column list (comma-separated) or mapping (file_col=table_col,...)")
 	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")
@@ -72,8 +72,8 @@ func registerImportFlags(cmd *cobra.Command) {
 
 	// Pipeline hand-off controls
 	f.IntVar(&importCfg.BatchSize, "batch-size", config.DefaultBatchSize, "Rows per reader->writer hand-off batch")
-	f.IntVar(&importCfg.PipelineBuffer, "pipeline-buffer", config.DefaultPipelineBuffer, "Hand-off queue depth, in batches")
-	f.IntVar(&importCfg.StatementSize, "statement-size", 0, "Ceiling for each generated INSERT statement, in bytes (0 = only the server max_allowed_packet budget applies; this lowers that budget, never raises it)")
+	f.IntVar(&importCfg.PipelineBuffer, "pipeline-buffer", config.DefaultPipelineBuffer, "Hand-off queue depth, in batches (0 = synchronous hand-off; a depth whose batches could exceed 1 GiB of retained rows is imported as given and reported)")
+	f.IntVar(&importCfg.StatementSize, "statement-size", 0, "Ceiling for each generated INSERT statement, in bytes (0 = the server max_allowed_packet budget applies, capped to the driver's 64 MiB interpolation ceiling; this lowers that budget, never raises it)")
 
 	// Parallel import
 	f.IntVar(&importCfg.ImportThreads, "threads", 1, "Number of parallel import tasks (1 = no parallelism)")

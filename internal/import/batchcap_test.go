@@ -85,9 +85,15 @@ func TestBatchByteLimit(t *testing.T) {
 		{1 << 20, (1 << 20) * 9 / 10},
 		{64 << 20, (64 << 20) * 9 / 10},
 		{256 << 20, (256 << 20) * 9 / 10},
-		{1024, 64 << 10}, // floor: never shrink a batch below one page-ish
-		{0, 64 << 10},
-		{-1, 64 << 10},
+		// Measured on the bed with the server at max_allowed_packet=39936 (the global
+		// was set to 40000 and rounded down): the old 64 KiB floor reported
+		// batch_bytes=65536 — above the packet the server had just stated — and the
+		// import died with Error 1153, landing 0 of 5,000 rows, while the record still
+		// named max_allowed_packet as the decider. The budget is the server's, with the
+		// 9/10 margin, at every size. A non-positive packet cannot reach here:
+		// fetchMaxAllowedPacket substitutes defaultMaxAllowedPacket for it.
+		{65536, 65536 * 9 / 10},
+		{1024, 1024 * 9 / 10},
 	}
 	for _, c := range cases {
 		if got := batchByteLimit(c.packet); got != c.want {
@@ -112,9 +118,9 @@ func TestApplyStatementCap(t *testing.T) {
 		{"a cap above the budget is not an upgrade", 2 * budget, budget},
 		{"a cap equal to the budget changes nothing", budget, budget},
 		{"a real cap tightens it", 50000, 50000},
-		// batchByteLimit floors the derived budget at 64 KiB; an explicit number
-		// below that floor is a deliberate choice and must survive.
-		{"below the derived floor is still honoured", 1024, 1024},
+		// An explicit number below the server-derived budget is a deliberate choice and
+		// must survive, however small it looks next to a packet budget.
+		{"a cap far below the budget is still honoured", 1024, 1024},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

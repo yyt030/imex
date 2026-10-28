@@ -211,19 +211,65 @@ func validateMode(mode string, format string) error {
 	return nil
 }
 
-// validateDelimiters parses and validates all delimiter options.
-func validateDelimiters(charDel, colDel, rowDel, escape string) error {
-	if _, err := common.ParseDelimiter(charDel); err != nil {
-		return common.Usagef("invalid --char-del: %v", err)
+// validateProgressInterval checks the periodic progress cadence. A non-positive
+// value would make time.NewTicker panic and a zero default would silently disable
+// the heartbeat, so both are refused; the lower bound exists because the ticker
+// only fires as fast as its consumer drains it, and an interval below a few
+// milliseconds turns the progress record into an unbounded log-writing loop
+// (measured: 780 records and 132 KB of log from a 10-row, 4ms import at 1ns).
+func validateProgressInterval(d time.Duration) error {
+	if d <= 0 {
+		return common.Usagef("invalid --progress-interval %s: must be > 0", d)
 	}
-	if _, err := common.ParseDelimiter(colDel); err != nil {
-		return common.Usagef("invalid --col-del: %v", err)
+	if d < config.MinProgressInterval {
+		return common.Usagef("invalid --progress-interval %s: must be >= %s", d, config.MinProgressInterval)
 	}
-	if _, err := common.ParseDelimiter(rowDel); err != nil {
-		return common.Usagef("invalid --row-del: %v", err)
+	return nil
+}
+
+// validateDelimiters parses the four delimiter options and refuses pairs whose
+// equality makes the layout ambiguous. Each option is checked on its own first,
+// because an unparseable value must be reported as that value's own error.
+//
+// The collisions are refused rather than warned about for the same reason the
+// format-scoped options are: the tool would otherwise write a file it cannot read
+// back. --col-del "," with --row-del "," produced a 4-row dump that was one long
+// line and imported with error "target table has no column(s)", and --char-del ","
+// produced ",id,,,v," — both exit 0 with no diagnostic, so the failure surfaced
+// only later, in whoever tried to use the file. --escape equal to --char-del stays
+// legal: it is the shipped default, and a delimiter that also escapes its own
+// string quote is how MySQL doubles it.
+func validateDelimiters(charDel, colDel, rowDel, escape string, noCharDel, noEscape bool) error {
+	// Slice, not map: the order an unparseable delimiter is reported in is part of
+	// the error-text contract.
+	names := []string{"char-del", "col-del", "row-del", "escape"}
+	raws := []string{charDel, colDel, rowDel, escape}
+	chars := make(map[string]string, len(names))
+	for i, name := range names {
+		v, err := common.ParseDelimiter(raws[i])
+		if err != nil {
+			return common.Usagef("invalid --%s: %v", name, err)
+		}
+		chars[name] = v
 	}
-	if _, err := common.ParseDelimiter(escape); err != nil {
-		return common.Usagef("invalid --escape: %v", err)
+
+	conflicts := []struct{ a, b string }{
+		{"col-del", "row-del"},
+		{"char-del", "col-del"},
+		{"char-del", "row-del"},
+		{"escape", "col-del"},
+		{"escape", "row-del"},
+	}
+	for _, c := range conflicts {
+		if chars[c.a] != chars[c.b] {
+			continue
+		}
+		// A disabled option is not part of the layout, so it cannot collide.
+		if (c.a == "char-del" && noCharDel) || (c.a == "escape" && noEscape) {
+			continue
+		}
+		return common.Usagef("invalid --%s %q: it is the same as --%s, which makes the file layout ambiguous",
+			c.a, chars[c.a], c.b)
 	}
 	return nil
 }
@@ -282,7 +328,7 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 	if err := validatePositiveDuration("socket-write-timeout", cfg.SocketWriteTimeout); err != nil {
 		return err
 	}
-	if err := validatePositiveDuration("progress-interval", cfg.ProgressInterval); err != nil {
+	if err := validateProgressInterval(cfg.ProgressInterval); err != nil {
 		return err
 	}
 	if err := validateLogLevel(string(cfg.LogLevel)); err != nil {
@@ -303,7 +349,8 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 	if err := validateOptionScopes(cmd, config.ExportOptionScopes(), cfg.Format); err != nil {
 		return err
 	}
-	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel, cfg.DelModifier.Escape)
+	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel,
+		cfg.DelModifier.Escape, cfg.DelModifier.NoCharDel, cfg.DelModifier.NoEscape)
 }
 
 // validateImportConfig performs all validation for import.
@@ -333,7 +380,7 @@ func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
 	if err := validatePositiveDuration("socket-write-timeout", cfg.SocketWriteTimeout); err != nil {
 		return err
 	}
-	if err := validatePositiveDuration("progress-interval", cfg.ProgressInterval); err != nil {
+	if err := validateProgressInterval(cfg.ProgressInterval); err != nil {
 		return err
 	}
 	if err := validateLogLevel(string(cfg.LogLevel)); err != nil {
@@ -360,5 +407,6 @@ func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
 	if err := validateOptionScopes(cmd, config.ImportOptionScopes(), cfg.Format); err != nil {
 		return err
 	}
-	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel, cfg.DelModifier.Escape)
+	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel,
+		cfg.DelModifier.Escape, cfg.DelModifier.NoCharDel, cfg.DelModifier.NoEscape)
 }

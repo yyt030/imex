@@ -157,8 +157,30 @@ func (e *Exporter) removeIncompleteOutput() {
 	}
 }
 
+// warnIfShardKeyIgnored says out loud what the single-threaded path does with a
+// requested shard key: nothing. Only exportParallel samples a key to cut the query
+// into ranges, so an operator who set --shard-key and ended up here — through
+// --threads 1, or because a join/CTE or an unsplittable result fell back — would
+// otherwise read the configuration record's shard_key field as a promise the run
+// does not keep. It is a WARN and not a usage error because the run is still
+// correct: the query it exports is the query that gets exported, only the
+// parallelism was never going to happen. The sharded path is also the only one that
+// validates the column, so an unknown key never reaches here as an error.
+func (e *Exporter) warnIfShardKeyIgnored() {
+	if e.config.ShardKey == "" {
+		return
+	}
+	common.Logger.Warn("single-threaded export ignores --shard-key",
+		"shard_key", e.config.ShardKey,
+		"threads", e.config.Threads,
+		"fallback", e.config.Threads > 1,
+		"hint", "a shard key only drives a parallel export: raise --threads above 1 with a single-table query, or drop --shard-key")
+}
+
 // exportSingle performs single-threaded export with pipeline optimization
 func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err error) {
+	e.warnIfShardKeyIgnored()
+
 	// Detect server type BEFORE opening the streaming cursor: the single
 	// export connection (MaxOpenConns=1) is held for the whole result set,
 	// so any metadata query issued after this point would deadlock.
@@ -424,14 +446,34 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 		return e.exportSingle(ctx, startTime)
 	}
 
-	// Detect shard key
+	// Detect shard key. An explicit --shard-key that the server does not have is a
+	// refused request, not a hint: silently exporting single-threaded would report
+	// success while dropping the instruction, and the user would see a run that is
+	// several times slower with no reason. Auto-detection keeps its fallback.
 	shardInfo, err := DetectShardKey(e.db, tableName, e.config.ShardKey)
 	if err != nil {
+		if e.config.ShardKey != "" {
+			return common.Usagef("invalid --shard-key %q for table %q: %v", e.config.ShardKey, tableName, err)
+		}
 		common.Logger.Warn("failed to detect shard key, falling back to single-threaded export", "error", err)
 		return e.exportSingle(ctx, startTime)
 	}
 
 	common.Logger.Info("parallel export detected", "table", tableName, "shard_key", shardInfo.Columns, "threads", e.config.Threads)
+
+	// Every shard worker holds its own connection, so a thread count above the
+	// server's ceiling is a likely mid-run failure rather than a slowdown. The
+	// CLI bound (1..256) knows nothing about the target, which is why this is read
+	// from the server and reported here instead of being validated statically.
+	if maxConns, err := common.MaxConnections(ctx, e.db); err == nil {
+		if need := e.config.Threads + 1; maxConns > 0 && need > maxConns {
+			common.Logger.Warn("workers exceed the server connection limit, workers that cannot connect will retry and may fail the export",
+				"threads", e.config.Threads, "connections_needed", need, "max_connections", maxConns,
+				"hint", "lower --threads, or raise max_connections on the server")
+		}
+	} else {
+		common.Logger.Debug("could not read max_connections", "error", err)
+	}
 
 	// Generate shard ranges: more ranges than workers, so a range that turns out
 	// bigger than the estimate is drained by a worker instead of by a whole slot.

@@ -107,6 +107,19 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 			continue
 		}
 		args = append(args, f.key, f.value)
+		if f.key != "shard_key" {
+			continue
+		}
+		// shard_key reports what was asked for, like every other field here. When
+		// the run cannot use it at all — a single-threaded export is the only
+		// consumer of a shard key — the record also says so, because a bare
+		// shard_key=nosuchcol otherwise reads as a setting the run applies. A
+		// parallel run that later falls back prints no field here (threads>1 looked
+		// usable when the record was written) and gets the same warning from
+		// exportSingle before it streams a single row.
+		if cfg.ShardKey != "" && cfg.Threads <= 1 {
+			args = append(args, "shard_key_ignored", true)
+		}
 	}
 	return args
 }

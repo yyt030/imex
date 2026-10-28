@@ -38,7 +38,7 @@ func registerExportFlags(cmd *cobra.Command) {
 
 	// Progress cadence
 	f.DurationVar(&exportCfg.ProgressInterval, "progress-interval", config.DefaultProgressInterval,
-		"How often to write the periodic progress record (must be positive; --quiet drops the records entirely)")
+		"How often to write the periodic progress record (minimum 10ms; --quiet drops the records entirely)")
 
 	// Session variables (repeatable)
 	f.StringArrayVar(&exportCfg.SessionVars, "session-var", nil,
@@ -85,7 +85,7 @@ func registerExportFlags(cmd *cobra.Command) {
 
 	// Parallel export
 	f.IntVar(&exportCfg.Threads, "threads", 1, "Number of parallel export tasks (1 = no parallelism)")
-	f.StringVar(&exportCfg.ShardKey, "shard-key", "", "Column name for sharding (auto-detect primary key if empty)")
+	f.StringVar(&exportCfg.ShardKey, "shard-key", "", "Column name for sharding (only a parallel export reads and validates it: with --threads 1, or after a fallback to single-threaded, it is ignored; auto-detect primary key if empty)")
 
 	// Log level (local, not persistent)
 	f.StringVar((*string)(&exportCfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")

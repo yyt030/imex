@@ -35,9 +35,12 @@ const minReplayBudget = 8 << 20
 // The cap used to be per session, which meant a run with N parallel writers
 // retained N x DefaultMaxPendingBytes: measured peak RSS of a 4-thread import of
 // wide rows was 208 MB, all of it replay buffers, and the multiplier grew with
-// --threads. Dividing keeps the retained total at the documented budget for any
-// thread count; the floor exists so a run with many workers does not commit
-// after every batch.
+// --threads. Dividing keeps the retained total at the documented budget down to
+// the worker count where the floor binds — eight writers at 8 MiB each — and the
+// floor exists so a run with many workers does not commit after every batch.
+// Past eight workers the floor is what applies, so the total grows again with
+// --threads (256 workers x 8 MiB = 2 GiB); importParallel reports that envelope
+// instead of pretending it is constant.
 func replayBudget(threads int) int {
 	if threads < 1 {
 		threads = 1
