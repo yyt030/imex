@@ -103,6 +103,16 @@ func validateLogLevel(level string) error {
 	}
 }
 
+// validateParquetCompression checks the codec name before the writer sees it, so
+// a typo is a usage error (exit 2) rather than an error raised after the file has
+// been created.
+func validateParquetCompression(codec string) error {
+	if !config.ValidParquetCompression(codec) {
+		return common.Usagef("invalid --parquet-compression %q: must be one of none/snappy/zstd", codec)
+	}
+	return nil
+}
+
 // validateLogFormat checks that the log format is valid.
 func validateLogFormat(format string) error {
 	if !common.ValidLogFormat(format) {
@@ -335,6 +345,9 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 		return err
 	}
 	if err := validateFormat(cfg.Format); err != nil {
+		return err
+	}
+	if err := validateParquetCompression(cfg.ParquetCompression); err != nil {
 		return err
 	}
 	if err := validateCharset(cfg.DefaultCharset, cfg.Format); err != nil {

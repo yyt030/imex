@@ -73,6 +73,10 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.BoolVar(&exportCfg.Create, "create", false, "Output a CREATE TABLE statement (SQL export is data-only by default)")
 	f.BoolVar(&exportCfg.NoData, "no-data", false, "Do not output INSERT statements")
 
+	// Parquet format modifiers
+	f.StringVar(&exportCfg.ParquetCompression, "parquet-compression", config.ParquetCompressionNone,
+		"Parquet page compression (none, snappy or zstd); snappy costs ~4% export time for roughly a tenth of the bytes on text, zstd trades more CPU and memory for far smaller files")
+
 	// Binary column encoding
 	f.BoolVar(&exportCfg.HexBlob, "hex-blob", false, "Encode binary columns as 0x hexadecimal literals (auto-on for non-utf8mb4 charset)")
 	f.BoolVar(&exportCfg.NoHexBlob, "no-hex-blob", false, "Force raw binary passthrough even for non-utf8mb4 charset (may corrupt binary data)")

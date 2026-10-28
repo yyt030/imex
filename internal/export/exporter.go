@@ -276,7 +276,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		writer = sqlWriter
 	case "parquet":
-		parquetWriter, err := NewParquetWriter(outputFile, columns, binaryFlags)
+		parquetWriter, err := NewParquetWriter(outputFile, columns, binaryFlags, e.config.ParquetCompression)
 		if err != nil {
 			return errors.Wrap(err, "failed to create parquet writer")
 		}

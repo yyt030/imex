@@ -152,6 +152,22 @@
 # import still sixteen delta lines, root still two -- because the same line changed on both
 # sides. The internal handler was renamed javaHandler -> consoleHandler and the constant
 # LogFormatJava -> LogFormatConsole; neither name was exported beyond the package's own tests.
+# Re-baselined note 12 (2026-10-28): export gained --parquet-compression
+# (none/snappy/zstd, default none), so the `## export` body was regenerated and
+# now has 88 lines; the diff against the working tree is empty again. The new
+# line carries the usual generated scope marker, "(only with --format parquet)".
+# `## import` still has sixteen delta lines and `## root` still two: neither
+# command gained the option, and no shared line changed. The body differs from
+# the frozen baseline by exactly this one line beyond the deltas listed below.
+# Re-baselined note 13 (2026-10-28, reverted the same day): the header switch was
+# briefly renamed --no-col-names -> --no-header on both subcommands, with no alias;
+# the reviewer then judged the long-standing name the clearer one (it says what is
+# not written -- the column-name row -- while "no header" reads like a file without
+# a preamble), so the rename was withdrawn before any commit. Both commands are back
+# to --no-col-names and --no-header is an unknown flag (exit 2) again. The `## export`
+# body was regenerated a second time (still 88 lines, diff empty); `## import` still
+# has sixteen delta lines and `## root` still two. The only net change from this
+# note's first draft is that no help line moved at all.
 # Frozen baseline, kept verbatim as a regression reference. The intentional
 # deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --extended-insert and lost --single-row-insert (one INSERT per
@@ -269,6 +285,7 @@ Flags:
       --no-hex-blob                     Force raw binary passthrough even for non-utf8mb4 charset (may corrupt binary data) (not with --format parquet)
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Output file path (required)
+      --parquet-compression string      Parquet page compression (none, snappy or zstd); snappy costs ~4% export time for roughly a tenth of the bytes on text, zstd trades more CPU and memory for far smaller files (only with --format parquet) (default "none")
   -p, --password string                 Database password
       --pipeline-buffer int             Hand-off queue depth, in batches (single-threaded export only; passing it with --threads>1 is a usage error) (default 10)
   -P, --port int                        TCP/IP port (default 3306)

@@ -80,6 +80,12 @@ func delOnly(flag string) OptionScope { return onlyWith(flag, FormatDel, "--form
 // reads.
 func sqlOnly(flag string) OptionScope { return onlyWith(flag, FormatSQL, "--format "+FormatSQL) }
 
+// parquetOnly is the Parquet writer group: options that describe how a columnar
+// file is laid out on disk have no meaning for the row-oriented writers.
+func parquetOnly(flag string) OptionScope {
+	return onlyWith(flag, FormatParquet, "--format "+FormatParquet)
+}
+
 // binaryEncodingReason is shared by the two hex-blob flags.
 const binaryEncodingReason = "binary columns are already stored as binary"
 
@@ -94,6 +100,7 @@ func ExportOptionScopes() OptionScopes {
 		sqlOnly("no-data"),
 		sqlOnly("statement-size"),
 		sqlOnly("extended-insert"),
+		parquetOnly("parquet-compression"),
 		delOnly("char-del"),
 		delOnly("col-del"),
 		delOnly("row-del"),

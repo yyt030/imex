@@ -75,6 +75,10 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		{"statement-size", "statement_size", cfg.StatementSize},
 		{"extended-insert", "extended_insert", cfg.ExtendedInsert},
 
+		// Parquet layout: the codec name is what the footer records, so the record
+		// reports it verbatim (none means the pages are written uncompressed).
+		{"parquet-compression", "parquet_compression", cfg.ParquetCompression},
+
 		// DEL layout
 		{"char-del", "char_del", cfg.DelModifier.CharDel},
 		{"col-del", "col_del", cfg.DelModifier.ColDel},

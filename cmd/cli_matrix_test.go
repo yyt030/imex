@@ -323,6 +323,76 @@ func TestCLIParquetHexBlobRejected(t *testing.T) {
 	}
 }
 
+// TestCLINoHeaderIsUnknown pins the naming decision: the switch keeps its
+// long-standing name --no-col-names, and the shorter --no-header that was tried
+// for a moment is not accepted. One flag, one name, so a spelling that is not in
+// the help text never quietly works.
+func TestCLINoHeaderIsUnknown(t *testing.T) {
+	bases := map[string][]string{
+		"export": {"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.dat", "-q", "SELECT 1"},
+		"import": {"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-i", "/tmp/in.dat", "-t", "users"},
+	}
+	for _, sub := range []string{"export", "import"} {
+		args := append(append([]string{}, bases[sub]...), "--no-header")
+		t.Run(sub, func(t *testing.T) {
+			err := validateOnly(t, sub, args)
+			if err == nil {
+				t.Fatal("--no-header must be an unknown flag: the switch is --no-col-names")
+			}
+			if !strings.Contains(err.Error(), "unknown flag: --no-header") {
+				t.Errorf("expected an unknown-flag error, got %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestCLIParquetCompression pins the codec option's three scopes: the three
+// values are accepted for --format parquet, the option is rejected for the two
+// textual formats (where it would change nothing), and an unknown codec is a
+// usage error rather than a silently uncompressed file.
+func TestCLIParquetCompression(t *testing.T) {
+	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.dat", "-q", "SELECT 1"}
+
+	for _, value := range []string{"none", "snappy", "zstd"} {
+		args := append(append([]string{}, base...), "-f", "parquet", "--parquet-compression", value)
+		t.Run("parquet accepts "+value, func(t *testing.T) {
+			if err := validateOnly(t, "export", args); err != nil {
+				t.Fatalf("--parquet-compression %s rejected: %v", value, err)
+			}
+		})
+	}
+
+	for _, format := range []string{"del", "sql"} {
+		args := append(append([]string{}, base...), "-f", format, "--parquet-compression", "snappy")
+		t.Run("rejected with --format "+format, func(t *testing.T) {
+			err := validateOnly(t, "export", args)
+			want := "--parquet-compression can only be used with --format parquet"
+			if err == nil {
+				t.Fatalf("expected usage error %q, got nil", want)
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("expected error containing %q, got %q", want, err.Error())
+			}
+			if !common.IsUsageError(err) {
+				t.Errorf("error %q must be a usage error (exit code 2)", err)
+			}
+		})
+	}
+
+	args := append(append([]string{}, base...), "-f", "parquet", "--parquet-compression", "gzip")
+	err := validateOnly(t, "export", args)
+	want := `invalid --parquet-compression "gzip": must be one of none/snappy/zstd`
+	if err == nil {
+		t.Fatalf("expected usage error %q, got nil", want)
+	}
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("expected error containing %q, got %q", want, err.Error())
+	}
+	if !common.IsUsageError(err) {
+		t.Errorf("error %q must be a usage error (exit code 2)", err)
+	}
+}
+
 // TestCLIDELFlagRejectedExitCode drives the rejection through the real command
 // tree so the exit-2 contract is covered end to end, not just the validator.
 func TestCLIDELFlagRejectedExitCode(t *testing.T) {

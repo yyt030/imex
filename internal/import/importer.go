@@ -246,30 +246,43 @@ func (imp *Importer) Import(ctx context.Context) error {
 		// each statement's target table name so the subsequent INSERT (built
 		// from imp.cfg.Table) lands in the same table this created. When -t is
 		// omitted, adopt the table name carried by the first CREATE statement.
-		sqlReader, ok := reader.(*SQLReader)
-		if ok {
-			createStmts := sqlReader.GetCreateStatements()
-			if imp.cfg.Table == "" {
-				if len(createStmts) == 0 {
-					return errors.New("create mode requires --table when the SQL file contains no CREATE TABLE statement")
-				}
-				name := extractCreateTableName(createStmts[0])
-				if name == "" {
-					return errors.New("failed to derive table name from CREATE statement; specify --table")
-				}
-				imp.cfg.Table = name
-				common.Logger.Info("table name derived from SQL file", "table", name)
+		var createStmts []string
+		if sqlReader, ok := reader.(*SQLReader); ok {
+			createStmts = sqlReader.GetCreateStatements()
+		}
+		if imp.cfg.Table == "" {
+			if len(createStmts) == 0 {
+				return errors.New("create mode requires --table when the SQL file contains no CREATE TABLE statement")
 			}
-			for _, stmt := range createStmts {
-				stmt = rewriteCreateTableTarget(stmt, imp.cfg.Table)
-				common.LogInteractionSQL(stmt)
-				taggedStmt := common.TagSQL(stmt)
-				common.Logger.Info("create table executing")
-				if _, err := imp.db.ExecContext(ctx, taggedStmt); err != nil {
-					preview := common.SQLPreview(taggedStmt, nil)
-					common.Logger.Error("create table failed", "error", err, "sql", preview)
-					return errors.Wrapf(err, "failed to execute CREATE TABLE (SQL: %s)", preview)
-				}
+			name := extractCreateTableName(createStmts[0])
+			if name == "" {
+				return errors.New("failed to derive table name from CREATE statement; specify --table")
+			}
+			imp.cfg.Table = name
+			common.Logger.Info("table name derived from SQL file", "table", name)
+		}
+		// A data-only SQL file carries no DDL, so with -t the run can only work
+		// against a table that already exists. Without this check the first batch
+		// was read and INSERTed, and the server answered with the raw 1146 after
+		// the data had moved; fail before reading instead, and name both ways out.
+		if len(createStmts) == 0 {
+			exists, err := imp.tableExists(ctx)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return errors.Errorf("create mode found no CREATE TABLE statement in the SQL file and table %q does not exist in database %q: re-export with --create, or import with --mode insert into an existing table", imp.cfg.Table, imp.cfg.Database)
+			}
+		}
+		for _, stmt := range createStmts {
+			stmt = rewriteCreateTableTarget(stmt, imp.cfg.Table)
+			common.LogInteractionSQL(stmt)
+			taggedStmt := common.TagSQL(stmt)
+			common.Logger.Info("create table executing")
+			if _, err := imp.db.ExecContext(ctx, taggedStmt); err != nil {
+				preview := common.SQLPreview(taggedStmt, nil)
+				common.Logger.Error("create table failed", "error", err, "sql", preview)
+				return errors.Wrapf(err, "failed to execute CREATE TABLE (SQL: %s)", preview)
 			}
 		}
 	}
@@ -356,6 +369,25 @@ func validatePositionalColumns(targetColumns, fileColumns []string) error {
 	return nil
 }
 
+// tableExists reports whether the configured target table exists in the target
+// database. It is the single existence probe shared by the column pre-flight and
+// create mode's data-only-file check, so both send the same statement and report
+// probe failures the same way.
+func (imp *Importer) tableExists(ctx context.Context) (bool, error) {
+	if imp.cfg.Table == "" {
+		return false, nil
+	}
+	var found int
+	existsSQL := "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+	common.LogInteractionSQL(existsSQL, imp.cfg.Database, imp.cfg.Table)
+	if err := imp.db.QueryRowContext(ctx,
+		common.TagSQL(existsSQL),
+		imp.cfg.Database, imp.cfg.Table).Scan(&found); err != nil {
+		return false, errors.Wrap(err, "failed to verify target table")
+	}
+	return found > 0, nil
+}
+
 // validateTargetColumns checks that every target column exists on the table,
 // producing a clear error instead of the server's raw 1054. A missing table is
 // reported as such. Comparison is case-insensitive, matching MySQL semantics.
@@ -363,16 +395,11 @@ func (imp *Importer) validateTargetColumns(ctx context.Context, cols []string) e
 	if imp.cfg.Table == "" {
 		return nil
 	}
-	var exists int
-	existsSQL := "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
-	common.LogInteractionSQL(existsSQL, imp.cfg.Database, imp.cfg.Table)
-	err := imp.db.QueryRowContext(ctx,
-		common.TagSQL(existsSQL),
-		imp.cfg.Database, imp.cfg.Table).Scan(&exists)
+	exists, err := imp.tableExists(ctx)
 	if err != nil {
-		return errors.Wrap(err, "failed to verify target table")
+		return err
 	}
-	if exists == 0 {
+	if !exists {
 		return errors.Errorf("target table %q does not exist in database %q", imp.cfg.Table, imp.cfg.Database)
 	}
 

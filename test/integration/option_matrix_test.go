@@ -890,13 +890,38 @@ func TestOptionMatrixNoDataCreate(t *testing.T) {
 		file := env.cliExport(t, src, "sql", "data_only_for_create.sql")
 		dst := env.liveTable(t, "data_create_dst")
 		out, code := env.runImportCLI(t, "-i", file, "-t", dst, "-f", "sql", "--mode", "create")
-		if code == 0 {
-			t.Fatalf("importing a data-only file with --mode create must not succeed\n%s", out)
+		if code != 1 {
+			t.Fatalf("data-only file with --mode create must exit 1, got %d\n%s", code, out)
 		}
-		if code != 1 && code != 2 {
-			t.Errorf("unexpected exit code %d\n%s", code, out)
+		// The failure has to name the missing DDL and the way out, not arrive as
+		// the server's raw 1146 after the first batch was already sent.
+		for _, want := range []string{
+			"create mode found no CREATE TABLE statement",
+			"does not exist in database",
+			"re-export with --create",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("error must mention %q, got:\n%s", want, firstLines(out, 4))
+			}
 		}
-		t.Logf("exit=%d output=%s", code, firstLines(out, 3))
+		if strings.Contains(out, "1146") {
+			t.Errorf("data-only create mode must fail before the first INSERT, got server error 1146:\n%s", firstLines(out, 4))
+		}
+		var exists int
+		if err := env.db.QueryRow("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", dst).Scan(&exists); err != nil {
+			t.Fatalf("verify target table absence: %v", err)
+		}
+		if exists != 0 {
+			t.Errorf("the failed create-mode import created table %q", dst)
+		}
+	})
+
+	t.Run("默认仅数据 + mode create 对已存在的表照旧导入", func(t *testing.T) {
+		file := env.cliExport(t, src, "sql", "data_only_for_existing_create.sql")
+		dst := env.liveTable(t, "data_create_existing_dst")
+		env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
+		env.cliImport(t, dst, "sql", file, "--mode", string(config.ImportModeCreate))
+		assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
 	})
 }
 

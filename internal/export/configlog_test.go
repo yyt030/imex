@@ -37,7 +37,10 @@ var (
 		"timestamp_fmt", "date_fmt", "no_col_names",
 	}
 	sqlLayoutKeys = []string{"create", "no_data", "statement_size", "extended_insert"}
-	commonKeys    = []string{
+	// parquetLayoutKeys mirrors the parquet-only scope entry: the codec name is
+	// the only layout question the Parquet writer answers.
+	parquetLayoutKeys = []string{"parquet_compression"}
+	commonKeys        = []string{
 		"host", "port", "user", "database",
 		"output", "format", "query", "no_overwrite",
 		"threads", "shard_key", "batch_size", "pipeline_buffer",
@@ -74,6 +77,12 @@ func TestExportConfigRecordIsFilteredByFormat(t *testing.T) {
 			_, present := keys[field]
 			if want := format == config.FormatSQL; present != want {
 				t.Errorf("--format %s record carries SQL field %q: present=%v", format, field, present)
+			}
+		}
+		for _, field := range parquetLayoutKeys {
+			_, present := keys[field]
+			if want := format == config.FormatParquet; present != want {
+				t.Errorf("--format %s record carries Parquet field %q: present=%v", format, field, present)
 			}
 		}
 

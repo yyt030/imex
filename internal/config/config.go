@@ -45,6 +45,27 @@ const (
 // per-statement materialisation spike.
 const DefaultStatementSize = 8 << 20
 
+// Parquet page-compression codecs accepted by --parquet-compression. The default
+// is "none": the option only describes how the Parquet pages are compressed, and
+// leaving it alone keeps the product bytes of a Parquet export unchanged.
+const (
+	ParquetCompressionNone   = "none"
+	ParquetCompressionSnappy = "snappy"
+	ParquetCompressionZstd   = "zstd"
+)
+
+// ValidParquetCompression reports whether the codec name is one the Parquet
+// writer can apply. cmd/validate.go turns a false into a usage error, and the
+// writer turns it into an error instead of silently writing an uncompressed file
+// under a name that promised otherwise.
+func ValidParquetCompression(s string) bool {
+	switch s {
+	case ParquetCompressionNone, ParquetCompressionSnappy, ParquetCompressionZstd:
+		return true
+	}
+	return false
+}
+
 // DefaultCharset is used for both the connection and the text file formats when
 // --default-charset is not given.
 const DefaultCharset = "utf8mb4"
@@ -157,6 +178,11 @@ type ExportConfig struct {
 	Create bool
 	NoData bool // skip INSERT statements
 
+	// ParquetCompression is the page-compression codec for --format parquet
+	// (none, snappy or zstd). Only the Parquet writer reads it; the DEL and SQL
+	// writers ignore the value, and cmd/validate.go rejects it for them.
+	ParquetCompression string
+
 	// Binary column encoding. HexBlob forces 0x literals; NoHexBlob forces raw
 	// passthrough. Both false means "automatic": hex is enabled whenever
 	// DefaultCharset is not a byte-safe charset. The two flags are mutually
@@ -247,13 +273,14 @@ func (c *Config) EffectiveProgressInterval() time.Duration {
 // NewExportConfig returns an ExportConfig with default values.
 func NewExportConfig() *ExportConfig {
 	return &ExportConfig{
-		Config:         defaultConfig(),
-		Format:         "del",
-		DelModifier:    defaultDelModifier(),
-		StatementSize:  DefaultStatementSize,
-		Threads:        1,
-		BatchSize:      DefaultBatchSize,
-		PipelineBuffer: DefaultPipelineBuffer,
+		Config:             defaultConfig(),
+		Format:             "del",
+		DelModifier:        defaultDelModifier(),
+		StatementSize:      DefaultStatementSize,
+		ParquetCompression: ParquetCompressionNone,
+		Threads:            1,
+		BatchSize:          DefaultBatchSize,
+		PipelineBuffer:     DefaultPipelineBuffer,
 	}
 }
 
