@@ -83,16 +83,16 @@ func init() {
 		"Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)")
 
 	rootCmd.PersistentFlags().BoolVar(&echoSQLValues, "echo-sql-values", false,
-		"On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, or to the --messages file when one is given.")
+		"Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)")
 
 	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false,
-		"Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)")
+		"Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)")
 
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "console",
-		"Log layout: console (default: human-readable fixed-width) or text (slog key=value), also via IMEX_LOG_FORMAT")
+		"Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT")
 
 	rootCmd.PersistentFlags().BoolVar(&noSQLTag, "no-sql-tag", false,
-		"Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)")
+		"Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)")
 
 	// PersistentPreRunE: apply global switches before any subcommand runs.
 	// This runs before flag validation in RunE, so log format is active even

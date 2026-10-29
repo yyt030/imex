@@ -42,11 +42,13 @@ type Importer struct {
 	// that is still going.
 	stopMonitor func()
 
-	// dropCols marks the positions of the parsed rows that belong to generated
-	// columns and therefore do not go into the INSERT (see
-	// excludeGeneratedColumns). It is nil for every table without a computed
-	// column in the input, and both writers then flatten rows with one append.
-	dropCols []bool
+	// projection feeds the INSERT column list from the parsed rows:
+	// projection[i] is the row position whose value goes to INSERT column i. It
+	// is built by the name-based --columns mapping (a subset in any order) and
+	// by excludeGeneratedColumns (computed columns stay out of the INSERT). It
+	// is nil whenever row order equals INSERT order — the common run, whose
+	// writers then flatten rows with a single append.
+	projection []int
 }
 
 // NewImporter creates a new Importer instance
@@ -158,8 +160,16 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// Determine target columns: --columns > file columns
 	// --columns supports two formats:
 	// 1. Position-based: --columns "name,age,email" (file columns map to table columns by position)
-	// 2. Name-based mapping: --columns "file_col1=table_col1,file_col2=table_col2" (explicit mapping)
+	// 2. Name-based mapping: --columns "file_col1=table_col1,file_col2=table_col2" (explicit mapping; a subset is fine)
 	var targetColumns []string
+	// projection maps each INSERT value to its position in a parsed row; nil
+	// means row order equals INSERT order (see the field's comment).
+	var projection []int
+	// readerColumns stays aligned to the input positions, one entry per file
+	// column: the readers hand back one field per input column whatever the
+	// INSERT names, and the DEL reader resolves its per-column kinds and binary
+	// flags position by position.
+	var readerColumns []string
 	if imp.cfg.Columns != "" {
 		if strings.Contains(imp.cfg.Columns, "=") {
 			// Name-based mapping mode
@@ -168,7 +178,9 @@ func (imp *Importer) Import(ctx context.Context) error {
 			if err != nil {
 				return errors.Wrap(err, "failed to apply column mapping")
 			}
-			targetColumns = columnMapping.TargetColumns
+			targetColumns = columnMapping.Columns
+			projection = columnMapping.Projection
+			readerColumns = columnMapping.ReaderColumns
 		} else {
 			// Position-based mode
 			targetColumns = strings.Split(imp.cfg.Columns, ",")
@@ -178,6 +190,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 			if err := validatePositionalColumns(targetColumns, fileColumns); err != nil {
 				return err
 			}
+			readerColumns = targetColumns
 			if imp.cfg.Format == "del" && !imp.cfg.DelModifier.NoColNames && len(fileColumns) > 0 {
 				// Positional --columns consumes the first record as a header. That is
 				// right for a normal dump and silently drops a row for a
@@ -197,6 +210,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 		}
 	} else {
 		targetColumns = fileColumns
+		readerColumns = fileColumns
 	}
 
 	// A structure-only SQL file (--no-data export) carries CREATE statements
@@ -310,17 +324,17 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// Generated columns are computed by the server and must stay out of the INSERT
 	// column list: writing a value for one is rejected under strict mode (Error
 	// 1906) and silently discarded otherwise. Dropping them here keeps the parsed
-	// rows and the INSERT list in step (dropCols carries the positions), and the
+	// rows and the INSERT list in step (projection carries the positions), and the
 	// server recomputes exactly the values the export carried.
 	//
 	// readerColumns stays the pre-filter list because the reader still hands back
 	// one field per input column: its per-position column kinds and binary flags
 	// must therefore be resolved for the untouched positions.
-	readerColumns := targetColumns
-	targetColumns, imp.dropCols, err = imp.excludeGeneratedColumns(ctx, targetColumns)
+	targetColumns, projection, err = imp.excludeGeneratedColumns(ctx, targetColumns, projection)
 	if err != nil {
 		return err
 	}
+	imp.projection = projection
 
 	// For DEL import, teach the reader the target column kinds so the text
 	// modifiers (--dec-pt/--date-fmt/--timestamp-fmt) reverse-transform only
@@ -398,10 +412,16 @@ func (imp *Importer) finishNoData(startTime time.Time, note string) error {
 // file column. With --no-col-names the file header is unknown, so only the
 // names themselves are checked.
 func validatePositionalColumns(targetColumns, fileColumns []string) error {
+	seen := make(map[string]int, len(targetColumns))
 	for i, col := range targetColumns {
 		if col == "" {
 			return errors.Errorf("--columns entry %d is empty: positional mapping needs one target column name per file column", i+1)
 		}
+		key := strings.ToLower(col)
+		if prev, dup := seen[key]; dup {
+			return errors.Errorf("--columns names target column %q twice (entries %d and %d): the server rejects a repeated column in the INSERT list (Error 1110 Column '%s' specified twice)", col, prev+1, i+1, col)
+		}
+		seen[key] = i
 	}
 	if len(fileColumns) > 0 && len(targetColumns) != len(fileColumns) {
 		return errors.Errorf("--columns lists %d target columns but the input file has %d columns: positional mapping pairs them by index, so the counts must match (use --columns \"file_col=table_col\" to import a subset)", len(targetColumns), len(fileColumns))
@@ -820,7 +840,7 @@ loop:
 		// 构建批量插入的参数
 		batchValues := make([]interface{}, 0, len(batch.data)*len(columns))
 		for _, row := range batch.data {
-			batchValues = appendRowValues(batchValues, row, imp.dropCols)
+			batchValues = appendRowValues(batchValues, row, imp.projection)
 		}
 
 		insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))
@@ -1059,7 +1079,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 
 				flat := make([]interface{}, 0, len(batch.data)*len(columns))
 				for _, row := range batch.data {
-					flat = appendRowValues(flat, row, imp.dropCols)
+					flat = appendRowValues(flat, row, imp.projection)
 				}
 
 				insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))
@@ -1129,52 +1149,122 @@ func (imp *Importer) deleteTable(ctx context.Context) error {
 	return err
 }
 
-// ColumnMapping represents the mapping from file columns to target table columns
+// ColumnMapping is one name-based --columns mapping resolved against the input
+// header. A mapping names the columns an import writes, not every column the
+// file carries: an unmapped file column is simply not inserted.
 type ColumnMapping struct {
-	TargetColumns []string // Target column names in the order corresponding to file columns
+	// Columns are the target table columns in the order they go into the INSERT
+	// column list. They follow the input header's order, so the order the user
+	// wrote the pairs in does not matter.
+	Columns []string
+
+	// Projection feeds Columns: Projection[i] is the parsed-row position that
+	// supplies Columns[i]. It is nil when the mapped columns are all of the
+	// file's columns in file order, so the common mapping still appends whole
+	// rows without indexing.
+	Projection []int
+
+	// ReaderColumns is aligned to the input positions — one entry per file
+	// column — and carries the table column each position feeds, or "" where
+	// the mapping leaves that file column out.
+	ReaderColumns []string
 }
 
-// applyColumnMapping parses and validates column mapping
-// Format: "file_col1=table_col1,file_col2=table_col2,..."
-// Returns ColumnMapping for building INSERT statement
+// applyColumnMapping resolves the name-based --columns form against the input
+// header. Only the written mappings must be valid: a mapping may name a subset
+// of the file's columns, but every entry it does name is checked before a row
+// is read — the file column must exist in the header, no file column may be
+// mapped twice, and no target column may be fed twice (the server would reject
+// the INSERT with Error 1110 after the table had already been written).
 func (imp *Importer) applyColumnMapping(fileColumns []string) (*ColumnMapping, error) {
-	// Parse mapping: file_col -> table_col
-	mapping := make(map[string]string)
-	pairs := strings.Split(imp.cfg.Columns, ",")
-	for _, pair := range pairs {
+	type entry struct{ fileCol, tableCol string }
+	entries := make([]entry, 0, 4)
+	mapped := make(map[string]string, 4) // lowercased file column -> table column
+	for _, pair := range strings.Split(imp.cfg.Columns, ",") {
 		parts := strings.SplitN(pair, "=", 2)
 		if len(parts) != 2 {
-			return nil, errors.Errorf("invalid column mapping format: %s (expected file_col=table_col)", pair)
+			return nil, errors.Errorf("invalid column mapping entry %q: expected file_col=table_col", strings.TrimSpace(pair))
 		}
 		fileCol := strings.TrimSpace(parts[0])
 		tableCol := strings.TrimSpace(parts[1])
-		mapping[fileCol] = tableCol
-	}
-
-	// Validate: all file columns must be mapped
-	if len(mapping) != len(fileColumns) {
-		return nil, errors.Errorf("column mapping count mismatch: file has %d columns, but mapping specifies %d columns",
-			len(fileColumns), len(mapping))
-	}
-
-	// Build target column list in file column order
-	targetColumns := make([]string, len(fileColumns))
-	for i, fileCol := range fileColumns {
-		tableCol, ok := mapping[fileCol]
-		if !ok {
-			return nil, errors.Errorf("file column '%s' is not mapped", fileCol)
+		if fileCol == "" || tableCol == "" {
+			return nil, errors.Errorf("invalid column mapping entry %q: both file_col and table_col are required", strings.TrimSpace(pair))
 		}
-		targetColumns[i] = tableCol
+		key := strings.ToLower(fileCol)
+		if prev, dup := mapped[key]; dup {
+			return nil, errors.Errorf("file column %q is mapped twice (to %q and %q): each file column can feed one target column", fileCol, prev, tableCol)
+		}
+		mapped[key] = tableCol
+		entries = append(entries, entry{fileCol: fileCol, tableCol: tableCol})
+	}
+
+	targets := make(map[string]string, len(entries)) // lowercased table column -> file column
+	for _, e := range entries {
+		key := strings.ToLower(e.tableCol)
+		if prev, dup := targets[key]; dup {
+			return nil, errors.Errorf("target column %q is fed by two file columns (%q and %q): the server rejects a repeated column in the INSERT list (Error 1110 Column '%s' specified twice)", e.tableCol, prev, e.fileCol, e.tableCol)
+		}
+		targets[key] = e.fileCol
+	}
+
+	// The mapping is resolved by name, so a file without a header has no name to
+	// match: that is a usage error, not an unknown column.
+	if len(fileColumns) == 0 {
+		return nil, errors.New("column mapping matches file columns by name, but the input file has no column header: use the positional form --columns \"col1,col2,...\" instead (one target column per file column, in file order)")
+	}
+
+	headerIndex := make(map[string]int, len(fileColumns))
+	for i, name := range fileColumns {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if _, ok := headerIndex[key]; !ok {
+			headerIndex[key] = i
+		}
+	}
+	for _, e := range entries {
+		if _, ok := headerIndex[strings.ToLower(e.fileCol)]; !ok {
+			return nil, errors.Errorf("file column %q is not in the input header (file columns: %s)", e.fileCol, strings.Join(fileColumns, ", "))
+		}
+	}
+
+	cm := &ColumnMapping{
+		Columns:       make([]string, 0, len(entries)),
+		Projection:    make([]int, 0, len(entries)),
+		ReaderColumns: make([]string, len(fileColumns)),
+	}
+	ignored := make([]string, 0, len(fileColumns)-len(entries))
+	// Walk the header, not the mapping: that is what keeps Columns in file
+	// order and the projection in step with the row the reader builds.
+	for i, name := range fileColumns {
+		tableCol, ok := mapped[strings.ToLower(strings.TrimSpace(name))]
+		if !ok {
+			ignored = append(ignored, name)
+			continue
+		}
+		cm.Columns = append(cm.Columns, tableCol)
+		cm.Projection = append(cm.Projection, i)
+		cm.ReaderColumns[i] = tableCol
+	}
+
+	// Whole row in file order is the fast path: no per-value index at all.
+	identity := len(cm.Projection) == len(fileColumns)
+	for i := 0; identity && i < len(cm.Projection); i++ {
+		identity = cm.Projection[i] == i
+	}
+	if identity {
+		cm.Projection = nil
 	}
 
 	common.Logger.Info("column mapping applied",
 		"file_columns", fileColumns,
-		"target_columns", targetColumns,
+		"target_columns", cm.Columns,
 		"mapping", imp.cfg.Columns)
+	if len(ignored) > 0 {
+		common.Logger.Info("unmapped file columns are not imported",
+			"columns", ignored,
+			"note", "only the columns named in --columns are written; the remaining fields of each row are ignored")
+	}
 
-	return &ColumnMapping{
-		TargetColumns: targetColumns,
-	}, nil
+	return cm, nil
 }
 
 func (imp *Importer) buildBatchInsertSQL(columns []string, rowCount int) string {

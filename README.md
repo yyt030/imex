@@ -319,10 +319,10 @@ imex import [连接选项] [导入选项] [修饰选项]
 **`--columns` 列映射说明：**
 
 支持两种格式：
-- **位置映射**：`--columns "name,age,email"` - 文件列按位置映射到表列
-- **名称映射**：`--columns "user_name=name,user_age=age"` - 显式指定文件列到表列的映射
+- **位置映射**：`--columns "name,age,email"` - 文件列按位置映射到表列，条目数必须等于文件列数
+- **名称映射**：`--columns "user_name=name,user_age=age"` - 按列名指定文件列到表列的映射，**只要求写出来的映射有效**：可以只写文件中的部分列（其余字段不导入），书写顺序不影响结果
 
-通过检测 `=` 符号自动识别格式。
+通过检测 `=` 符号自动识别格式。名称映射写出的每一条都在读取数据前校验：文件列必须存在于文件的列名行（大小写不敏感）、同一文件列不得写两次、同一目标列不得被两列写入；未写进映射的文件列不导入（启动时记一条 `unmapped file columns are not imported`），未写进映射的目标列取 DEFAULT/NULL/自增值。
 
 **导入模式：**
 
@@ -813,7 +813,7 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **二进制列**：DEL/SQL 在 `--hex-blob` 生效时写 `0x…`，空值写 `0x`；Parquet 存原始 BYTE_ARRAY，不做 UTF-8 标注。
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
-## 修复记录（v0.4.0）
+## 修复记录（v0.5.0）
 
 对照需求文档的系统自测发现以下缺陷，均已修复并通过端到端回归（HEX 字节指纹 + 单位/整表往返校验）：
 
@@ -863,6 +863,9 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | 目标表带 `VIRTUAL`/`STORED GENERATED` 生成列时，导入在第一批就失败：导出的 `INSERT` 列清单包含生成列，服务端严格模式回 `Error 1906 … The value specified for generated column … has been ignored`，实测 DEL / SQL / Parquet / `--mode create` 四条路径全部 `read=3 inserted=0 failed=3`（本机 mysqldump 的产物同样报 1906，不是 imex 独有的回退） | 导入前查一次 `information_schema.COLUMNS … EXTRA LIKE '%GENERATED%'`，把生成列从 `INSERT` 列清单里排除，并按原始位置掩码删掉每行对应值；DEL 的列类型/二进制标志仍按过滤前的列序解析，生成列夹在中间也不会错位。服务端按表达式重算，值不变。修复后四种路径均 `rows=3/3 mismatch=0`，服务端语句实测为 `INSERT INTO … (`id`, `v`)`；查询失败只 WARN 并按旧行为发送。详见需求文档变更记录 79 |
 | 两行各约 8 MB 的大字段导入报 `Error 1153 (08S01): Got a packet bigger than 'max_allowed_packet' bytes`：批字节预算只在 append **之后**判断，两行各自没超 15,099,494 B 的预算、合计 16,777,214 B 却超过 16 MiB 上限，于是一起发成一条语句，0 行入库 | 新增 `wouldExceedBatch`，append **之前**预判：这一行会把批次顶出预算就先把当前批发出去；空批不预判，单行超预算仍单独成批。单线程与并行两条管线都改。实测同一文件修复后 `rows=2/2 mismatch=0`，`general_log` 里是两条各一行的 INSERT（修复前一条 16.7 MB 直接 1153）。详见需求文档变更记录 80 |
 | 空表用 `-f sql`（不带 `--create`）导出的 31 B 文件无法回导：`the input file contains no importable data …`，退出 1 | `SQLReader` 记录「跳过的语句是否都是 dump 前导（SET/LOCK/UNLOCK/USE/START/…）」，是则 `Import` 以 0 行汇总正常结束（退出 0），目标表不动；含无法归类文本的文件（如 `SELECT 1;`、缺少结尾分号的垃圾）仍照旧报错。实测空表文件 `read=0 inserted=0` 退出 0，垃圾文件仍退出 1；`--mode replace` 下也不清表，与回放空 dump 的 mysql 客户端一致。详见需求文档变更记录 81 |
+| 名称映射 `--columns "file=table,..."` 要求覆盖文件全部列：3 列文件只想导入 2 列时退出 1 报 `column mapping count mismatch`，即便第 3 列本就不该进目标表 | 改为**只要求写出来的映射有效**：可只写文件中的部分列、顺序任意（INSERT 列清单按文件列头顺序排列），未映射的文件列不导入并记 `unmapped file columns are not imported`；写出的每条在读取数据前校验（文件列必须在列名行、同一文件列不得写两次、同一目标列不得被两列写入、无表头提示改位置映射）。内部把 `dropCols []bool` 换成 `projection []int`，子集映射与生成列排除可叠加；位置映射仍要求条目数等于文件列数，并新增重复目标列校验。实测同一命令旧版退出 1/0 行、新版退出 0/3 行，general_log 中语句为 `INSERT INTO \`m_tgt\` (\`t_id\`, \`t_name\`) VALUES …`，详见需求文档变更记录 82 |
+| `--echo-sql-values` / `--parquet-compression` / `--shard-key` 的帮助把设计说明和实测宣称全塞进一行，实测单行 259 / 259 / 219 字节，120 列终端必然折行 | 三条说明精简为一行可读（259/259/219 → 111 / 117 / 107 字节）：`Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)`、`Compression: none, snappy, zstd`、`Column used to shard a parallel export; defaults to the primary key`；`(only with --format parquet)` 与 `(default "none")` 仍自动追加，细节（真实数据落盘、编码取舍、`--threads 1` 时忽略）留在需求文档。行为、默认值、退出码一律未动，详见变更记录 83 |
+| 其余 19 个选项的帮助同样过长（`export --statement-size` 196 字节、`import --statement-size` 239、`import --pipeline-buffer` 205、`--session-var` 191、`import --mode` 189…），120 列终端折行 | 逐条精简为一行可读，只改文案：帮助行上界 root 159→114、export 196→117、import 239→116（超过 118 字节的行 0 条），细节留在需求文档选项表；顺带把 `import --batch-size` 的 `reader->writer hand-off batch` 改为 `Rows per INSERT batch`（导入侧它就是每条 INSERT 的行数）。行为、默认值、退出码不变，详见变更记录 84 |
 
 ## 项目结构
 

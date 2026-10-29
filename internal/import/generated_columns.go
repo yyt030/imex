@@ -49,45 +49,48 @@ func (imp *Importer) generatedColumns(ctx context.Context, cols []string) (map[s
 	return generated, nil
 }
 
-// splitGeneratedColumns separates cols into the INSERT column list and a drop
-// mask over the original positions. The mask is what keeps every parsed row and
-// the column list the same width: a row carries one value per input column,
-// while the INSERT list is shorter once the computed columns are gone. A nil
-// mask means nothing was dropped, and callers then take the unmodified row.
-func splitGeneratedColumns(cols []string, generated map[string]bool) ([]string, []bool) {
+// splitGeneratedColumns separates cols into the INSERT column list and the row
+// positions that feed it. The projection is what keeps every parsed row and the
+// column list the same width: a row carries one value per input column, while
+// the INSERT list is shorter once the computed columns are gone. A nil
+// projection means nothing was dropped and rows are still appended whole.
+func splitGeneratedColumns(cols []string, projection []int, generated map[string]bool) ([]string, []int) {
 	if len(generated) == 0 {
-		return cols, nil
+		return cols, projection
 	}
 	kept := make([]string, 0, len(cols))
-	drop := make([]bool, len(cols))
+	keptProjection := make([]int, 0, len(cols))
 	dropped := false
 	for i, col := range cols {
+		src := i
+		if projection != nil {
+			src = projection[i]
+		}
 		if generated[strings.ToUpper(strings.TrimSpace(col))] {
-			drop[i] = true
 			dropped = true
 			continue
 		}
 		kept = append(kept, col)
+		keptProjection = append(keptProjection, src)
 	}
 	if !dropped {
-		return cols, nil
+		return cols, projection
 	}
-	return kept, drop
+	return kept, keptProjection
 }
 
-// appendRowValues appends one parsed row to dst, leaving out the positions the
-// drop mask marks. The unmodified fast path (no generated column in the file)
-// is the same single append as before, so imports that never touch a computed
-// column pay nothing for this.
-func appendRowValues(dst, row []interface{}, drop []bool) []interface{} {
-	if len(drop) == 0 {
+// appendRowValues appends one parsed row to dst through projection: INSERT
+// column i takes row[projection[i]]. A nil projection means the row already is
+// the INSERT value list, and the whole row goes in with one append — the fast
+// path for every import that writes all columns in file order.
+func appendRowValues(dst, row []interface{}, projection []int) []interface{} {
+	if projection == nil {
 		return append(dst, row...)
 	}
-	for i, v := range row {
-		if i < len(drop) && drop[i] {
-			continue
+	for _, idx := range projection {
+		if idx < len(row) {
+			dst = append(dst, row[idx])
 		}
-		dst = append(dst, v)
 	}
 	return dst
 }
@@ -104,22 +107,22 @@ func appendRowValues(dst, row []interface{}, drop []bool) []interface{} {
 // then behaves exactly as before (the server's own error still names the
 // column), which is better than refusing a run that may be perfectly fine on a
 // table without generated columns.
-func (imp *Importer) excludeGeneratedColumns(ctx context.Context, cols []string) ([]string, []bool, error) {
+func (imp *Importer) excludeGeneratedColumns(ctx context.Context, cols []string, projection []int) ([]string, []int, error) {
 	generated, err := imp.generatedColumns(ctx, cols)
 	if err != nil {
 		common.Logger.Warn("could not list generated columns for the target table, the INSERT will include them", "error", err)
-		return cols, nil, nil
+		return cols, projection, nil
 	}
-	kept, drop := splitGeneratedColumns(cols, generated)
-	if drop == nil {
-		return cols, nil, nil
+	kept, keptProjection := splitGeneratedColumns(cols, projection, generated)
+	if len(kept) == len(cols) {
+		return cols, projection, nil
 	}
 	if len(kept) == 0 {
 		return nil, nil, errors.Errorf("every target column of table %q is a generated column: the server computes all of them from other columns, so there is nothing to insert — import the base columns instead", imp.cfg.Table)
 	}
-	names := make([]string, 0, len(drop))
-	for i, col := range cols {
-		if drop[i] {
+	names := make([]string, 0, len(cols)-len(kept))
+	for _, col := range cols {
+		if generated[strings.ToUpper(strings.TrimSpace(col))] {
 			names = append(names, strings.TrimSpace(col))
 		}
 	}
@@ -128,5 +131,5 @@ func (imp *Importer) excludeGeneratedColumns(ctx context.Context, cols []string)
 		"columns", names,
 		"note", "the server recomputes generated columns from their expression",
 	)
-	return kept, drop, nil
+	return kept, keptProjection, nil
 }

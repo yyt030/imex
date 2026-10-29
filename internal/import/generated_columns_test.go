@@ -7,56 +7,73 @@ import (
 
 func TestSplitGeneratedColumns(t *testing.T) {
 	cases := []struct {
-		name      string
-		cols      []string
-		generated map[string]bool
-		wantKept  []string
-		wantDrop  []bool
+		name       string
+		cols       []string
+		projection []int
+		generated  map[string]bool
+		wantKept   []string
+		wantProj   []int
 	}{
 		{
 			name:     "no generated column keeps the list untouched",
 			cols:     []string{"id", "v"},
 			wantKept: []string{"id", "v"},
-			wantDrop: nil,
+			wantProj: nil,
 		},
 		{
 			name:      "generated columns at the end drop their tail positions",
 			cols:      []string{"id", "v", "gv", "gs"},
 			generated: map[string]bool{"GV": true, "GS": true},
 			wantKept:  []string{"id", "v"},
-			wantDrop:  []bool{false, false, true, true},
+			wantProj:  []int{0, 1},
 		},
 		{
 			name:      "a generated column in the middle keeps later positions aligned",
 			cols:      []string{"id", "gv", "v"},
 			generated: map[string]bool{"GV": true},
 			wantKept:  []string{"id", "v"},
-			wantDrop:  []bool{false, true, false},
+			wantProj:  []int{0, 2},
 		},
 		{
 			name:      "names are matched case-insensitively and trimmed",
 			cols:      []string{" ID ", "V"},
 			generated: map[string]bool{"ID": true},
 			wantKept:  []string{"V"},
-			wantDrop:  []bool{true, false},
+			wantProj:  []int{1},
 		},
 		{
 			name:      "generated columns outside the file change nothing",
 			cols:      []string{"id", "v"},
 			generated: map[string]bool{"GS": true},
 			wantKept:  []string{"id", "v"},
-			wantDrop:  nil,
+			wantProj:  nil,
+		},
+		{
+			name:       "a mapping projection survives the generated filter",
+			cols:       []string{"name", "id", "gv"},
+			projection: []int{1, 2, 0},
+			generated:  map[string]bool{"GV": true},
+			wantKept:   []string{"name", "id"},
+			wantProj:   []int{1, 2},
+		},
+		{
+			name:       "a subset mapping projection composes with the filter",
+			cols:       []string{"t_name", "gv"},
+			projection: []int{2, 1},
+			generated:  map[string]bool{"GV": true},
+			wantKept:   []string{"t_name"},
+			wantProj:   []int{2},
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			kept, drop := splitGeneratedColumns(c.cols, c.generated)
+			kept, proj := splitGeneratedColumns(c.cols, c.projection, c.generated)
 			if !reflect.DeepEqual(kept, c.wantKept) {
 				t.Fatalf("kept = %v, want %v", kept, c.wantKept)
 			}
-			if !reflect.DeepEqual(drop, c.wantDrop) {
-				t.Fatalf("drop = %v, want %v", drop, c.wantDrop)
+			if !reflect.DeepEqual(proj, c.wantProj) {
+				t.Fatalf("projection = %v, want %v", proj, c.wantProj)
 			}
 		})
 	}
@@ -64,39 +81,45 @@ func TestSplitGeneratedColumns(t *testing.T) {
 
 func TestAppendRowValues(t *testing.T) {
 	cases := []struct {
-		name string
-		row  []interface{}
-		drop []bool
-		want []interface{}
+		name       string
+		row        []interface{}
+		projection []int
+		want       []interface{}
 	}{
 		{
-			name: "no mask appends the whole row",
+			name: "nil projection appends the whole row",
 			row:  []interface{}{1, "a", 2},
 			want: []interface{}{1, "a", 2},
 		},
 		{
-			name: "mask at the end drops the generated values",
-			row:  []interface{}{1, 10, 20, 21},
-			drop: []bool{false, false, true, true},
-			want: []interface{}{1, 10},
+			name:       "projection drops the generated values at the end",
+			row:        []interface{}{1, 10, 20, 21},
+			projection: []int{0, 1},
+			want:       []interface{}{1, 10},
 		},
 		{
-			name: "mask in the middle keeps the following values in order",
-			row:  []interface{}{1, 20, 10},
-			drop: []bool{false, true, false},
-			want: []interface{}{1, 10},
+			name:       "projection skips a value in the middle",
+			row:        []interface{}{1, 20, 10},
+			projection: []int{0, 2},
+			want:       []interface{}{1, 10},
 		},
 		{
-			name: "a short row never reads past the mask",
-			row:  []interface{}{1},
-			drop: []bool{false, true},
-			want: []interface{}{1},
+			name:       "projection reorders a mapped subset",
+			row:        []interface{}{"one", 1, "note"},
+			projection: []int{1, 0},
+			want:       []interface{}{1, "one"},
+		},
+		{
+			name:       "a short row never reads past its end",
+			row:        []interface{}{1},
+			projection: []int{0, 1},
+			want:       []interface{}{1},
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := appendRowValues(nil, c.row, c.drop)
+			got := appendRowValues(nil, c.row, c.projection)
 			if !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("appendRowValues = %v, want %v", got, c.want)
 			}

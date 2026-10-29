@@ -207,7 +207,7 @@ type ImportConfig struct {
 	Format  string // "del", "sql" or "parquet"
 	Mode    ImportMode
 	Table   string
-	Columns string // Target column list (comma-separated) or mapping (file_col=table_col,...)
+	Columns string // Target column list (comma-separated, one per input column) or a name mapping (file_col=table_col,...; a subset is allowed)
 
 	DelModifier DelModifier
 

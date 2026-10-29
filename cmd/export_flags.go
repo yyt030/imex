@@ -38,15 +38,15 @@ func registerExportFlags(cmd *cobra.Command) {
 
 	// Progress cadence
 	f.DurationVar(&exportCfg.ProgressInterval, "progress-interval", config.DefaultProgressInterval,
-		"How often to write the periodic progress record (minimum 10ms; --quiet drops the records entirely)")
+		"Periodic progress log interval (min 10ms; --quiet drops it)")
 
 	// Session variables (repeatable)
 	f.StringArrayVar(&exportCfg.SessionVars, "session-var", nil,
-		"Set a MySQL/OceanBase session variable before export (repeatable), e.g. --session-var \"sql_mode=STRICT_TRANS_TABLES\" --session-var foreign_key_checks=0")
+		"Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES")
 
 	// Charset (no default shown in oracle; struct keeps utf8mb4 from NewExportConfig)
 	f.StringVar(&exportDefaultCharset, "default-charset", "",
-		"Connection & output-file charset (utf8mb4 default; also utf8, latin1, ascii, gbk, gb18030)")
+		"Connection & output-file charset (utf8mb4 default)")
 
 	// Export-specific options
 	f.StringVarP(&exportCfg.Output, "output", "o", "", "Output file path (required)")
@@ -68,28 +68,28 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.BoolVar(&exportCfg.DelModifier.NoColNames, "no-col-names", false, "Do not output column names")
 
 	// SQL format modifiers
-	f.IntVar(&exportCfg.StatementSize, "statement-size", config.DefaultStatementSize, "Max bytes per INSERT statement (only bounds merged statements: without --extended-insert a longer row just warns)")
-	f.BoolVar(&exportCfg.ExtendedInsert, "extended-insert", false, "Merge rows into multi-row INSERT statements bounded by --statement-size")
-	f.BoolVar(&exportCfg.Create, "create", false, "Output a CREATE TABLE statement (SQL export is data-only by default)")
+	f.IntVar(&exportCfg.StatementSize, "statement-size", config.DefaultStatementSize, "Max bytes per merged INSERT")
+	f.BoolVar(&exportCfg.ExtendedInsert, "extended-insert", false, "Merge rows into multi-row INSERTs")
+	f.BoolVar(&exportCfg.Create, "create", false, "Output a CREATE TABLE statement")
 	f.BoolVar(&exportCfg.NoData, "no-data", false, "Do not output INSERT statements")
 
 	// Parquet format modifiers
 	f.StringVar(&exportCfg.ParquetCompression, "parquet-compression", config.ParquetCompressionNone,
-		"Parquet page compression (none, snappy or zstd); snappy costs ~4% export time for roughly a tenth of the bytes on text, zstd trades more CPU and memory for far smaller files")
+		"Compression: none, snappy, zstd")
 
 	// Binary column encoding
-	f.BoolVar(&exportCfg.HexBlob, "hex-blob", false, "Encode binary columns as 0x hexadecimal literals (auto-on for non-utf8mb4 charset)")
-	f.BoolVar(&exportCfg.NoHexBlob, "no-hex-blob", false, "Force raw binary passthrough even for non-utf8mb4 charset (may corrupt binary data)")
+	f.BoolVar(&exportCfg.HexBlob, "hex-blob", false, "Binary columns as 0x hex literals")
+	f.BoolVar(&exportCfg.NoHexBlob, "no-hex-blob", false, "Force raw binary passthrough (may corrupt data)")
 
 	// Pipeline hand-off controls. Both are read only by the single-threaded path;
 	// a parallel shard sizes its look-ahead from a fixed byte budget divided
 	// across shards, so exportParallel reports when these were moved.
-	f.IntVar(&exportCfg.BatchSize, "batch-size", config.DefaultBatchSize, "Rows per reader->writer hand-off batch (single-threaded export only; passing it with --threads>1 is a usage error)")
-	f.IntVar(&exportCfg.PipelineBuffer, "pipeline-buffer", config.DefaultPipelineBuffer, "Hand-off queue depth, in batches (single-threaded export only; passing it with --threads>1 is a usage error)")
+	f.IntVar(&exportCfg.BatchSize, "batch-size", config.DefaultBatchSize, "Rows per hand-off batch; with --threads>1 it is a usage error")
+	f.IntVar(&exportCfg.PipelineBuffer, "pipeline-buffer", config.DefaultPipelineBuffer, "Hand-off queue depth in batches; --threads>1 is a usage error")
 
 	// Parallel export
 	f.IntVar(&exportCfg.Threads, "threads", 1, "Number of parallel export tasks (1 = no parallelism)")
-	f.StringVar(&exportCfg.ShardKey, "shard-key", "", "Column name for sharding (only a parallel export reads and validates it: with --threads 1, or after a fallback to single-threaded, it is ignored; auto-detect primary key if empty)")
+	f.StringVar(&exportCfg.ShardKey, "shard-key", "", "Column used to shard a parallel export; defaults to the primary key")
 
 	// Log level (local, not persistent)
 	f.StringVar((*string)(&exportCfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")

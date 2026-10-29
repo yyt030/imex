@@ -409,6 +409,25 @@ func TestLive_GeneratedColumnsExcluded(t *testing.T) {
 		})
 	}
 
+	// A name-based mapping that names the computed columns too: the mapping
+	// resolves all four file columns, then the generated filter has to drop the
+	// two computed ones while keeping the row positions of id and v.
+	t.Run("mapped", func(t *testing.T) {
+		dst := env.liveTable(t, "gen_dst_mapped")
+		env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
+
+		file := filepath.Join(dir, "generated-mapped.del")
+		env.export(t, exportOptions{table: src, format: "del", output: file, threads: 1})
+		stats := env.importFileStats(t, importOptions{
+			input: file, format: "del", mode: config.ImportModeInsert, table: dst,
+			columns: "gv=gv,id=id,gs=gs,v=v", threads: 1,
+		})
+		if stats.Inserted != 3 {
+			t.Fatalf("inserted = %d, want 3 (failed=%d)", stats.Inserted, stats.Failed)
+		}
+		assertSameRows(t, snapshot(src), snapshot(dst))
+	})
+
 	// The create path builds the table from the dump, generated columns and all,
 	// and then inserts into it: the same exclusion has to apply there.
 	t.Run("sql-create", func(t *testing.T) {
@@ -581,6 +600,56 @@ func TestLive_ColumnMapping(t *testing.T) {
 		got = append(got, fmt.Sprintf("%d=%s", id, name))
 	}
 	assertSameRows(t, []string{"1=one", "2=two"}, got)
+}
+
+// TestLive_ColumnMappingSubset maps only some of the file's columns, in an
+// order the file does not use. Only the written mappings have to be valid: the
+// unmapped file column is ignored, a target column nobody maps keeps its
+// default, and the pair order in --columns does not decide the INSERT order.
+func TestLive_ColumnMappingSubset(t *testing.T) {
+	env := newLiveEnv(t)
+	dir := t.TempDir()
+
+	src := env.liveTable(t, "mapsrc")
+	env.exec(t, "CREATE TABLE `"+src+"` (id INT NOT NULL PRIMARY KEY, name VARCHAR(20), note VARCHAR(20))")
+	env.exec(t, "INSERT INTO `"+src+"` VALUES (1,'one','n1'),(2,'two','n2'),(3,'three','n3')")
+
+	for _, tc := range []struct {
+		format  string
+		threads int
+	}{
+		{format: "del", threads: 4},
+		{format: "sql", threads: 1},
+		{format: "parquet", threads: 1},
+	} {
+		t.Run(tc.format, func(t *testing.T) {
+			target := env.liveTable(t, "maptgt")
+			env.exec(t, "CREATE TABLE `"+target+"` (t_name VARCHAR(20), t_id INT NOT NULL PRIMARY KEY, untouched VARCHAR(20) DEFAULT 'dflt')")
+
+			file := filepath.Join(dir, "mapped."+tc.format)
+			env.export(t, exportOptions{table: src, format: tc.format, output: file, threads: 1})
+			env.importFile(t, importOptions{
+				input: file, format: tc.format, mode: config.ImportModeInsert, table: target,
+				columns: "name=t_name,id=t_id", threads: tc.threads, commitCount: 2,
+			})
+
+			rows, err := env.db.Query("SELECT t_id, t_name, untouched FROM `" + target + "` ORDER BY t_id")
+			if err != nil {
+				t.Fatalf("select: %v", err)
+			}
+			defer rows.Close()
+			var got []string
+			for rows.Next() {
+				var id int
+				var name, untouched string
+				if err := rows.Scan(&id, &name, &untouched); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				got = append(got, fmt.Sprintf("%d=%s=%s", id, name, untouched))
+			}
+			assertSameRows(t, []string{"1=one=dflt", "2=two=dflt", "3=three=dflt"}, got)
+		})
+	}
 }
 
 // teeLogToFile hands the --messages sink over to path for the duration of a
