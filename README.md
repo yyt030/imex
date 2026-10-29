@@ -813,7 +813,7 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **二进制列**：DEL/SQL 在 `--hex-blob` 生效时写 `0x…`，空值写 `0x`；Parquet 存原始 BYTE_ARRAY，不做 UTF-8 标注。
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
-## 修复记录（v0.5.0）
+## 修复记录（v0.5.1）
 
 对照需求文档的系统自测发现以下缺陷，均已修复并通过端到端回归（HEX 字节指纹 + 单位/整表往返校验）：
 
@@ -866,6 +866,7 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | 名称映射 `--columns "file=table,..."` 要求覆盖文件全部列：3 列文件只想导入 2 列时退出 1 报 `column mapping count mismatch`，即便第 3 列本就不该进目标表 | 改为**只要求写出来的映射有效**：可只写文件中的部分列、顺序任意（INSERT 列清单按文件列头顺序排列），未映射的文件列不导入并记 `unmapped file columns are not imported`；写出的每条在读取数据前校验（文件列必须在列名行、同一文件列不得写两次、同一目标列不得被两列写入、无表头提示改位置映射）。内部把 `dropCols []bool` 换成 `projection []int`，子集映射与生成列排除可叠加；位置映射仍要求条目数等于文件列数，并新增重复目标列校验。实测同一命令旧版退出 1/0 行、新版退出 0/3 行，general_log 中语句为 `INSERT INTO \`m_tgt\` (\`t_id\`, \`t_name\`) VALUES …`，详见需求文档变更记录 82 |
 | `--echo-sql-values` / `--parquet-compression` / `--shard-key` 的帮助把设计说明和实测宣称全塞进一行，实测单行 259 / 259 / 219 字节，120 列终端必然折行 | 三条说明精简为一行可读（259/259/219 → 111 / 117 / 107 字节）：`Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)`、`Compression: none, snappy, zstd`、`Column used to shard a parallel export; defaults to the primary key`；`(only with --format parquet)` 与 `(default "none")` 仍自动追加，细节（真实数据落盘、编码取舍、`--threads 1` 时忽略）留在需求文档。行为、默认值、退出码一律未动，详见变更记录 83 |
 | 其余 19 个选项的帮助同样过长（`export --statement-size` 196 字节、`import --statement-size` 239、`import --pipeline-buffer` 205、`--session-var` 191、`import --mode` 189…），120 列终端折行 | 逐条精简为一行可读，只改文案：帮助行上界 root 159→114、export 196→117、import 239→116（超过 118 字节的行 0 条），细节留在需求文档选项表；顺带把 `import --batch-size` 的 `reader->writer hand-off batch` 改为 `Rows per INSERT batch`（导入侧它就是每条 INSERT 的行数）。行为、默认值、退出码不变，详见变更记录 84 |
+| 帮助文案的长度上限只存在于 82–84 那三次改动里，没有写成规则，下一个新选项照样会写成长句并把自动后缀挤下屏幕 | 把规则写进需求文档 **3.5 帮助文案长度规范**：上限 **118 字节/行**（含选项名列、缩进、pflag 的 `(default …)` 与作用域注册表的 `(only with …)`/`(not with …)`，留 2 列余量）；帮助只写“选项做什么、边界在哪”，实测数字与设计说明留在选项表；自动后缀不得手写、不得为省长度删除；判定命令为 `for c in "--help" "export --help" "import --help"; do ./bin/imex $c 2>&1 \| awk 'length($0) > 118'; done`，输出必须为空。判定命令对 v0.5.1 二进制输出为空，三份 help 上界 114 / 117 / 116 字节。纯文档轮，无行为变化，详见变更记录 85 |
 
 ## 项目结构
 
