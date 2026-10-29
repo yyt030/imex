@@ -41,6 +41,12 @@ type Importer struct {
 	// monitor first: a progress record after "import completed" reads as a run
 	// that is still going.
 	stopMonitor func()
+
+	// dropCols marks the positions of the parsed rows that belong to generated
+	// columns and therefore do not go into the INSERT (see
+	// excludeGeneratedColumns). It is nil for every table without a computed
+	// column in the input, and both writers then flatten rows with one append.
+	dropCols []bool
 }
 
 // NewImporter creates a new Importer instance
@@ -132,6 +138,16 @@ func (imp *Importer) Import(ctx context.Context) error {
 	fileColumns, err := reader.ReadHeader()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
+			// A data-only SQL dump of an empty table carries only the SET header
+			// (31 bytes for `/*!40101 SET NAMES utf8mb4 */;`): no INSERT to parse and
+			// no column list to build an INSERT from. There is nothing to do, and
+			// "nothing to do" is the honest success the mysql client also reports
+			// when replaying such a file — refusing it made an empty table's own
+			// export impossible to import back. Only a file whose skipped statements
+			// were all dump preamble qualifies: anything else keeps failing below.
+			if r, ok := reader.(*SQLReader); ok && r.OnlyPreamble() {
+				return imp.finishNoData(startTime, "empty SQL file: no INSERT statement and no CREATE TABLE, nothing to import")
+			}
 			// Reached end of file without finding any header row or INSERT:
 			// a plain EOF is meaningless to the user here.
 			err = errors.New("the input file contains no importable data: no header row (DEL), no INSERT statement (SQL) and no column schema (Parquet) were found")
@@ -288,20 +304,22 @@ func (imp *Importer) Import(ctx context.Context) error {
 	}
 
 	if structureOnly {
-		imp.stopMonitor()
-		total := imp.stats.Snapshot()
-		common.Logger.Info("import completed",
-			"read", total.Processed,
-			"inserted", total.Inserted,
-			"updated", total.Updated,
-			"unchanged", total.Unchanged,
-			"failed", total.Failed,
-			"bytes", common.FileSize(imp.cfg.Input),
-			"input", imp.cfg.Input,
-			"duration", common.Seconds(time.Since(startTime)),
-			"note", "structure-only SQL file: table created, no data rows",
-		)
-		return nil
+		return imp.finishNoData(startTime, "structure-only SQL file: table created, no data rows")
+	}
+
+	// Generated columns are computed by the server and must stay out of the INSERT
+	// column list: writing a value for one is rejected under strict mode (Error
+	// 1906) and silently discarded otherwise. Dropping them here keeps the parsed
+	// rows and the INSERT list in step (dropCols carries the positions), and the
+	// server recomputes exactly the values the export carried.
+	//
+	// readerColumns stays the pre-filter list because the reader still hands back
+	// one field per input column: its per-position column kinds and binary flags
+	// must therefore be resolved for the untouched positions.
+	readerColumns := targetColumns
+	targetColumns, imp.dropCols, err = imp.excludeGeneratedColumns(ctx, targetColumns)
+	if err != nil {
+		return err
 	}
 
 	// For DEL import, teach the reader the target column kinds so the text
@@ -311,7 +329,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// binary columns.
 	if imp.cfg.Format == "del" {
 		if delReader, ok := reader.(*DelReader); ok {
-			kinds, binaries, err := imp.columnInfoFor(ctx, targetColumns)
+			kinds, binaries, err := imp.columnInfoFor(ctx, readerColumns)
 			if err != nil {
 				common.Logger.Warn("failed to resolve target column types; DEL text modifiers disabled", "error", err)
 			} else {
@@ -351,6 +369,28 @@ func (imp *Importer) Import(ctx context.Context) error {
 func isStructureOnlySQL(reader Reader) bool {
 	s, ok := reader.(*SQLReader)
 	return ok && !s.HasData() && len(s.GetCreateStatements()) > 0
+}
+
+// finishNoData ends a run that has legitimately nothing to write and reports it
+// in the same shape as a normal completion: a zero-row summary with the reason
+// in `note`. Both callers (a structure-only SQL file and a data-only SQL file
+// with no INSERT) reach it before any batch is built, so the counters are
+// untouched and the record is the last line of the run.
+func (imp *Importer) finishNoData(startTime time.Time, note string) error {
+	imp.stopMonitor()
+	total := imp.stats.Snapshot()
+	common.Logger.Info("import completed",
+		"read", total.Processed,
+		"inserted", total.Inserted,
+		"updated", total.Updated,
+		"unchanged", total.Unchanged,
+		"failed", total.Failed,
+		"bytes", common.FileSize(imp.cfg.Input),
+		"input", imp.cfg.Input,
+		"duration", common.Seconds(time.Since(startTime)),
+		"note", note,
+	)
+	return nil
 }
 
 // validatePositionalColumns checks the positional --columns form ("a,b,c"):
@@ -708,11 +748,25 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 			}
 
 			imp.stats.AddProcessed(1)
+			rowBytes := estimateRowBytes(values)
+			// 先判断再加：这一行若会把批次顶出字节预算，先把当前批次发出去。
+			// 只在 append 之后判断时，两行各自没超预算、合计却超过
+			// max_allowed_packet 的语句仍会被凑成一批（实测触 Error 1153）。
+			if wouldExceedBatch(batchBytes, rowBytes, maxBatchBytes) {
+				select {
+				case rowCh <- rowBatch{data: batch}:
+					batch = make([][]interface{}, 0, batchSize)
+					batchBytes = 0
+				case <-ctx.Done():
+					errCh <- ctx.Err()
+					return
+				}
+			}
 			batch = append(batch, values)
-			batchBytes += estimateRowBytes(values)
+			batchBytes += rowBytes
 
-			// 批量发送：行数达到 --batch-size，或累计字节达到 max_allowed_packet
-			// 的安全预算，任一条件满足就刷新。
+			// 批量发送：行数达到 --batch-size，或单行本身就超过字节预算，任一条件
+			// 满足就刷新。
 			if shouldFlush(len(batch), batchSize, batchBytes, maxBatchBytes) {
 				select {
 				case rowCh <- rowBatch{data: batch}:
@@ -766,7 +820,7 @@ loop:
 		// 构建批量插入的参数
 		batchValues := make([]interface{}, 0, len(batch.data)*len(columns))
 		for _, row := range batch.data {
-			batchValues = append(batchValues, row...)
+			batchValues = appendRowValues(batchValues, row, imp.dropCols)
 		}
 
 		insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))
@@ -907,9 +961,22 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 			}
 
 			imp.stats.AddProcessed(1)
+			rowBytes := estimateRowBytes(values)
+			// 先判断再加，理由与单线程管线相同：两行各自没超预算、合计超过
+			// max_allowed_packet 时，append 之后再判断会把它们凑成一条语句。
+			if wouldExceedBatch(batchBytes, rowBytes, maxBatchBytes) {
+				select {
+				case batchCh <- rowBatch{data: batch}:
+					batch = make([][]interface{}, 0, batchSize)
+					batchBytes = 0
+				case <-ctx.Done():
+					errCh <- ctx.Err()
+					return
+				}
+			}
 			batch = append(batch, values)
-			batchBytes += estimateRowBytes(values)
-			// 行数或字节预算任一达到上限就刷新，语义与单线程管线一致。
+			batchBytes += rowBytes
+			// 行数或单行超预算任一满足就刷新，语义与单线程管线一致。
 			if shouldFlush(len(batch), batchSize, batchBytes, maxBatchBytes) {
 				select {
 				case batchCh <- rowBatch{data: batch}:
@@ -992,7 +1059,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 
 				flat := make([]interface{}, 0, len(batch.data)*len(columns))
 				for _, row := range batch.data {
-					flat = append(flat, row...)
+					flat = appendRowValues(flat, row, imp.dropCols)
 				}
 
 				insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))

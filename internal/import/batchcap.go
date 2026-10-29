@@ -117,6 +117,27 @@ func shouldFlush(rows, batchSize int, batchBytes, maxBatchBytes int64) bool {
 	return rows >= batchSize || batchBytes >= maxBatchBytes
 }
 
+// wouldExceedBatch reports whether appending one more row would push the batch
+// past its byte budget. The callers check it *before* the append and ship the
+// current batch first, so the post-append check in shouldFlush only ever sees
+// an over-budget batch when a single row alone is wider than the budget. An
+// empty batch therefore never splits: there is nothing to ship ahead of the row,
+// and sending an empty batch would be a wasted round trip.
+//
+// Checking after the append was enough for that single-row case but not for two:
+// with the 15,099,494-byte budget derived from a 16 MiB max_allowed_packet, two
+// rows of 8,388,608 and 8,388,606 bytes fit the budget one at a time yet left
+// together as a 16,777,214-byte statement, and the server answered `Error 1153
+// (08S01): Got a packet bigger than 'max_allowed_packet' bytes` with 0 rows
+// committed (measured on a two-row table whose rows were 8,388,608 and
+// 8,388,606 bytes).
+func wouldExceedBatch(batchBytes, rowBytes, maxBatchBytes int64) bool {
+	if maxBatchBytes <= 0 || batchBytes == 0 {
+		return false
+	}
+	return batchBytes+rowBytes > maxBatchBytes
+}
+
 // escapable marks the bytes go-sql-driver doubles when it interpolates a
 // parameter as a quoted string: NUL, \n, \r, \x1a, backslash and both quote
 // characters each gain a leading backslash.

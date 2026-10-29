@@ -813,7 +813,7 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **二进制列**：DEL/SQL 在 `--hex-blob` 生效时写 `0x…`，空值写 `0x`；Parquet 存原始 BYTE_ARRAY，不做 UTF-8 标注。
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
-## 修复记录（v0.3.0）
+## 修复记录（v0.4.0）
 
 对照需求文档的系统自测发现以下缺陷，均已修复并通过端到端回归（HEX 字节指纹 + 单位/整表往返校验）：
 
@@ -860,6 +860,9 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | `--mode create` 配 `-t`、而 SQL 文件里没有 `CREATE TABLE` 时，不做预检就把第一批 INSERT 发出去，最后报服务端的原始 `Error 1146 Table … doesn't exist`（实测 5 行全部 failed，文案既不说“文件没有建表语句”，也不说怎么补） | 建表分支在读取任何数据之前先探测 `-t` 指定的表：文件无 CREATE 且表不存在时退出 1，文案为 `create mode found no CREATE TABLE statement in the SQL file and table "x" does not exist in database "db": re-export with --create, or import with --mode insert into an existing table`；表存在时照旧导入（实测 read=5 inserted=5）。失败路径从“1 条批量 INSERT”变成“0 条 INSERT + 1 条 information_schema 探测”，成功路径多同一条探测，故定级 Y。详见需求文档变更记录 76 |
 | 表头开关叫 `--no-col-names`：名字来自 DB2 的 `MODIFIED BY NOCOLNAMES`，读起来像“列名映射”而不是“关掉表头行”；导入侧忘记它时首行被当表头丢掉，3 行只进 2 行仍退出 0 | 两侧统一改名为 `--no-header`（导出“不写表头行”、导入“文件没有表头行”），硬改名不留别名：旧名在两侧都是 `unknown flag`、退出 2。实测 `export --no-header` 产物 3 行且首行即数据，`import --no-header -c id,name` 落库 3 行；配置回显键改为 `no_header`，WARN 文案提示补 `--no-header`。定级 X。详见需求文档变更记录 77 **注：本行改名已由下一条（变更 78）撤回。** |
 | 上一条把表头开关改名为 `--no-header`，用户复核认为原名更清楚：「`--no-col-names` 还是比 `--no-header` 清晰明了」——前者直说“不输出列名 / 首行不是列名”，后者容易被读成“文件没有头部（前导区）” | 撤回改名（改动从未提交、从未发布，因此无兼容成本，也不需要别名）。**实测**（本机 MariaDB，3 行表）：`export --no-col-names` 产物 3 行、首行即数据，配置回显 `no_col_names=true`；`import --no-col-names -c id,name` 退出 0、`read=3 inserted=3`、落库 3 行；同一文件只给 `-c` 时退出 0、只落 2 行，WARN 逐字点名 `--no-col-names`；两个子命令的 `--no-header` 均退出 **2**、`unknown flag: --no-header`。帮助文本、范围标记与配置回显键全部回到 v0.2.2 的形态（`docs/cli-oracle.txt` 的 `## export` 二次重新基线后 diff 0 行，`## import` 16 行、`## root` 2 行不变），故相对上一版无契约面变化，与上一条在面①上相抵；`TestCLINoHeaderIsUnknown` 钉住“只有一个名字”。详见需求文档变更记录 78 |
+| 目标表带 `VIRTUAL`/`STORED GENERATED` 生成列时，导入在第一批就失败：导出的 `INSERT` 列清单包含生成列，服务端严格模式回 `Error 1906 … The value specified for generated column … has been ignored`，实测 DEL / SQL / Parquet / `--mode create` 四条路径全部 `read=3 inserted=0 failed=3`（本机 mysqldump 的产物同样报 1906，不是 imex 独有的回退） | 导入前查一次 `information_schema.COLUMNS … EXTRA LIKE '%GENERATED%'`，把生成列从 `INSERT` 列清单里排除，并按原始位置掩码删掉每行对应值；DEL 的列类型/二进制标志仍按过滤前的列序解析，生成列夹在中间也不会错位。服务端按表达式重算，值不变。修复后四种路径均 `rows=3/3 mismatch=0`，服务端语句实测为 `INSERT INTO … (`id`, `v`)`；查询失败只 WARN 并按旧行为发送。详见需求文档变更记录 79 |
+| 两行各约 8 MB 的大字段导入报 `Error 1153 (08S01): Got a packet bigger than 'max_allowed_packet' bytes`：批字节预算只在 append **之后**判断，两行各自没超 15,099,494 B 的预算、合计 16,777,214 B 却超过 16 MiB 上限，于是一起发成一条语句，0 行入库 | 新增 `wouldExceedBatch`，append **之前**预判：这一行会把批次顶出预算就先把当前批发出去；空批不预判，单行超预算仍单独成批。单线程与并行两条管线都改。实测同一文件修复后 `rows=2/2 mismatch=0`，`general_log` 里是两条各一行的 INSERT（修复前一条 16.7 MB 直接 1153）。详见需求文档变更记录 80 |
+| 空表用 `-f sql`（不带 `--create`）导出的 31 B 文件无法回导：`the input file contains no importable data …`，退出 1 | `SQLReader` 记录「跳过的语句是否都是 dump 前导（SET/LOCK/UNLOCK/USE/START/…）」，是则 `Import` 以 0 行汇总正常结束（退出 0），目标表不动；含无法归类文本的文件（如 `SELECT 1;`、缺少结尾分号的垃圾）仍照旧报错。实测空表文件 `read=0 inserted=0` 退出 0，垃圾文件仍退出 1；`--mode replace` 下也不清表，与回放空 dump 的 mysql 客户端一致。详见需求文档变更记录 81 |
 
 ## 项目结构
 

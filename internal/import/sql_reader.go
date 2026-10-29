@@ -32,6 +32,11 @@ type SQLReader struct {
 	createStmts []string        // captured CREATE TABLE statements for create mode
 	pending     [][]interface{} // rows parsed from the current INSERT, not yet returned
 	hasData     bool            // ReadHeader found at least one INSERT statement
+	// unrecognized records a statement ReadHeader could not classify as DDL,
+	// INSERT or dump preamble (SET/LOCK/...). A file made only of preamble is an
+	// empty dump, but one carrying other text is not: the import has to say so
+	// instead of finishing with 0 rows.
+	unrecognized bool
 }
 
 // NewSQLReader creates a new SQL format reader.
@@ -75,7 +80,12 @@ func (s *SQLReader) ReadHeader() ([]string, error) {
 			s.pending = rows
 			return cols, nil
 		default:
-			// Skip SET/LOCK/UNLOCK/other preamble statements.
+			// Skip SET/LOCK/UNLOCK/other preamble statements. Anything else is
+			// remembered so an empty-file success cannot swallow a file whose
+			// text the reader does not understand.
+			if !isPreambleStatement(head) {
+				s.unrecognized = true
+			}
 			continue
 		}
 	}
@@ -84,6 +94,14 @@ func (s *SQLReader) ReadHeader() ([]string, error) {
 // HasData reports whether ReadHeader found an INSERT statement. It is false for
 // a structure-only SQL file.
 func (s *SQLReader) HasData() bool { return s.hasData }
+
+// OnlyPreamble reports whether everything ReadHeader skipped was dump preamble
+// (SET/LOCK/UNLOCK/USE/START/COMMIT/...). Together with a nil header that means
+// the file is an empty dump — the shape a data-only export of an empty table
+// has, `/*!40101 SET NAMES utf8mb4 */;` and nothing else — so importing it is a
+// no-op rather than an error. Text the reader cannot classify makes this false,
+// so a mistyped or truncated file still fails loudly.
+func (s *SQLReader) OnlyPreamble() bool { return !s.unrecognized }
 
 // nextStatement assembles one complete SQL statement (terminated by a top-level
 // ';'), handling quoted strings and line comments. It returns the statement
@@ -207,6 +225,30 @@ func hasPrefixFold(b []byte, keyword string) bool {
 		}
 	}
 	return true
+}
+
+// preambleKeywords are the statements a dump uses for session setup and
+// bookkeeping rather than for data or structure. They are the only statements
+// ReadHeader may skip without making the file "unrecognized".
+var preambleKeywords = []string{
+	"SET", "LOCK", "UNLOCK", "USE", "START", "BEGIN", "COMMIT", "ROLLBACK", "DELIMITER",
+}
+
+// isPreambleStatement reports whether head starts with one of those keywords as
+// a whole word, so `SETX ...` is not mistaken for `SET ...`.
+func isPreambleStatement(head []byte) bool {
+	for _, kw := range preambleKeywords {
+		if hasPrefixFold(head, kw) {
+			if len(head) == len(kw) {
+				return true
+			}
+			switch head[len(kw)] {
+			case ' ', '\t', '\n', '\r', ';', '(':
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // indexFold returns the byte offset of the first ASCII case-insensitive

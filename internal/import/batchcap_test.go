@@ -181,6 +181,32 @@ func TestShouldFlush(t *testing.T) {
 	}
 }
 
+func TestWouldExceedBatch(t *testing.T) {
+	const budget = int64(1000)
+	cases := []struct {
+		name   string
+		batch  int64
+		row    int64
+		budget int64
+		want   bool
+	}{
+		{"empty batch never overflows", 0, 900, budget, false},
+		{"row that still fits waits", 100, 899, budget, false},
+		{"row that lands exactly on the budget fits", 100, 900, budget, false},
+		{"row past the budget splits", 101, 900, budget, true},
+		{"two rows that only overflow together split", 8_388_614, 8_388_612, 15_099_494, true},
+		{"single oversized row is not a split", 0, budget + 1, budget, false},
+		{"no budget never splits", 0, 1 << 30, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := wouldExceedBatch(c.batch, c.row, c.budget); got != c.want {
+				t.Fatalf("wouldExceedBatch(%d, %d, %d) = %v, want %v", c.batch, c.row, c.budget, got, c.want)
+			}
+		})
+	}
+}
+
 // TestResolveBatchSizeWithoutConnection covers the nil-`*sql.DB` guard: the
 // reader goroutines call this before any query runs, and a unit-test importer
 // has no server to ask for max_allowed_packet.

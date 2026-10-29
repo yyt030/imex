@@ -343,6 +343,88 @@ func TestLive_RoundTripEveryFormat(t *testing.T) {
 	}
 }
 
+// TestLive_GeneratedColumnsExcluded pins the import behaviour for computed
+// columns: the export carries their values, but writing them back is rejected
+// under strict mode (Error 1906), so the INSERT list must leave them out and let
+// the server recompute them. Before that, importing any table with a virtual or
+// stored generated column failed on the first batch — including a --create round
+// trip of imex's own dump and mysqldump's output on the same server.
+func TestLive_GeneratedColumnsExcluded(t *testing.T) {
+	env := newLiveEnv(t)
+	dir := t.TempDir()
+
+	src := env.liveTable(t, "gen_src")
+	env.exec(t, "CREATE TABLE `"+src+"` ("+
+		"id INT NOT NULL PRIMARY KEY, "+
+		"v INT DEFAULT NULL, "+
+		"gv INT GENERATED ALWAYS AS (v * 2) VIRTUAL, "+
+		"gs INT GENERATED ALWAYS AS (v * 2 + 1) STORED"+
+		") DEFAULT CHARSET=utf8mb4")
+	env.exec(t, "INSERT INTO `"+src+"` (id, v) VALUES (1,10),(2,20),(3,NULL)")
+
+	snapshot := func(table string) []string {
+		rows, err := env.db.Query("SELECT id, IFNULL(CAST(v AS CHAR),'<NULL>'), " +
+			"IFNULL(CAST(gv AS CHAR),'<NULL>'), IFNULL(CAST(gs AS CHAR),'<NULL>') " +
+			"FROM `" + table + "` ORDER BY id")
+		if err != nil {
+			t.Fatalf("snapshot %s: %v", table, err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			vals := make([]sql.NullString, 4)
+			ptrs := make([]interface{}, len(vals))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				t.Fatalf("scan %s: %v", table, err)
+			}
+			parts := make([]string, len(vals))
+			for i, v := range vals {
+				parts[i] = v.String
+			}
+			out = append(out, strings.Join(parts, "|"))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate %s: %v", table, err)
+		}
+		return out
+	}
+
+	for _, format := range []string{"del", "sql", "parquet"} {
+		t.Run(format, func(t *testing.T) {
+			dst := env.liveTable(t, "gen_dst_"+format)
+			env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
+
+			file := filepath.Join(dir, "generated."+format)
+			env.export(t, exportOptions{table: src, format: format, output: file, threads: 1})
+			stats := env.importFileStats(t, importOptions{
+				input: file, format: format, mode: config.ImportModeInsert, table: dst, threads: 1,
+			})
+			if stats.Inserted != 3 {
+				t.Fatalf("inserted = %d, want 3 (failed=%d)", stats.Inserted, stats.Failed)
+			}
+			assertSameRows(t, snapshot(src), snapshot(dst))
+		})
+	}
+
+	// The create path builds the table from the dump, generated columns and all,
+	// and then inserts into it: the same exclusion has to apply there.
+	t.Run("sql-create", func(t *testing.T) {
+		dst := env.liveTable(t, "gen_dst_create")
+		file := filepath.Join(dir, "generated-create.sql")
+		env.export(t, exportOptions{table: src, format: "sql", output: file, create: true})
+		stats := env.importFileStats(t, importOptions{
+			input: file, format: "sql", mode: config.ImportModeCreate, table: dst, threads: 1,
+		})
+		if stats.Inserted != 3 {
+			t.Fatalf("inserted = %d, want 3 (failed=%d)", stats.Inserted, stats.Failed)
+		}
+		assertSameRows(t, snapshot(src), snapshot(dst))
+	})
+}
+
 // TestLive_ParallelExportImport exercises sharded export and concurrent
 // import workers, including the streamed shard merge and float-exact boundaries.
 func TestLive_ParallelExportImport(t *testing.T) {
@@ -794,6 +876,110 @@ func (e *liveEnv) rowChecksum(t *testing.T, table string) string {
 		t.Fatalf("checksum %s: %v", table, err)
 	}
 	return fmt.Sprintf("%d/%s", rows, sum.String)
+}
+
+// TestLive_BatchSplitsBeforePacketLimit pins the pre-append byte check against a
+// real server. The rows are sized from the server's own max_allowed_packet so
+// that each one fits the per-batch budget alone while two of them do not fit
+// together: with the check only after the append, both rows left as one ~18 MB
+// statement and the server answered Error 1153 with 0 rows inserted.
+func TestLive_BatchSplitsBeforePacketLimit(t *testing.T) {
+	env := newLiveEnv(t)
+	dir := t.TempDir()
+
+	var packet int64
+	if err := env.db.QueryRow("SELECT @@max_allowed_packet").Scan(&packet); err != nil {
+		t.Fatalf("read max_allowed_packet: %v", err)
+	}
+	// 0.55 of the packet limit per row: the 9/10 budget holds one row, not two.
+	rowLen := int(packet * 55 / 100)
+	if rowLen < 1024 {
+		t.Skipf("max_allowed_packet=%d is too small to build a two-row overflow", packet)
+	}
+	payload := strings.Repeat("x", rowLen)
+
+	src := env.liveTable(t, "bigrow_src")
+	env.exec(t, "CREATE TABLE `"+src+"` (id INT NOT NULL PRIMARY KEY, tx LONGTEXT) DEFAULT CHARSET=utf8mb4")
+	// Two separate statements: the fixture must not itself exceed the packet.
+	env.exec(t, "INSERT INTO `"+src+"` (id, tx) VALUES (1, ?)", payload)
+	env.exec(t, "INSERT INTO `"+src+"` (id, tx) VALUES (2, ?)", payload)
+
+	file := filepath.Join(dir, "bigrows.del")
+	env.export(t, exportOptions{table: src, format: "del", output: file, threads: 1})
+
+	// MD5 keeps the comparison small while still covering the whole payload.
+	md5Rows := func(table string) []string {
+		rows, err := env.db.Query("SELECT id, MD5(tx) FROM `" + table + "` ORDER BY id")
+		if err != nil {
+			t.Fatalf("md5 snapshot %s: %v", table, err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var id int
+			var sum string
+			if err := rows.Scan(&id, &sum); err != nil {
+				t.Fatalf("scan %s: %v", table, err)
+			}
+			out = append(out, fmt.Sprintf("%d:%s", id, sum))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate %s: %v", table, err)
+		}
+		return out
+	}
+
+	for _, threads := range []int{1, 4} {
+		t.Run(fmt.Sprintf("threads%d", threads), func(t *testing.T) {
+			dst := env.liveTable(t, fmt.Sprintf("bigrow_dst%d", threads))
+			env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
+			stats := env.importFileStats(t, importOptions{
+				input: file, format: "del", mode: config.ImportModeInsert, table: dst, threads: threads,
+			})
+			if stats.Inserted != 2 {
+				t.Fatalf("inserted = %d, want 2 (failed=%d)", stats.Inserted, stats.Failed)
+			}
+			assertSameRows(t, md5Rows(src), md5Rows(dst))
+		})
+	}
+}
+
+// TestLive_EmptySQLFileImportsZeroRows pins an empty table's own data-only SQL
+// export as importable: the file holds only `/*!40101 SET NAMES utf8mb4 */;`, so
+// there is no statement to replay and no column list to build one from. The run
+// must finish with a zero-row summary instead of rejecting the file, and it must
+// leave an existing target untouched.
+func TestLive_EmptySQLFileImportsZeroRows(t *testing.T) {
+	env := newLiveEnv(t)
+	dir := t.TempDir()
+
+	src := env.liveTable(t, "empty_src")
+	dst := env.liveTable(t, "empty_dst")
+	env.exec(t, "CREATE TABLE `"+src+"` (id INT NOT NULL PRIMARY KEY, v VARCHAR(10)) DEFAULT CHARSET=utf8mb4")
+	env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
+	env.exec(t, "INSERT INTO `"+dst+"` VALUES (1,'keep')")
+
+	file := filepath.Join(dir, "empty.sql")
+	env.export(t, exportOptions{table: src, format: "sql", output: file, threads: 1})
+	if info, err := os.Stat(file); err != nil {
+		t.Fatalf("stat %s: %v", file, err)
+	} else if info.Size() > 64 {
+		t.Fatalf("expected a SET-only file for an empty table, got %d bytes", info.Size())
+	}
+
+	stats := env.importFileStats(t, importOptions{
+		input: file, format: "sql", mode: config.ImportModeInsert, table: dst, threads: 1,
+	})
+	if stats.Processed != 0 || stats.Inserted != 0 || stats.Failed != 0 {
+		t.Fatalf("stats = read %d / inserted %d / failed %d, want all zero", stats.Processed, stats.Inserted, stats.Failed)
+	}
+	var rows int
+	if err := env.db.QueryRow("SELECT COUNT(*) FROM `" + dst + "`").Scan(&rows); err != nil {
+		t.Fatalf("count %s: %v", dst, err)
+	}
+	if rows != 1 {
+		t.Fatalf("target rows = %d, want the existing row untouched", rows)
+	}
 }
 
 // TestLive_ImportStatementSizeCapsStatements measures import --statement-size on

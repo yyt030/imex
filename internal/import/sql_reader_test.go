@@ -195,6 +195,37 @@ func TestSQLReader_StructureOnly(t *testing.T) {
 	}
 }
 
+// TestSQLReader_OnlyPreamble separates an empty dump from a file the reader
+// does not understand: both end in io.EOF, but only the first may be imported as
+// a successful zero-row run.
+func TestSQLReader_OnlyPreamble(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"set header only", "/*!40101 SET NAMES utf8mb4 */;\n", true},
+		{"several preamble statements", "SET NAMES utf8mb4;\nLOCK TABLES `t` WRITE;\nUNLOCK TABLES;\n", true},
+		{"lower case and comments", "-- dump\nset autocommit=0;\n", true},
+		{"unknown text without terminator", "hello world\nnot sql\n", false},
+		{"unknown statement with terminator", "SELECT 1;\n", false},
+		{"keyword prefix is not a preamble", "SETX 1;\n", false},
+		{"empty file", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sr := NewSQLReader(bufio.NewReader(strings.NewReader(c.input)))
+			_, err := sr.ReadHeader()
+			if err != io.EOF && err != nil {
+				t.Fatalf("ReadHeader: %v", err)
+			}
+			if got := sr.OnlyPreamble(); got != c.want {
+				t.Fatalf("OnlyPreamble() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestDecodeHexField(t *testing.T) {
 	cases := []struct {
 		token  string
