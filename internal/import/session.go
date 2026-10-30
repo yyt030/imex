@@ -187,9 +187,13 @@ func (s *writeSession) reconnect() error {
 // response is lost there is no way to tell whether the server applied it, and
 // replaying could duplicate rows. The caller surfaces the error instead.
 func (s *writeSession) commit() error {
+	rows := s.rowsInTx
+	start := time.Now()
 	if err := s.tx.Commit(); err != nil {
 		return err
 	}
+	common.WarnIfSlow(slowCommitThreshold, "slow commit", time.Since(start),
+		"session", s.label, "rows", rows)
 	s.rowsInTx = 0
 	s.pending = nil
 	s.pendingBytes = 0

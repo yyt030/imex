@@ -22,6 +22,13 @@ type Exporter struct {
 	sqlParser *SQLParser
 	stats     *common.Stats
 
+	// connectDur is the dial + ping + consistent-snapshot cost measured before
+	// Export starts. It is reported as its own field because the run's duration
+	// starts after it: on a remote server this is often the largest fixed cost
+	// of a small export, and an operator reading "0.02s" for a five-row query
+	// needs to see where the other second went.
+	connectDur time.Duration
+
 	// openShard overrides how a parallel export shard dials the server. Tests set
 	// it to an in-process connector so the order in which a shard releases its
 	// connection and hands over its tail bytes can be observed without a
@@ -45,6 +52,7 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	// Build DSN using mysql.Config to properly escape special characters
 	dsn := common.BuildDSN(&cfg.Config)
 
+	dialStart := time.Now()
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to connect to database")
@@ -80,9 +88,10 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	}
 
 	return &Exporter{
-		config:    cfg,
-		db:        db,
-		sqlParser: NewSQLParser(),
+		config:     cfg,
+		db:         db,
+		sqlParser:  NewSQLParser(),
+		connectDur: time.Since(dialStart),
 	}, nil
 }
 
@@ -195,6 +204,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	// Execute query with attribution tag
 	taggedQuery := common.TagSQL(e.config.Query)
 	common.LogInteractionSQL(e.config.Query)
+	queryStart := time.Now()
 	rows, err := e.db.QueryContext(ctx, taggedQuery)
 	if err != nil {
 		preview := common.SQLPreview(e.config.Query, nil)
@@ -307,6 +317,13 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	rowCh := make(chan rowBatch, pipelineBuffer)
 	errCh := make(chan error, 1)
 
+	// firstRowAt is set once, by the reader, on the first row the server hands
+	// back: the gap between executing the query and that moment is the query's
+	// own latency (a filesort, a lock wait, a cold buffer pool), which is
+	// invisible in a single end-to-end duration. The write below reads it after
+	// rowCh is closed, so the channel close is the only synchronisation needed.
+	var firstRowAt time.Time
+
 	// Stage 1: Reader goroutine - 从数据库读取数据
 	//
 	// sql.RawBytes is only valid until the next rows.Next() call because the
@@ -316,6 +333,9 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	go func() {
 		defer close(rowCh)
 
+		stall := common.NewStallWatch(scanStallThreshold)
+		seen := int64(0)
+
 		batch := make([][]sql.RawBytes, 0, batchSize)
 		valuePtrs := make([]interface{}, len(columns))
 		rawValues := make([]sql.RawBytes, len(columns))
@@ -324,6 +344,15 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		}
 
 		for rows.Next() {
+			seen++
+			if gap, stalled := stall.Observe(); stalled {
+				common.Logger.Warn("export scan stalled",
+					"rows_so_far", seen, "gap", common.Seconds(gap),
+					"hint", "no row arrived for this long: a filesort, a lock wait or a stalled socket is holding the scan")
+			}
+			if firstRowAt.IsZero() {
+				firstRowAt = time.Now()
+			}
 			if err := rows.Scan(valuePtrs...); err != nil {
 				errCh <- errors.Wrap(err, "failed to scan row")
 				return
@@ -395,19 +424,46 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	default:
 	}
 
-	// Write footer
+	loopEnd := time.Now()
+
+	// The footer and the close are timed as their own segment: a parquet footer
+	// re-encodes the last row group and a close flushes whatever the OS still
+	// holds, so on a large export or a network filesystem they can take longer
+	// than the last million rows. Closing here (rather than only in the deferred
+	// Close) is what makes that time attributable; the deferred Close then finds
+	// the file already closed and is a no-op.
+	finishStart := time.Now()
 	if err := writer.WriteFooter(); err != nil {
 		return errors.Wrap(err, "failed to write footer")
 	}
+	if cerr := outputFile.Close(); cerr != nil {
+		return errors.Wrap(cerr, "failed to close output file")
+	}
+	finishDur := time.Since(finishStart)
 
 	duration := time.Since(startTime)
+
+	// The four segments partition the run: setup (connect, snapshot and metadata
+	// up to the query), first_row (query execution, output file creation and
+	// header write up to the first row), write (first row to the last row
+	// written) and finish (footer + close). A slow query is therefore visible
+	// even when it returns five rows.
+	setupDur := queryStart.Sub(startTime)
+	firstRowDur := loopEnd.Sub(queryStart)
+	writeDur := time.Duration(0)
+	if !firstRowAt.IsZero() {
+		firstRowDur = firstRowAt.Sub(queryStart)
+		writeDur = loopEnd.Sub(firstRowAt)
+	}
 
 	// Stop the progress ticker before the summary and take its drained counters:
 	// a run must not end on a "progress" record, which reads as a job that is
 	// still going.
 	e.stopMonitor()
 
-	common.Logger.Info("export completed", "rows", rowCount, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "duration", common.Seconds(duration), "rate", fmt.Sprintf("%.2f rows/sec", float64(rowCount)/duration.Seconds()))
+	common.Logger.Info("export completed", "rows", rowCount, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "duration", common.Seconds(duration), "rate", fmt.Sprintf("%.2f rows/sec", float64(rowCount)/duration.Seconds()),
+		"connect", common.Seconds(e.connectDur), "setup", common.Seconds(setupDur),
+		"first_row", common.Seconds(firstRowDur), "write", common.Seconds(writeDur), "finish", common.Seconds(finishDur))
 
 	return nil
 }
@@ -520,6 +576,7 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 		workerID int
 		shardIdx int
 		rowCount int64
+		duration time.Duration
 		err      error
 	}
 	resultCh := make(chan shardResult, len(shardRanges))
@@ -536,11 +593,21 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 				if idx >= len(shardRanges) {
 					return
 				}
+				// The shard's wall time runs from claiming the range to handing
+				// over its last block, so it includes waiting for the stream
+				// writer to drain an earlier shard's pipe. That is the number an
+				// operator needs when one slow range holds the output back.
+				shardStart := time.Now()
 				rowCount, err := e.exportShard(ctx, workerID, idx, shardInfo, shardRanges[idx], columns, pipes[idx])
-				resultCh <- shardResult{workerID: workerID, shardIdx: idx, rowCount: rowCount, err: err}
+				resultCh <- shardResult{workerID: workerID, shardIdx: idx, rowCount: rowCount, duration: time.Since(shardStart), err: err}
 			}
 		}(w)
 	}
+
+	// Everything up to the first row of the first shard — detection, sampling,
+	// range planning, the column sample and pipe allocation — is the parallel
+	// path's setup segment.
+	setupDur := time.Since(startTime)
 
 	// Consume the shards in order while they are still running.
 	streamErr := e.writeShardStream(pipes, columns)
@@ -565,7 +632,9 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 			}
 		} else {
 			totalRows += result.rowCount
-			common.Logger.Info("shard export completed", "worker", result.workerID, "shard", result.shardIdx)
+			common.Logger.Info("shard export completed", "worker", result.workerID, "shard", result.shardIdx,
+				"rows", result.rowCount, "duration", common.Seconds(result.duration),
+				"rate", fmt.Sprintf("%.2f rows/sec", rowsPerSecond(result.rowCount, result.duration)))
 		}
 	}
 
@@ -586,7 +655,8 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	e.stopMonitor()
 
 	total := e.stats.Snapshot()
-	common.Logger.Info("parallel export completed", "rows", total.Processed, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "shards", len(shardRanges), "workers", workers, "duration", common.Seconds(duration), "rate", fmt.Sprintf("%.2f rows/sec", total.RatePerSec()))
+	common.Logger.Info("parallel export completed", "rows", total.Processed, "bytes", common.FileSize(e.config.Output), "output", e.config.Output, "shards", len(shardRanges), "workers", workers, "duration", common.Seconds(duration), "rate", fmt.Sprintf("%.2f rows/sec", total.RatePerSec()),
+		"connect", common.Seconds(e.connectDur), "setup", common.Seconds(setupDur))
 
 	return nil
 }
@@ -696,7 +766,15 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 		}
 	}
 
+	stall := common.NewStallWatch(scanStallThreshold)
+	seen := int64(0)
 	for rows.Next() {
+		seen++
+		if gap, stalled := stall.Observe(); stalled {
+			common.Logger.Warn("export scan stalled", "worker", workerID, "shard", shardIdx,
+				"rows_so_far", seen, "gap", common.Seconds(gap),
+				"hint", "no row arrived for this long: a filesort, a lock wait or a stalled socket is holding the scan")
+		}
 		if err := rows.Scan(valuePtrs...); err != nil {
 			return 0, errors.Wrap(err, "failed to scan row")
 		}

@@ -42,6 +42,18 @@ type Importer struct {
 	// that is still going.
 	stopMonitor func()
 
+	// setupDur and headerDur split the time before the data path starts: setup
+	// is the connection, metadata and mode preparation, header is opening the
+	// input file and parsing its header (a parquet reader builds its schema
+	// there). Both are set once, before either import path begins, and read
+	// once by that path's summary.
+	setupDur  time.Duration
+	headerDur time.Duration
+
+	// connectDur is the dial + ping cost measured before Import starts, reported
+	// separately because the run's duration starts after it.
+	connectDur time.Duration
+
 	// projection feeds the INSERT column list from the parsed rows:
 	// projection[i] is the row position whose value goes to INSERT column i. It
 	// is built by the name-based --columns mapping (a subset in any order) and
@@ -61,6 +73,7 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 	// Build DSN using mysql.Config to properly escape special characters
 	dsn := common.BuildDSN(&cfg.Config)
 
+	dialStart := time.Now()
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to connect to database")
@@ -76,8 +89,9 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 	}
 
 	return &Importer{
-		cfg: cfg,
-		db:  db,
+		cfg:        cfg,
+		db:         db,
+		connectDur: time.Since(dialStart),
 	}, nil
 }
 
@@ -112,7 +126,11 @@ func (imp *Importer) Import(ctx context.Context) error {
 	})
 	defer imp.stopMonitor()
 
-	// Open input file
+	// Open input file. From here to the end of ReadHeader is the header stage:
+	// on parquet it reads the footer and builds the schema, on DEL/SQL it reads
+	// the first record, and on a very large or remote file it can be the
+	// slowest part of the run before any row moves.
+	headerStart := time.Now()
 	file, err := os.Open(imp.cfg.Input)
 	if err != nil {
 		return errors.Wrap(err, "failed to open input file")
@@ -156,6 +174,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 		}
 		return errors.Wrap(err, "failed to read header")
 	}
+	imp.headerDur = time.Since(headerStart)
 
 	// Determine target columns: --columns > file columns
 	// --columns supports two formats:
@@ -352,6 +371,11 @@ func (imp *Importer) Import(ctx context.Context) error {
 			}
 		}
 	}
+
+	// Everything above — connecting, resolving the target table, mode
+	// preparation, opening and parsing the input — is setup. The data path
+	// below reports its own segments, so the four add up to the total.
+	imp.setupDur = time.Since(startTime) - imp.headerDur
 
 	// Choose parallel or single-threaded import
 	var importErr error
@@ -719,6 +743,12 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 	rowCh := make(chan rowBatch, imp.queueDepth)
 	errCh := make(chan error, 1)
 
+	// readDur and waitFull are the reader side of the stage report: time spent
+	// reading and parsing, and time spent waiting for room in the queue
+	// (backpressure from a writer that cannot keep up). They are read after
+	// rowCh is closed, so that close is the only synchronisation needed.
+	var readDur, waitFull time.Duration
+
 	// Stage 1: Reader goroutine - 从文件读取数据
 	go func() {
 		defer close(rowCh)
@@ -727,18 +757,31 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 		var batchBytes int64
 		readCount := int64(0)
 
+		// batchStart brackets the read/parse work of one batch, so time spent
+		// blocked on a full queue is charged to waitFull instead of making the
+		// file look slow.
+		batchStart := time.Now()
+		send := func(b rowBatch) bool {
+			readDur += time.Since(batchStart)
+			blockedAt := time.Now()
+			select {
+			case rowCh <- b:
+				waitFull += time.Since(blockedAt)
+				batchStart = time.Now()
+				return true
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return false
+			}
+		}
+
 		for {
 			values, err := reader.ReadRow()
 			if err != nil {
 				if err.Error() == "EOF" {
 					// 发送剩余数据
 					if len(batch) > 0 {
-						select {
-						case rowCh <- rowBatch{data: batch}:
-						case <-ctx.Done():
-							errCh <- ctx.Err()
-							return
-						}
+						send(rowBatch{data: batch})
 					}
 					return
 				}
@@ -757,12 +800,7 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 			if rowLimit > 0 && (readCount-skipCount-1) >= rowLimit {
 				// 发送剩余数据
 				if len(batch) > 0 {
-					select {
-					case rowCh <- rowBatch{data: batch}:
-					case <-ctx.Done():
-						errCh <- ctx.Err()
-						return
-					}
+					send(rowBatch{data: batch})
 				}
 				return
 			}
@@ -773,14 +811,11 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 			// 只在 append 之后判断时，两行各自没超预算、合计却超过
 			// max_allowed_packet 的语句仍会被凑成一批（实测触 Error 1153）。
 			if wouldExceedBatch(batchBytes, rowBytes, maxBatchBytes) {
-				select {
-				case rowCh <- rowBatch{data: batch}:
-					batch = make([][]interface{}, 0, batchSize)
-					batchBytes = 0
-				case <-ctx.Done():
-					errCh <- ctx.Err()
+				if !send(rowBatch{data: batch}) {
 					return
 				}
+				batch = make([][]interface{}, 0, batchSize)
+				batchBytes = 0
 			}
 			batch = append(batch, values)
 			batchBytes += rowBytes
@@ -788,14 +823,11 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 			// 批量发送：行数达到 --batch-size，或单行本身就超过字节预算，任一条件
 			// 满足就刷新。
 			if shouldFlush(len(batch), batchSize, batchBytes, maxBatchBytes) {
-				select {
-				case rowCh <- rowBatch{data: batch}:
-					batch = make([][]interface{}, 0, batchSize)
-					batchBytes = 0
-				case <-ctx.Done():
-					errCh <- ctx.Err()
+				if !send(rowBatch{data: batch}) {
 					return
 				}
+				batch = make([][]interface{}, 0, batchSize)
+				batchBytes = 0
 			}
 		}
 	}()
@@ -815,10 +847,17 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 
 	var batch rowBatch
 	var ok bool
+
+	// The writer side of the stage report: time blocked waiting for a batch
+	// (an idle reader, or a file slower than the server) and time spent inside
+	// the batched INSERT itself.
+	var sendDur, waitEmpty time.Duration
 loop:
 	for {
+		recvAt := time.Now()
 		select {
 		case batch, ok = <-rowCh:
+			waitEmpty += time.Since(recvAt)
 			if !ok {
 				break loop
 			}
@@ -846,12 +885,17 @@ loop:
 		insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))
 
 		// 执行批量插入（瞬断时自动重连并回放本事务的未提交批次）
+		writeAt := time.Now()
 		if err := session.write(insertSQL, batchValues, len(batch.data)); err != nil {
 			preview := common.FailingSQL(insertSQL, batchValues)
 			imp.stats.AddFailed(int64(len(batch.data)))
 			common.Logger.Error("insert batch failed", "error", err, "sql", preview)
 			return errors.Wrapf(err, "failed to insert batch (SQL: %s)", preview)
 		}
+		batchDur := time.Since(writeAt)
+		sendDur += batchDur
+		common.WarnIfSlow(slowBatchThreshold, "slow insert batch", batchDur,
+			"rows", len(batch.data), "bytes", batchWireBytes(insertSQL, batchValues))
 
 		rowCount += int64(len(batch.data))
 
@@ -894,6 +938,13 @@ loop:
 		"input", imp.cfg.Input,
 		"duration", common.Seconds(duration),
 		"rate", fmt.Sprintf("%.2f rows/sec", float64(total.Processed)/duration.Seconds()),
+		// setup + header + read + send + the two queue waits account for the run:
+		// read is the file (parse), send is the server, and the waits are the
+		// pipeline handing off between them.
+		"connect", common.Seconds(imp.connectDur), "setup", common.Seconds(imp.setupDur),
+		"header", common.Seconds(imp.headerDur),
+		"read", common.Seconds(readDur), "send", common.Seconds(sendDur),
+		"wait_empty", common.Seconds(waitEmpty), "wait_full", common.Seconds(waitFull),
 	)
 
 	return nil
@@ -1035,6 +1086,9 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 			common.ApplyPoolHardening(db)
 			defer db.Close()
 
+			workerStart := time.Now()
+			workerRows := int64(0)
+
 			session := newWriteSession(imp, db, ctx, commitCount, fmt.Sprintf("thread %d", threadID))
 			if err := session.begin(); err != nil {
 				errCh <- errors.Wrapf(err, "thread %d: failed to begin transaction", threadID)
@@ -1083,6 +1137,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 				}
 
 				insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))
+				writeAt := time.Now()
 				if err := session.write(insertSQL, flat, len(batch.data)); err != nil {
 					preview := common.FailingSQL(insertSQL, flat)
 					imp.stats.AddFailed(int64(len(batch.data)))
@@ -1091,6 +1146,10 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 					cancel()
 					return
 				}
+				batchDur := time.Since(writeAt)
+				workerRows += int64(len(batch.data))
+				common.WarnIfSlow(slowBatchThreshold, "slow insert batch", batchDur,
+					"thread", threadID, "rows", len(batch.data), "bytes", batchWireBytes(insertSQL, flat))
 
 				if err := session.maybeCommit(); err != nil {
 					errCh <- errors.Wrapf(err, "thread %d: failed to commit transaction", threadID)
@@ -1107,7 +1166,10 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 				return
 			}
 
-			common.Logger.Info("worker completed", "thread", threadID)
+			workerDur := time.Since(workerStart)
+			common.Logger.Info("worker completed", "thread", threadID, "rows", workerRows,
+				"duration", common.Seconds(workerDur),
+				"rate", fmt.Sprintf("%.2f rows/sec", rowsPerSecond(workerRows, workerDur)))
 		}(i)
 	}
 
@@ -1137,6 +1199,8 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 		"threads", numThreads,
 		"duration", common.Seconds(duration),
 		"rate", fmt.Sprintf("%.2f rows/sec", float64(total.Processed)/duration.Seconds()),
+		"connect", common.Seconds(imp.connectDur),
+		"setup", common.Seconds(imp.setupDur), "header", common.Seconds(imp.headerDur),
 	)
 
 	return nil
