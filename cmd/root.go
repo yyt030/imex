@@ -137,8 +137,12 @@ func init() {
 		// print those same four fields, so prefixing it with a log record would
 		// duplicate the output and make `imex version` unusable in pipelines
 		// and version greps.
-		if cmd.Name() != "version" {
-			common.LogVersion(cmd.Name())
+		commandName := cmd.Name()
+		if cmd.Parent() != nil && cmd.Parent().Name() == "list" {
+			commandName = "list " + commandName
+		}
+		if commandName != "version" {
+			common.LogVersion(commandName)
 		}
 
 		return nil

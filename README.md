@@ -12,6 +12,7 @@
 - **复杂 SQL 智能检测**：集成 Vitess SQL 解析器，自动检测 JOIN 查询并降级为单线程导出，单表查询自动分片并行
 - **灵活的导入模式**：INSERT / INSERT_UPDATE / REPLACE / CREATE
 - **列映射导入**：支持文件列到表列的自定义映射（DB2 风格），可按位置或按名称映射
+- **元数据查询**：`imex list` 只读查看库、表、视图、列、索引、触发器、例程与事件，结果按对齐表格输出到 stdout
 - **自定义分隔符**：支持单字符、多字节、十六进制格式
 - **无包裹符模式**：支持导入导出不使用字符串定界符的纯分隔符文件
 - **OceanBase 兼容**：MySQL 模式共用同一套协议、语句与文件格式，不做服务端类型探测（探测的唯一消费者随 `LOCK TABLES` 一起删除，见变更记录 72/73）
@@ -362,6 +363,65 @@ imex import [连接选项] [导入选项] [修饰选项]
 | `--quiet` | 禁止定时进度日志（默认每 5s 一条，间隔见 `--progress-interval`），仅保留配置、结束统计、WARN 与 ERROR 记录（可用 `IMEX_QUIET=1`） | `false` |
 | `--no-sql-tag` | 不在工具主动执行的语句前加 `/* imex:<commit> */` 归因注释（默认加，可用 `IMEX_NO_SQL_TAG=1`） | `false` |
 
+### list - 元数据查询
+
+```bash
+imex list <object|缩写> [连接选项] [查询选项] [-f table]
+```
+
+`list` 读取 `information_schema` 并只把结果写到 stdout，日志与错误写到 stderr，因此可以直接接管道。连接选项与 export 相同，但 `--database` 对大多数对象**不是必填**；`--user`、`--password` 以及 `--host`（或 `--socket`）仍为必填。对象名就是子命令名：
+
+| 对象 | 需要的范围 | 输出列 |
+|------|------------|--------|
+| `databases` | 无；`-D` 只把结果缩小到该库 | `database charset collation` |
+| `tables` | 无；`-D` 限定库，`--type base\|view\|all` 选类型 | `database table type engine rows data_length index_length comment` |
+| `views` | 无；`-D` 限定库 | `database view check_option is_updatable definer security_type` |
+| `columns` | **必须** `-D` 且 `-t` | `database table column ordinal type nullable default key extra comment` |
+| `indexes` | **必须** `-D` 且 `-t` | `database table index non_unique seq column cardinality index_type` |
+| `triggers` | 无；`-D` 限定库，`-t` 只列该表的触发器 | `database trigger event table timing statement definer` |
+| `routines` | 无；`--type procedure\|function\|all` | `database routine type definer security deterministic data_access` |
+| `events` | 无；`-D` 限定库 | `database event status execute_at interval_value interval_field definer last_executed` |
+
+不给 `-D` 时，除 `databases` 外的对象只列非系统库（`information_schema`/`mysql`/`performance_schema`/`sys`），`--all` 把它们也纳入；显式给了 `-D mysql` 则照常只列 `mysql`。`--pattern` 对名称列做 `LIKE` 匹配，`%`、`_` 为通配符，反斜杠转义，例如 `--pattern 'tmp\_%'`。
+
+对象名支持三个字母的固定简写，大小写敏感（`imex list <简写> --help` 与全名完全等价）：
+
+| 对象 | 简写 |
+|------|------|
+| `databases` | `dbs` |
+| `tables` | `tab` |
+| `views` | `vws` |
+| `columns` | `col` |
+| `indexes` | `idx` |
+| `triggers` | `trg` |
+| `routines` | `rtn` |
+| `events` | `evt` |
+
+**输出选项：**
+
+| 选项 | 说明 | 默认值 |
+|------|------|--------|
+| `--format` | 仅 `table` | `table` |
+| `--no-col-names` | 不打印表头行 | `false` |
+| `--pattern` | 名称列 `LIKE` 过滤 | 空 |
+| `--all` | 不给 `-D` 时也包含系统库 | `false` |
+| `--type` | `tables` 选 `base`/`view`/`all`；`routines` 选 `procedure`/`function`/`all` | `base` / `all` |
+| `--table` | `-t`，`columns`/`indexes` 必填，`triggers` 用作过滤 | 空 |
+| `--messages` | `-m`，把日志全部写入该文件，stderr 保持安静 | 空 |
+
+`table` 是唯一的输出格式：缓冲全部行后按 rune 宽度对齐，列间两个空格，NULL 输出大写 `NULL`（与字面字符串 `NULL` 无法区分），值里的反斜杠、制表符、回车、换行转成 `\\`、`\t`、`\r`、`\n`。空结果不算错误：退出码 0，仍打印表头。
+
+```bash
+imex list databases -u root -p pass
+imex list dbs -u root -p pass -D shop
+imex list tab -u root -p pass -D shop
+imex list columns -u root -p pass -D shop -t orders
+imex list indexes -u root -p pass -D shop -t orders
+imex list routines -u root -p pass --type procedure --pattern 'etl\_%'
+```
+
+用法错误（未知对象、缺少 `-D`/`-t`、非法 `--format`/`--type`）退出码 2，错误文本在 stderr；连接或查询失败退出码 1。
+
 ### version - 版本信息
 
 ```bash
@@ -397,6 +457,26 @@ imex encrypt "my-password"
 - `IMEX_KEY` 本身也是凭据，此机制只解决"密码在命令行可见"，不解决密钥托管。
 
 ## 高级用法
+
+### 批量导出所有表
+
+`scripts/export-all-tables.sh` 用 `imex list tab` 取表名，再对每张表执行一次 `imex export -q "SELECT * FROM <表>"`，输出到 `<out-dir>/<database>/<table>.<format>`：
+
+```bash
+# 导出 shop 库的全部基础表（DEL，默认 ./export/shop/）
+scripts/export-all-tables.sh -D shop -u root -p pass
+
+# 导出指定数据库中的匹配表，SQL 格式并带建表语句，每张表 4 线程
+scripts/export-all-tables.sh -D shop -u root -p pass \
+  -o /backup/shop -f sql --create --threads 4 --pattern 'order%'
+
+# 导出所有非系统库；系统库需显式 --include-system
+IMEX_PASSWORD=pass scripts/export-all-tables.sh --all-databases -u root
+```
+
+口令可用 `-p` 或环境变量 `IMEX_PASSWORD`（`ENC:` 密文配合 `IMEX_KEY` 同样可用）。脚本逐表串行执行、单表失败后继续其余表，最后列出失败表并以退出码 1 结束；用法错误退出 2；`--dry-run` 只打印将要执行的命令，`--fail-fast` 在首个失败处停止，`--` 之后的参数原样追加给每次 `imex export`。
+
+脚本按对齐表格解析 `imex list` 的输出，以「两个及以上空格」切分列，因此表名/库名本身含连续空格时无法与列分隔区分；这类对象请改用 `--pattern` 分批导出或直接调用 `imex export`。
 
 ### 并行导出
 
@@ -876,6 +956,14 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | 文档与实现不一致：测试资产计数、日志命名规则、`--quiet` 的保留项，以及 `docs/cli-oracle.txt` 里从未折进基线的帮助改写 | ① 计数按实测改为 49 个 `_test.go` / 272 个 `Test*`（`internal/common` 11/48、`internal/import` 13/57、集成 `live_mysql_test.go` 12）；② 命名规则由“事件词固定为五个”改为“主要事件词是……”，补上 `retrying`/`executing`/`applied`/`derived` 与 `slow …`/`… stalled`，并说明阈值告警按发生次数各一行；③ `--quiet` 保留项统一为“配置、结束统计、WARN 与 ERROR”；④ `## export` 基线按当前帮助重新生成（吸收 2026-10-29 遗留的 15 行改写），`## import`/`## root` 的冻结快照差异实测 22/5 行，新增 note 14。行为零变化，详见需求文档变更记录 88 |
 | `--progress-interval` 的下限 10ms 会让进度行跟着批次走：实测 200,000 行导入分 200 批、发送段 1.391s（约 7ms 一批），10ms 档等于每批一条；更小的值更糟，`1ns` 曾有 6400 行导出打出 1355 条进度（日志 175,557 字节） | 下限提到 **100ms**（参数仍是 duration，`100ms`/`500ms`/`5s` 都合法，默认 5s 不变）：`10ms`/`1ms` 退出 **2** 并报 `invalid --progress-interval 10ms: must be >= 100ms`，`0`/负值仍是 `must be > 0`；100ms 档实测 262,144 行导出 0.18s 打 1 条、六行 `SLEEP(0.05)` 查询 0.301s 打 3 条。拒绝此前合法的取值属不兼容变更，按档位表字面取 **X+1**，版本由 0.5.3 升至 **1.0.0**；`## export` 基线重新生成（88 行，diff 为空）。详见需求文档变更记录 89。**注（2026-10-31 用户裁决）：本行按字面定为 X+1 的结论已纠正为 Y+1——版本号最终定为 0.6.0、X 保持 0；本地 `v1.0.0` tag 已删除，纠正提交上先打 `v1.1.0`、同日按用户二次指令改打 `v0.6.0`（详见变更记录 90、91）。** |
 | 上一轮把 `--progress-interval` 下限提到 100ms 判为 X+1、版本发成 1.0.0；用户复核裁定按 **Y+1** 计，且 X 不升 | 版本先纠正为 1.1.0，同日按用户二次指令定为 **0.6.0**（`Makefile` 首行 1.0.0 → 0.6.0，0.x 期第二位 +1），行为与 `99d289d` 完全一致；删除本地未 push 的 `v1.0.0` 与中间态 `v1.1.0`，在最终纠正提交上打附注 tag `v0.6.0`（尚未 push）。验证：`gofmt -l` 空、`go vet` 干净、七包 `-race` 全通过、真实库 **131 RUN / 0 SKIP / 0 FAIL**、`statementCapSlack` = 3、help 超 118 字节 0 行。详见需求文档变更记录 90、91 |
+| 需要一个只读元数据入口查看库、表、视图、列、索引、触发器、例程与事件，此前只能另开客户端 | 新增 **`imex list`** 命令树（8 个对象）与 `internal/list` 包：查询全部走 `information_schema` + 占位符，结果只写 stdout、日志写 stderr，支持 `table`/`tsv`/`csv`/`jsonl` 四种固定格式与 `--no-col-names`/`--pattern`/`--all`/`--type`/`-t`；`-D` 仅 `columns`/`indexes` 必填，其余对象可选。实测 MariaDB：8 个对象、四种格式、空结果（退出 0、tsv 仅表头）、`--no-col-names`、`--pattern` 无匹配、`--messages` 的 stdout/stderr 分离全部符合；缺 `-D`/`-t`、未知对象、非法 `--format`/`--type` 退出 **2** 且错误只在 stderr；`jsonl` 用真正的 `null` 区分 SQL NULL 与字面 `"NULL"`。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **149 RUN / 0 SKIP / 0 FAIL**、`_test.go` 53 / `Test*` 300、`statementCapSlack` = 3、help 超 118 字节 0 行。`docs/cli-oracle.txt` 新增 `## list` 与 8 个叶子快照、重新基线 `## root`（note 15）。版本号本轮未动（仍 0.6.0），未提交/未打 tag/未打包。详见需求文档变更记录 92 |
+| `list` 的对象全名较长（`databases`/`tables`/`triggers`…），日常排查希望少打字 | 为 8 个对象注册**固定别名**：`d`/`db`/`dbs`、`t`/`tbl`/`tab`、`v`、`c`/`col`、`i`/`idx`、`tr`/`trg`、`r`/`rt`、`e`/`evt`；单字母 `t` 归 `tables`，`triggers` 用 `tr`。别名经 Cobra `Aliases` 注册，与全名共享同一套 flag、帮助、校验与退出码；`list db -f tsv` 与 `list databases -f tsv` 输出逐字节相同，`list col`/`list trg` 同样可用。别名唯一性由 `TestObjectAliasesAreUnique` 钉住，`cmd/list_test.go` 逐一解析 17 个别名。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **150 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 303、help 超 118 字节 0 行。`docs/cli-oracle.txt` 的 8 个叶子快照加入 `Aliases:` 块（note 16）。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 93 |
+| 上一行的 list 简写有单字母、双字母、三字母多种形式，不够统一 | 每个对象改为**恰好一个三字母简写**：`dbs`、`tbl`、`vws`、`col`、`idx`、`trg`、`rtn`、`evt`。旧别名（`d`/`db`/`t`/`v`/`c`/`i`/`tr`/`r`/`e` 等）不再接受，`imex list db` 按未知对象退出 2。别名仍经 Cobra `Aliases` 注册，与全名共享 flag、帮助、校验与退出码；`list dbs -f tsv` 与 `list databases -f tsv` 输出逐字节相同，`list col`/`list trg` 正常。测试新增「每个对象恰好一个、长度必须为 3」断言，`cmd/list_test.go` 逐一解析 8 个别名。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **150 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 303、help 超 118 字节 0 行。8 个叶子快照重新生成（note 17）。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 94 |
+| `imex export` 一次只导一张表，多表场景需要用户自己写循环 | 新增 **`scripts/export-all-tables.sh`**：用 `imex list tbl` 枚举基础表，逐表执行 `imex export -q "SELECT * FROM <表>"`，输出到 `<out-dir>/<db>/<table>.<format>`。支持 `-D`/`--all-databases`（默认跳过系统库）、`--pattern`、`-f del|sql|parquet`、`--create`、`--threads`、`--no-overwrite`、`--log-level`、`--dry-run`、`--fail-fast`，口令取 `-p` 或 `IMEX_PASSWORD`；单表失败继续其余表，结束列出失败表并退出 1，用法错误退出 2。实测 MariaDB：`list_fix` 导出 12 B、`script_rows` 3 行逐行一致、`-f sql --create --threads 2` 生成 285 B 建表+数据文件、`--all-databases --dry-run` 正确过滤四个系统库。已知限制：表名/库名按 `list` 的 TSV 解析，含制表符/换行/反斜杠时需改用 `--pattern` 或直接调用 `imex export`。不改 Go 代码与五面契约，版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 95 |
+| `list` 的默认格式是 `table`（按宽度对齐），脚本消费必须先写 `-f tsv` | 默认改为 **`tsv`**：每行一条记录、列间一个制表符，首行默认是列名，值内的 `\`、制表符、CR、LF 转义为 `\\`、`\t`、`\r`、`\n`，SQL NULL 输出大写 `NULL`；需要区分 NULL 与字面 `"NULL"` 时用 `jsonl`。`table` 仍可用 `-f table` 选择。实测 `list databases` 与 `list databases -f tsv` 输出逐字节相同（`database\tcharset\tcollation` / `imex_test\tlatin1\tlatin1_swedish_ci`）。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **151 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 304、help 超 118 字节 0 行；8 个叶子快照重新生成（note 18）。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 96 |
+| `list` 支持 `table`/`tsv`/`csv`/`jsonl` 四种格式，用户要求只保留默认的 table | 移除 **tsv/csv/jsonl**，`table` 成为默认且唯一格式：`--format` 仍保留但只接受 `table`，其他值退出 **2**（`invalid --format %q: only table is supported`）；表渲染器缓冲全部行后按 rune 宽度对齐、列间两个空格，`\`、制表符、CR、LF 转义，NULL 输出大写 `NULL`；空结果仍输出表头、退出 0。实测：默认与 `-f table` 逐字节相同，`-f tsv` 退出 2 且 stdout 0 字节；批量导出脚本改按「两个及以上空格」切分对齐表格，在空表、3 行表与 `--all-databases` 下都取到正确表名（`--dry-run` 系统库命中 0，`--include-system` 后出现）。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **151 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 300、`statementCapSlack` = 3、help 超 118 字节 0 行；8 个叶子快照重新生成（note 19）。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 97 |
+| `tables` 的三字母别名 `tbl` 不够直观 | 改为 **`tab`**：更新 `internal/list/aliases.go` 与 Cobra 注册后，`imex list tab --help` 显示 `Aliases: tables, tab`；`tbl` 不再接受，`imex list tbl` 退出 **2** 并报 `unknown object "tbl"`。批量导出脚本改用 `imex list tab` 枚举表名，实测成功导出一张表（5 B，首行 `"id"`）。README 的简写表、示例、批量导出段与项目树，requirements 2.5/2.1.9 同步；`## list tables` 快照重新生成（note 20）。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **152 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 300、`statementCapSlack` = 3、help 超 118 字节 0 行。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 98 |
+
 
 ## 项目结构
 
@@ -889,14 +977,17 @@ imex/
 │   ├── export_flags.go        # export 子命令 flag 注册
 │   ├── import.go              # import 子命令（RunE 与参数校验）
 │   ├── import_flags.go        # import 子命令 flag 注册
+│   ├── list.go                # list 子命令树（8 个对象、输出选项与校验）
 │   ├── validate.go            # 共享参数边界校验（port/threads/statement-size/log-level/分隔符解析/格式适用性）
 │   ├── option_scope.go        # 把格式适用范围写进 flag 自己的帮助文本（与拒绝逻辑同一张表）
 │   ├── cli_matrix_test.go     # 参数组合矩阵与退出码契约测试
+│   ├── list_test.go           # list 校验、命令树与帮助宽度测试
 │   ├── validate_fuzz_test.go  # 校验函数 fuzz 测试
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
 │   ├── config/
 │   │   ├── config.go            # 配置定义与默认值（连接/超时/字符集/DelModifier/导出导入选项）
+│   │   ├── list.go              # list 配置与输出格式枚举
 │   │   └── formatscope.go       # 格式适用范围登记表（校验拒绝文案、帮助文本标记、配置回显字段三处共用）
 │   ├── common/
 │   │   ├── util.go              # DSN 构建（超时/字符集/会话变量注入）与工具函数
@@ -922,23 +1013,34 @@ imex/
 │   │   ├── shard.go             # 分片逻辑（主键/唯一键检测）
 │   │   ├── diag.go              # 导出侧诊断常量（扫描停顿 10 秒、分片速率换算）
 │   │   └── sql_parser.go        # SQL 解析器（JOIN 检测）
-│   └── import/
-│       ├── importer.go          # 导入调度器（单线程流水线、并行 worker、列映射、攒批）
-│       ├── configlog.go         # 配置回显（按 --format 过滤 DEL 字段）
-│       ├── batchcap.go          # 攒批上限（max_allowed_packet 字节预算 + --statement-size 压低 + 65535 占位符）
-│       ├── diag.go              # 导入侧诊断常量（慢批/慢提交 5 秒、批字节估算、worker 速率）
-│       ├── session.go           # 写入会话（事务、重连回放、空闲提交、commit-count）
-│       ├── record_reader.go     # 无上限记录读取器（自定义 SplitFunc，零拷贝别名）
-│       ├── del_reader.go        # DEL 格式读取器
-│       ├── sql_reader.go        # SQL 格式读取器
-│       └── parquet_reader.go    # Parquet 格式读取器
+│   ├── import/
+│   │   ├── importer.go          # 导入调度器（单线程流水线、并行 worker、列映射、攒批）
+│   │   ├── configlog.go         # 配置回显（按 --format 过滤 DEL 字段）
+│   │   ├── batchcap.go          # 攒批上限（max_allowed_packet 字节预算 + --statement-size 压低 + 65535 占位符）
+│   │   ├── diag.go              # 导入侧诊断常量（慢批/慢提交 5 秒、批字节估算、worker 速率）
+│   │   ├── session.go           # 写入会话（事务、重连回放、空闲提交、commit-count）
+│   │   ├── record_reader.go     # 无上限记录读取器（自定义 SplitFunc，零拷贝别名）
+│   │   ├── del_reader.go        # DEL 格式读取器
+│   │   ├── sql_reader.go        # SQL 格式读取器
+│   │   └── parquet_reader.go    # Parquet 格式读取器
+│   └── list/
+│       ├── list.go              # 执行查询、逐行读取并交给渲染器
+│       ├── queries.go           # information_schema 查询构建（对象、范围、pattern、type）
+│       ├── aliases.go           # 对象简写注册表（dbs、tab、trg…）
+│       ├── render.go            # table 对齐输出
+│       ├── queries_test.go      # 查询构建测试
+│       ├── aliases_test.go      # 简写唯一性与注册表隔离测试
+│       └── render_test.go       # 渲染与 NULL/转义测试
 ├── test/
 │   └── integration/             # 集成测试
 │       ├── roundtrip_test.go    # 离线往返（导出写入器→导入读取器：转义/换行/0x/NULL 与空串/单行 INSERT/DEL 修饰符）
 │       ├── live_mysql_test.go   # 真实 MySQL 端到端（默认跳过，需 IMEX_TEST_DSN）
 │       ├── option_matrix_test.go # 真实 CLI 交叉选项矩阵（argv 驱动编译出的二进制，同上门控）
+│       ├── list_test.go         # list 八类对象、四种格式、stdout/stderr 分离与用法错误
 │       ├── lock_contention_test.go # 重复主键 × 导入并发的锁冲突回归（真实二进制 + 真实库）
 │       └── export_cli_test.go   # 导出 CLI 三项：schema 限定查询、`--create` 默认、`--query-file` 互斥
+├── scripts/
+│   └── export-all-tables.sh   # 按 imex list 枚举表并逐表导出（bash）
 ├── docs/
 │   ├── requirements.md          # 需求文档
 │   └── cli-oracle.txt           # 已发布二进制的 --help 契约快照（回归基线）
