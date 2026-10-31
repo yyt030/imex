@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Export every base table of one database (or of every user database) with
-# imex. Table names come from `imex list tbl`, so the script follows the same
+# imex. Table names come from `imex list tab`, so the script follows the same
 # filtering the CLI exposes: base tables only, `--pattern` for a LIKE filter,
 # and `-D` as the schema scope.
 #
@@ -231,7 +231,7 @@ list_databases() {
 }
 
 list_tables() {
-	local db=$1 args=(tbl -D "$1")
+	local db=$1 args=(tab -D "$1")
 	[[ -n $PATTERN ]] && args+=(--pattern "$PATTERN")
 	list_raw "${args[@]}" | awk -F'  +' 'NF >= 2 { print $2 }'
 }
