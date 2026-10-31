@@ -168,6 +168,23 @@
 # body was regenerated a second time (still 88 lines, diff empty); `## import` still
 # has sixteen delta lines and `## root` still two. The only net change from this
 # note's first draft is that no help line moved at all.
+# Re-baselined note 14 (2026-10-30): --progress-interval's floor was raised from 10 ms to
+# 100 ms on both subcommands (user instruction), so the help line now reads
+# "(min 100ms; --quiet drops it)" and 10 ms joins 1 ms as a usage error, exit 2:
+# `invalid --progress-interval 10ms: must be >= 100ms`; 0 and a negative duration keep
+# their own "must be > 0" wording. Rationale is measured: a 200,000-row import runs 200
+# batches in a 1.391 s send segment (~7 ms per batch), so a 10 ms floor puts one progress
+# line next to every batch, while 100 ms keeps the record a heartbeat (at most ~19 lines
+# for that run). The `## export` body was regenerated from the working tree and its diff
+# is empty again (88 lines); besides this round's progress line it absorbed 15 lines of the
+# 2026-10-29 help-shortening rewordings (--batch-size, --create, --default-charset,
+# --extended-insert, --hex-blob, --no-hex-blob, --parquet-compression, --pipeline-buffer,
+# --session-var, --shard-key, --statement-size, and the four global lines), which had never
+# been folded in.
+# `## import` and `## root` remain the frozen snapshot: measured against the tree they now
+# differ by 22 and 5 lines respectively (the old "sixteen / two" counts predate the same
+# rewordings); no option was added or removed, and the import-side floor wording lives in
+# that delta rather than in the snapshot body.
 # Frozen baseline, kept verbatim as a regression reference. The intentional
 # deltas vs the current tree are listed below: --statement-size now defaults to 8388608 (8 MiB),
 # export gained --extended-insert and lost --single-row-insert (one INSERT per
@@ -262,19 +279,19 @@ Aliases:
   export, exp
 
 Flags:
-      --batch-size int                  Rows per reader->writer hand-off batch (single-threaded export only; passing it with --threads>1 is a usage error) (default 1000)
+      --batch-size int                  Rows per hand-off batch; with --threads>1 it is a usage error (default 1000)
       --char-del string                 String delimiter (only with --format del) (default "\"")
       --col-del string                  Column delimiter (only with --format del) (default ",")
       --connect-timeout duration        TCP connect timeout (maps to JDBC connectTimeout) (default 5s)
-      --create                          Output a CREATE TABLE statement (SQL export is data-only by default) (only with --format sql)
+      --create                          Output a CREATE TABLE statement (only with --format sql)
   -D, --database string                 Database name
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
-      --default-charset string          Connection & output-file charset (utf8mb4 default; also utf8, latin1, ascii, gbk, gb18030)
+      --default-charset string          Connection & output-file charset (utf8mb4 default)
       --escape string                   Escape character (only with --format del) (default "\"")
-      --extended-insert                 Merge rows into multi-row INSERT statements bounded by --statement-size (only with --format sql)
+      --extended-insert                 Merge rows into multi-row INSERTs (only with --format sql)
   -f, --format string                   Output file format (del/sql/parquet) (default "del")
   -?, --help                            help for export
-      --hex-blob                        Encode binary columns as 0x hexadecimal literals (auto-on for non-utf8mb4 charset) (not with --format parquet)
+      --hex-blob                        Binary columns as 0x hex literals (not with --format parquet)
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
@@ -282,33 +299,34 @@ Flags:
       --no-col-names                    Do not output column names (only with --format del)
       --no-data                         Do not output INSERT statements (only with --format sql)
       --no-escape                       Disable escaping (only with --format del)
-      --no-hex-blob                     Force raw binary passthrough even for non-utf8mb4 charset (may corrupt binary data) (not with --format parquet)
+      --no-hex-blob                     Force raw binary passthrough (may corrupt data) (not with --format parquet)
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Output file path (required)
-      --parquet-compression string      Parquet page compression (none, snappy or zstd); snappy costs ~4% export time for roughly a tenth of the bytes on text, zstd trades more CPU and memory for far smaller files (only with --format parquet) (default "none")
+      --parquet-compression string      Compression: none, snappy, zstd (only with --format parquet) (default "none")
   -p, --password string                 Database password
-      --pipeline-buffer int             Hand-off queue depth, in batches (single-threaded export only; passing it with --threads>1 is a usage error) (default 10)
+      --pipeline-buffer int             Hand-off queue depth in batches; --threads>1 is a usage error (default 10)
   -P, --port int                        TCP/IP port (default 3306)
-      --progress-interval duration      How often to write the periodic progress record (minimum 10ms; --quiet drops the records entirely) (default 5s)
+      --progress-interval duration      Periodic progress log interval (min 100ms; --quiet drops it) (default 5s)
   -q, --query string                    SQL SELECT statement (mutually exclusive with --query-file)
       --query-file string               Read the SQL SELECT statement from this file (mutually exclusive with -q)
       --row-del string                  Row delimiter (only with --format del) (default "\n")
-      --session-var stringArray         Set a MySQL/OceanBase session variable before export (repeatable), e.g. --session-var "sql_mode=STRICT_TRANS_TABLES" --session-var foreign_key_checks=0
-      --shard-key string                Column name for sharding (only a parallel export reads and validates it: with --threads 1, or after a fallback to single-threaded, it is ignored; auto-detect primary key if empty)
+      --session-var stringArray         Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES
+      --shard-key string                Column used to shard a parallel export; defaults to the primary key
   -S, --socket string                   UNIX domain socket path
       --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)
-      --statement-size int              Max bytes per INSERT statement (only bounds merged statements: without --extended-insert a longer row just warns) (only with --format sql) (default 8388608)
+      --statement-size int              Max bytes per merged INSERT (only with --format sql) (default 8388608)
       --threads int                     Number of parallel export tasks (1 = no parallelism) (default 1)
       --timestamp-fmt string            Timestamp format (only with --format del) (default "yyyy-MM-dd HH:mm:ss")
   -u, --user string                     Database username (default "root")
 
 Global Flags:
-      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, or to the --messages file when one is given.
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console (default: human-readable fixed-width) or text (slog key=value), also via IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
+
 ## import
 Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
 MySQL or OceanBase database.

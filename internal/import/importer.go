@@ -372,9 +372,13 @@ func (imp *Importer) Import(ctx context.Context) error {
 		}
 	}
 
-	// Everything above — connecting, resolving the target table, mode
-	// preparation, opening and parsing the input — is setup. The data path
-	// below reports its own segments, so the four add up to the total.
+	// setupDur covers everything before the data path starts except the header
+	// stage, which is reported on its own: the dial, target-table resolution,
+	// mode preparation and the column metadata lookups. The data path below
+	// reports read/send plus the two queue waits; those pair up into two views
+	// of the same run (read+wait_full for the reader, send+wait_empty for the
+	// writer), so the import stage fields are views rather than disjoint
+	// slices and must not be added together.
 	imp.setupDur = time.Since(startTime) - imp.headerDur
 
 	// Choose parallel or single-threaded import

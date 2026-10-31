@@ -38,7 +38,7 @@ func registerExportFlags(cmd *cobra.Command) {
 
 	// Progress cadence
 	f.DurationVar(&exportCfg.ProgressInterval, "progress-interval", config.DefaultProgressInterval,
-		"Periodic progress log interval (min 10ms; --quiet drops it)")
+		"Periodic progress log interval (min 100ms; --quiet drops it)")
 
 	// Session variables (repeatable)
 	f.StringArrayVar(&exportCfg.SessionVars, "session-var", nil,

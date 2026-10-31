@@ -241,7 +241,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--query` | `-q` | SQL SELECT 语句（支持 OceanBase / MySQL 优化器 hint），与 `--query-file` 互斥 | 无 |
 | `--query-file` | | 从该文件读取 SQL SELECT 语句（自动去掉首尾空白与结尾分号），与 `-q` 互斥；两者必须恰好给一个 | 空 |
 | `--messages` | `-m` | 把全部日志记录写入该文件，终端不再打印（文件即命令行日志本身） | 空 |
-| `--progress-interval` | | 定时进度日志的间隔（必须 > 0 且 ≥ 10ms，否则用法错误退出码 2） | `5s` |
+| `--progress-interval` | | 定时进度日志的间隔（必须 > 0 且 ≥ 100ms，否则用法错误退出码 2） | `5s` |
 | `--no-overwrite` | | 拒绝覆盖已存在的输出文件（默认允许覆盖；原名 `--no-replace`，已改名且不留别名） | `false` |
 | `--threads` | | 并行导出任务数（1=不并行；上限 256）。每个 worker 全程一条连接，worker 数 + 1 超过服务端 `@@max_connections` 时在数据移动前记一条 `warn` | `1` |
 | `--shard-key` | | 分片键列名（空=自动检测主键/唯一键）；**只有并行导出读取并校验它**——显式给出的列在表里不存在时为用法错误、退出码 2，自动检测失败仍回落单线程；`--threads 1` 或并行请求回落到单线程时该值不起作用，运行记一条 `warn` 并在配置记录标 `shard_key_ignored=true`（不改变退出码与产物） | 空 |
@@ -277,7 +277,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--log-level` | 日志级别（debug/info/warn/error） | `info` |
 | `--error-stack` | 失败时打印完整调用堆栈（可用 `IMEX_ERROR_STACK=1`） | `false` |
 | `--echo-sql-values` | 失败 SQL 回显内联真实数据值（默认脱敏，可用 `IMEX_ECHO_SQL_VALUES=1`） | `false` |
-| `--quiet` | 禁止定时进度日志（默认每 5s 一条，间隔见 `--progress-interval`），仅保留配置、结束统计与 ERROR 记录（可用 `IMEX_QUIET=1`） | `false` |
+| `--quiet` | 禁止定时进度日志（默认每 5s 一条，间隔见 `--progress-interval`），仅保留配置、结束统计、WARN 与 ERROR 记录（可用 `IMEX_QUIET=1`） | `false` |
 | `--no-sql-tag` | 不在工具主动执行的语句前加 `/* imex:<commit> */` 归因注释（默认加，可用 `IMEX_NO_SQL_TAG=1`） | `false` |
 
 **SQL 格式修饰选项：**
@@ -309,7 +309,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 | `--table` | `-t` | 目标表名（insert/replace/insert_update 必填；create 模式可省略，自动取 SQL 文件中 CREATE 语句的表名，指定则作为新表名重写） | 无 |
 | `--columns` | `-c` | 列映射（见下方说明） | 空 |
 | `--messages` | `-m` | 把全部日志记录写入该文件，终端不再打印（文件即命令行日志本身） | 空 |
-| `--progress-interval` | | 定时进度日志的间隔（必须 > 0 且 ≥ 10ms，否则用法错误退出码 2） | `5s` |
+| `--progress-interval` | | 定时进度日志的间隔（必须 > 0 且 ≥ 100ms，否则用法错误退出码 2） | `5s` |
 | `--threads` | | 并行导入任务数（1=不并行；上限 256）。worker 数 + 1 超过服务端 `@@max_connections`、或 `--threads` 让重放缓冲总量（每 worker 一份，下限 8 MiB）超过进程预算时，在任何数据移动之前各记一条 `warn` | `1` |
 | `--batch-size` | | 读→写交接每批的行数（单线程与并行导入均生效；实际还受字节上限与占位符上限约束，见下） | `1000` |
 | `--pipeline-buffer` | | 读→写交接队列深度（批数；0=同步交接），**按给定值执行**。该队列由全部 worker 共享，深度与 `--threads` 是两件正交的事（深度是驻留内存，线程是并发）。深度 × 单批字节预算可能超过 1 GiB 时不改写深度，只在数据移动前记一条 `warn` 报出这个价（`requested`/`batch_bytes`/`queued_bytes`/`envelope_bytes`/`hint`） | `10` |
@@ -359,7 +359,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 | `--log-level` | 日志级别（debug/info/warn/error） | `info` |
 | `--error-stack` | 失败时打印完整调用堆栈（可用 `IMEX_ERROR_STACK=1`） | `false` |
 | `--echo-sql-values` | 失败 SQL 回显内联真实数据值（默认脱敏，可用 `IMEX_ECHO_SQL_VALUES=1`） | `false` |
-| `--quiet` | 禁止定时进度日志（默认每 5s 一条，间隔见 `--progress-interval`），仅保留配置、结束统计与 ERROR 记录（可用 `IMEX_QUIET=1`） | `false` |
+| `--quiet` | 禁止定时进度日志（默认每 5s 一条，间隔见 `--progress-interval`），仅保留配置、结束统计、WARN 与 ERROR 记录（可用 `IMEX_QUIET=1`） | `false` |
 | `--no-sql-tag` | 不在工具主动执行的语句前加 `/* imex:<commit> */` 归因注释（默认加，可用 `IMEX_NO_SQL_TAG=1`） | `false` |
 
 ### version - 版本信息
@@ -564,7 +564,7 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 | `--batch-size` | `1`–`100000`（读→写交接每批行数） | `invalid --batch-size`，退出码 2；`export` 里与 `--threads>1` 同时显式给出也是用法错误，退出码 2 |
 | `--pipeline-buffer` | `0`–`1024`（交接队列深度，批数；`0`=同步交接） | `invalid --pipeline-buffer`，退出码 2；`export` 里与 `--threads>1` 同时显式给出也是用法错误，退出码 2；`import` 侧深度 × 单批字节预算可能超过 1 GiB 时**不改深度**，只在数据移动前记 `warn`（`the hand-off queue may retain more than the memory envelope, importing at the configured depth`，实测 `requested=1024 batch_bytes=15099494 queued_bytes=15461881856 envelope_bytes=1073741824`，运行仍按深度 1024；床上预算为 15,099,494 B 时深度 71 及以下完全不记这条）；库调用方传入的负值按 `0`（同步交接）处理，不再让 `make` 因负容量崩溃 |
 | `--connect-timeout` / `--socket-read-timeout` / `--socket-write-timeout` | 均 `>0` | 退出码 2 |
-| `--progress-interval` | `>0` 且 `≥10ms`（定时进度日志间隔；`0` 不是"关闭进度"，那是 `--quiet`）| `invalid --progress-interval`，退出码 2：0 与负值报 `must be > 0`，`1ms`/`9ms` 报 `must be >= 10ms`（实测 `1ns` 在过去是合法值，一次 6400 行导出打出 1355 条进度、日志 175,557 字节）|
+| `--progress-interval` | `>0` 且 `≥100ms`（定时进度日志间隔；`0` 不是"关闭进度"，那是 `--quiet`）| `invalid --progress-interval`，退出码 2：0 与负值报 `must be > 0`，`10ms`/`1ms` 报 `must be >= 100ms`（2026-10-30 由 10ms 提到 100ms：实测 200,000 行导入分 200 批、发送段 1.391 s，约 7 ms 一批，10ms 的下限会让进度行跟着批次走；`1ns` 在过去还是合法值时，一次 6400 行导出打出 1355 条进度、日志 175,557 字节）|
 | `--commit-count` | `≥1` | `invalid --commit-count`，退出码 2 |
 | `--skip-count` / `--row-count` | `≥0`（`row-count=0` 表示无限制） | 退出码 2 |
 | `--log-level` | `debug`/`info`/`warn`/`error`（大小写与首尾空格容错） | `invalid --log-level`，退出码 2（此前非法值会被静默降级为 info） |
@@ -635,7 +635,7 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
 
 三个阈值告警只在异常时出现，健康运行一行都不多：`export scan stalled`（扫描连续 **10 秒**取不到行，每 64 行读一次时钟；实测把 `SLEEP(12)` 夹在第 500 行得到 `gap=12.000s` 且这 12 秒记为 `write` 而不是 `first_row`）、`slow insert batch`（**单批**超过 **5 秒**，带 `rows`/`bytes`/`duration`；实测触发器每行 `SLEEP(0.002)`、`--batch-size 5000` 记 `duration=10.430s`，而同样的数据用默认 `--batch-size 1000` 分成 5 批各约 2 秒就不告警）、`slow commit`（单次提交超过 **5 秒**，带 `session`/`rows`/`duration`）。
 
-版本横幅（`imex starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后是配置参数快照（`export/import config`，由 `NewExporter`/`NewImporter` 在**建立连接之前**打印，因此连不上服务端时也看得到参数；原先重复它的 `export started`/`import started` 已删除）。快照只打印**所选 `--format` 真正读取的字段**，判据与用法错误的拒绝逻辑、`--help` 里的范围标记同出自一张登记表 `internal/config/formatscope.go`：`-f sql` 不再打印 `char_del`/`col_del`/`row_del`/`escape`/`timestamp_fmt` 这些被忽略的 DEL 布局，`-f del` 不再打印 `statement_size`/`no_create`/`extended_insert`，`-f parquet` 两类都不打印（实测：`export` 的回显改动前对三种格式是**逐字节相同**的同一套 26 项，现在分别是 25/20/15；`import` 现在是 29/20/20）。字段按「连接 → 输入输出 → 并行与流水线 → 字符集 → 该格式的专属布局 → 日志」排列，且补齐了 DEL 写入器一直在读、快照却从未打印的 `date_fmt`、`no_escape`、`no_char_del` 三项；`hex_blob` 打印的是**生效值**（`--hex-blob`/`--no-hex-blob` 都没给时由字符集决定），与写入器用的是同一个判定函数；唯一例外是 `imex version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `imex version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**，事件词固定为 `config`/`progress`/`completed`/`aborted`/`failed`（`started` 只出现在版本横幅 `imex starting` 里；如 `export config`、`shard export completed`、`insert batch failed`、`worker completed`），大小写敏感的一条 grep 就能覆盖全链路；同一事件只输出一行。默认 `console` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `IMEX_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计与 ERROR 记录；`--messages` 文件同样没有进度行（早期版本让消息文件按 DB2 格式继续记 `SQL3105N`，该例外已随报告一起取消）。
+版本横幅（`imex starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后是配置参数快照（`export/import config`，由 `NewExporter`/`NewImporter` 在**建立连接之前**打印，因此连不上服务端时也看得到参数；原先重复它的 `export started`/`import started` 已删除）。快照只打印**所选 `--format` 真正读取的字段**，判据与用法错误的拒绝逻辑、`--help` 里的范围标记同出自一张登记表 `internal/config/formatscope.go`：`-f sql` 不再打印 `char_del`/`col_del`/`row_del`/`escape`/`timestamp_fmt` 这些被忽略的 DEL 布局，`-f del` 不再打印 `statement_size`/`no_create`/`extended_insert`，`-f parquet` 两类都不打印（实测：`export` 的回显改动前对三种格式是**逐字节相同**的同一套 26 项，现在分别是 25/20/15；`import` 现在是 29/20/20）。字段按「连接 → 输入输出 → 并行与流水线 → 字符集 → 该格式的专属布局 → 日志」排列，且补齐了 DEL 写入器一直在读、快照却从未打印的 `date_fmt`、`no_escape`、`no_char_del` 三项；`hex_blob` 打印的是**生效值**（`--hex-blob`/`--no-hex-blob` 都没给时由字符集决定），与写入器用的是同一个判定函数；唯一例外是 `imex version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `imex version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**：主要事件词是 `config`/`progress`/`completed`/`aborted`/`failed`（`started` 只出现在版本横幅 `imex starting` 里；如 `export config`、`shard export completed`、`insert batch failed`、`worker completed`），另有 `retrying`/`executing`/`applied`/`derived` 等状态词，诊断告警则以 `slow` 开头（`slow insert batch`、`slow commit`）或以 `stalled` 结尾（`export scan stalled`），大小写敏感的一条 grep 就能覆盖全链路；配置、进度、完成、中止每次运行至多一条，慢批与扫描停顿按发生次数各一条。默认 `console` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `IMEX_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计、WARN 告警与 ERROR 记录；`--messages` 文件同样没有进度行（早期版本让消息文件按 DB2 格式继续记 `SQL3105N`，该例外已随报告一起取消）。
 
 `--messages` / `-m` 的文件内容**就是本次运行的命令行日志**，并且是它唯一的目的地：一条记录一个物理行，版本横幅是首行（文件在根命令打印横幅之前打开），`export/import config`（建连接之前）、定时进度、WARN 告警、`completed` 统计与收尾的 `command failed` 都在里面，stdout 与 stderr 一行也不打印；`--log-level`、`--log-format` 一样作用于文件，退出码不受影响（0 成功、1 运行时错误、2 用法错误），脚本照样能判断成败。实测同一条注定失败的导出：带 `-m` 时 stdout/stderr 均 0 字节、文件 5 条记录、退出 1，而不带 `-m` 那次的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同。两类例外：未知选项在文件打开前就失败，错误只上 stderr 且不建文件；`-m` 路径无法创建时 `failed to create message file <path>: ...` 也只上 stderr。`--help` 与 `-m` 同时给不产生文件。早期版本按 DB2 LOAD/EXPORT 风格另写一份 `SQL3104N/3105N/3107N/3109N/3110N` 报告，那份重复的记录与 `MessageWriter` 已整体删除，告警与失败只保留一条日志记录。会出现 WARN 的场景：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调、无表头文件被当作表头丢弃首行、`insert_update` 命中无唯一键的表；另有三个诊断阈值告警：扫描 10 秒取不到行（`export scan stalled`）、单批 INSERT 超过 5 秒（`slow insert batch`）、单次 COMMIT 超过 5 秒（`slow commit`）。
 
@@ -817,7 +817,7 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **二进制列**：DEL/SQL 在 `--hex-blob` 生效时写 `0x…`，空值写 `0x`；Parquet 存原始 BYTE_ARRAY，不做 UTF-8 标注。
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
-## 修复记录（v0.5.2）
+## 修复记录（v1.0.0）
 
 对照需求文档的系统自测发现以下缺陷，均已修复并通过端到端回归（HEX 字节指纹 + 单位/整表往返校验）：
 
@@ -872,6 +872,9 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | 其余 19 个选项的帮助同样过长（`export --statement-size` 196 字节、`import --statement-size` 239、`import --pipeline-buffer` 205、`--session-var` 191、`import --mode` 189…），120 列终端折行 | 逐条精简为一行可读，只改文案：帮助行上界 root 159→114、export 196→117、import 239→116（超过 118 字节的行 0 条），细节留在需求文档选项表；顺带把 `import --batch-size` 的 `reader->writer hand-off batch` 改为 `Rows per INSERT batch`（导入侧它就是每条 INSERT 的行数）。行为、默认值、退出码不变，详见变更记录 84 |
 | 帮助文案的长度上限只存在于 82–84 那三次改动里，没有写成规则，下一个新选项照样会写成长句并把自动后缀挤下屏幕 | 把规则写进需求文档 **3.5 帮助文案长度规范**：上限 **118 字节/行**（含选项名列、缩进、pflag 的 `(default …)` 与作用域注册表的 `(only with …)`/`(not with …)`，留 2 列余量）；帮助只写“选项做什么、边界在哪”，实测数字与设计说明留在选项表；自动后缀不得手写、不得为省长度删除；判定命令为 `for c in "--help" "export --help" "import --help"; do ./bin/imex $c 2>&1 \| awk 'length($0) > 118'; done`，输出必须为空。判定命令对 v0.5.1 二进制输出为空，三份 help 上界 114 / 117 / 116 字节。纯文档轮，无行为变化，详见变更记录 85 |
 | 有人会问「既然要读 Parquet，为什么不用 DuckDB」——评估过一个 `imex parquet sql` 子命令（一次性执行 + readline 交互 shell，复用 `imex` 的 `-h/-u/-p` 与 `--file alias=path`），让 `imex` 兼职当 DuckDB CLI 用 | **评估后搁置，不集成**：接入 `go-duckdb`（引擎 v1.4.1）后 linux/amd64 产物从 22.2 MB 涨到 75.2 MB（+238%），UPX `-1` 后仍有 32.7 MB（纯 Go 版 9.2 MB），启动多付约 100 ms 自解压；且必须 cgo，与「单静态二进制 + Windows 免 cgo 交叉编译」冲突，Windows 只能出 stub。能力上也只做到 DuckDB CLI 的 16/66 个点命令、7/18 种输出模式，参数面结构不同，做不到「和原生一样」。spike 整体回退、归档在仓库外 `/data/work/duckdb-spike/`（含可逆补丁与还原步骤），五个契约面零变化；要读 Parquet 仍用现有 `import -f parquet`。详见需求文档变更记录 86 |
+| 日志只有端到端 `duration`，出问题看不出时间花在连接、元数据、首行等待、扫描、解析、发送还是落盘 | ① 导出 `export completed` 增加 `connect`/`setup`/`first_row`/`write`/`finish` 五段（`connect` 发生在 `Export` 之前，不计入 `duration`；为计时 `finish` 把文件显式 `Close` 提到汇总之前），`parallel export completed` 增加 `connect`/`setup`，`shard export completed` 带 `rows`/`duration`/`rate`（含被前序分片反压的时间）；② 导入 `import completed` 增加 `connect`/`setup`/`header`/`read`/`send`/`wait_empty`/`wait_full`——`read+wait_full` 是读协程视角、`send+wait_empty` 是写侧视角，两组各自接近 `duration`，不是四段相加，并行汇总与 `worker completed` 同理；③ 新增三条阈值 WARN：`export scan stalled`（扫描连续 10 秒取不到行，每 64 行读一次时钟，避免计时器进入最热循环）、`slow insert batch`（**单批** >5 秒，带 `rows`/`bytes`，并行带 `thread`）、`slow commit`（单次 COMMIT >5 秒，在 `writeSession.commit` 一处收口），阈值与检查间隔为包内常量，不加 flag、不加 env。实测（MariaDB 10.6.23，20 万行）：导出 `duration=0.160s connect=0.001s setup=0.000s first_row=0.004s write=0.152s finish=0.003s`，导入 `read=0.409s send=1.391s wait_empty=0.002s wait_full=1.364s`；`SLEEP(12)` 扫描得到 `export scan stalled rows_so_far=448 gap=12.000s` 且这 12 秒落在 `write`，每行 `SLEEP(0.002)` 配 `--batch-size 5000` 得到 `slow insert batch rows=5000 bytes=937869 duration=10.430s`（同数据默认 `--batch-size 1000` 分 5 批各约 2 秒**不告警**，说明阈值按单批判定），`slow commit` 本地未能在实库触发、门槛与字段顺序由单测覆盖。五面契约零变化；`^func Test` 270→272、`_test.go` 48→49，帮助超 118 字节仍 0 行。详见需求文档变更记录 87 |
+| 文档与实现不一致：测试资产计数、日志命名规则、`--quiet` 的保留项，以及 `docs/cli-oracle.txt` 里从未折进基线的帮助改写 | ① 计数按实测改为 49 个 `_test.go` / 272 个 `Test*`（`internal/common` 11/48、`internal/import` 13/57、集成 `live_mysql_test.go` 12）；② 命名规则由“事件词固定为五个”改为“主要事件词是……”，补上 `retrying`/`executing`/`applied`/`derived` 与 `slow …`/`… stalled`，并说明阈值告警按发生次数各一行；③ `--quiet` 保留项统一为“配置、结束统计、WARN 与 ERROR”；④ `## export` 基线按当前帮助重新生成（吸收 2026-10-29 遗留的 15 行改写），`## import`/`## root` 的冻结快照差异实测 22/5 行，新增 note 14。行为零变化，详见需求文档变更记录 88 |
+| `--progress-interval` 的下限 10ms 会让进度行跟着批次走：实测 200,000 行导入分 200 批、发送段 1.391s（约 7ms 一批），10ms 档等于每批一条；更小的值更糟，`1ns` 曾有 6400 行导出打出 1355 条进度（日志 175,557 字节） | 下限提到 **100ms**（参数仍是 duration，`100ms`/`500ms`/`5s` 都合法，默认 5s 不变）：`10ms`/`1ms` 退出 **2** 并报 `invalid --progress-interval 10ms: must be >= 100ms`，`0`/负值仍是 `must be > 0`；100ms 档实测 262,144 行导出 0.18s 打 1 条、六行 `SLEEP(0.05)` 查询 0.301s 打 3 条。拒绝此前合法的取值属不兼容变更，按档位表取 **X+1**，版本由 0.5.3 升至 **1.0.0**；`## export` 基线重新生成（88 行，diff 为空）。详见需求文档变更记录 89 |
 
 ## 项目结构
 
@@ -905,6 +908,7 @@ imex/
 │   │   ├── pool.go              # 连接池老化（ConnMaxIdleTime / ConnMaxLifetime）
 │   │   ├── usage.go             # 用法错误分类（退出码 2）
 │   │   ├── log.go               # 日志模块（console/text 两种格式、版本信息、启动日志）
+│   │   ├── diag.go              # 诊断辅助（阈值告警 WarnIfSlow、扫描停顿 StallWatch）
 │   │   ├── stats.go             # 吞吐统计、速率计算与定时进度计时器（停止时排空在写的记录）
 │   │   ├── password.go          # 密码加密/解密（PBKDF2-HMAC-SHA256 派生 + AES-256-GCM）
 │   │   └── detect.go            # 服务端 max_connections 读取（并行 worker 上限告警）
@@ -915,11 +919,13 @@ imex/
 │   │   ├── sql_writer.go        # SQL 格式写入器（默认每行一条 INSERT、`--extended-insert` 才按字节攒批、快速路径优化）
 │   │   ├── parquet_writer.go    # Parquet 格式写入器（列式存储）
 │   │   ├── shard.go             # 分片逻辑（主键/唯一键检测）
+│   │   ├── diag.go              # 导出侧诊断常量（扫描停顿 10 秒、分片速率换算）
 │   │   └── sql_parser.go        # SQL 解析器（JOIN 检测）
 │   └── import/
 │       ├── importer.go          # 导入调度器（单线程流水线、并行 worker、列映射、攒批）
 │       ├── configlog.go         # 配置回显（按 --format 过滤 DEL 字段）
 │       ├── batchcap.go          # 攒批上限（max_allowed_packet 字节预算 + --statement-size 压低 + 65535 占位符）
+│       ├── diag.go              # 导入侧诊断常量（慢批/慢提交 5 秒、批字节估算、worker 速率）
 │       ├── session.go           # 写入会话（事务、重连回放、空闲提交、commit-count）
 │       ├── record_reader.go     # 无上限记录读取器（自定义 SplitFunc，零拷贝别名）
 │       ├── del_reader.go        # DEL 格式读取器

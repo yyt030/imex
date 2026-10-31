@@ -224,9 +224,10 @@ func validateMode(mode string, format string) error {
 // validateProgressInterval checks the periodic progress cadence. A non-positive
 // value would make time.NewTicker panic and a zero default would silently disable
 // the heartbeat, so both are refused; the lower bound exists because the ticker
-// only fires as fast as its consumer drains it, and an interval below a few
-// milliseconds turns the progress record into an unbounded log-writing loop
-// (measured: 780 records and 132 KB of log from a 10-row, 4ms import at 1ns).
+// only fires as fast as its consumer drains it, and an interval below a batch
+// turns the progress record into a per-batch log line (measured: 200,000 rows
+// import in 200 batches, ~7ms each; the 1ns case wrote 780 records and 132 KB
+// for a 10-row, 4ms import).
 func validateProgressInterval(d time.Duration) error {
 	if d <= 0 {
 		return common.Usagef("invalid --progress-interval %s: must be > 0", d)

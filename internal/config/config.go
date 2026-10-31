@@ -84,13 +84,13 @@ const DefaultProgressInterval = 5 * time.Second
 
 // MinProgressInterval is the lowest --progress-interval the CLI accepts. The
 // record is one line of ~170 bytes, and a ticker only fires as fast as its
-// consumer can drain it, so a nanosecond-scale interval is not "very frequent
-// progress" but an unbounded write loop: a 10-row import that took 4ms produced
-// 780 progress records and 132 KB of log at --progress-interval 1ns (8 records,
-// 1.6 KB at 1ms). A long run at that setting writes gigabytes. The floor is well
-// below any interval that is useful as a heartbeat and above the rate at which
-// the log can be written.
-const MinProgressInterval = 10 * time.Millisecond
+// consumer can drain it: at --progress-interval 1ns a 10-row import that took
+// 4ms produced 780 progress records and 132 KB of log (8 records, 1.6 KB at
+// 1ms), so the option that spaces a log could also delete it. 100ms keeps the
+// heartbeat slower than the work it reports: a 200,000-row import runs roughly
+// 200 batches in 1.4s, i.e. ~7ms per batch, so a 10ms floor could put one
+// progress line next to every batch (measured on the local MariaDB test bed).
+const MinProgressInterval = 100 * time.Millisecond
 
 // DelModifier holds DEL format modifier options.
 type DelModifier struct {

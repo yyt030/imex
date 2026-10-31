@@ -787,7 +787,9 @@ func (e *liveEnv) growTable(t *testing.T, table string, times int) {
 // shipped 5 s, and the last phase drives the compiled binary to prove the flag
 // actually reaches the ticker. The library path may still be driven below the CLI
 // floor, but argv may not: validation refuses anything under
-// config.MinProgressInterval, so the CLI leg uses the 10 ms minimum.
+// config.MinProgressInterval, so the CLI leg runs at the 100 ms floor and slows
+// the query down with SLEEP(0.05) per row (six rows = ~300 ms) so the ticker has
+// to fire at least once.
 func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
 	env := newCLILive(t)
 	dir := t.TempDir()
@@ -831,8 +833,9 @@ func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
 	// longer a "export started" line repeating part of it).
 	cliLog := filepath.Join(dir, "cli-export.log")
 	cliFile := filepath.Join(dir, "cli-order.del")
-	out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "del", "-o", cliFile,
-		"--log-level", "info", "--progress-interval", "10ms", "--messages", cliLog)
+	out, code := env.runExportCLI(t, "-q", "SELECT SLEEP(0.05) AS s, id FROM `"+src+"` WHERE id <= 6",
+		"-f", "del", "-o", cliFile,
+		"--log-level", "info", "--progress-interval", "100ms", "--messages", cliLog)
 	if code != 0 {
 		t.Fatalf("CLI export with --progress-interval: exit %d\n%s", code, out)
 	}
@@ -841,7 +844,7 @@ func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
 	if strings.Contains(text, " started ") {
 		t.Errorf("the run still logs a start record next to the config echo:\n%s", text)
 	}
-	if !strings.Contains(text, "progress_interval=10ms") {
+	if !strings.Contains(text, "progress_interval=100ms") {
 		t.Errorf("config echo does not carry the resolved cadence:\n%s", text)
 	}
 }
