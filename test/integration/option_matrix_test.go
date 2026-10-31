@@ -973,6 +973,7 @@ func TestOptionMatrixSliceOptions(t *testing.T) {
 // command log itself, in the same records, order and layout the run would have
 // printed — not the DB2-style SQL3xxxN report the option used to write — and it
 // is the log's only destination, so the terminal stays silent for the whole run.
+// Like DB2's MESSAGES file, it is appended to rather than truncated.
 func TestOptionMatrixMessages(t *testing.T) {
 	env := newCLILive(t)
 	src, _ := env.makePair(t, "msg")
@@ -1008,8 +1009,9 @@ func TestOptionMatrixMessages(t *testing.T) {
 			if len(lines) == 0 {
 				t.Fatalf("message file is empty")
 			}
-			// The version banner is the first record of a run, so it must be the
-			// file's first line: the file starts where the run starts.
+			// The version banner is the first record of a run, so on a fresh file
+			// it is the file's first line; the append case below pins the other
+			// shape, where older runs already occupy the start of the file.
 			if !strings.Contains(lines[0], "imex starting") || !strings.Contains(lines[0], "command=export") {
 				t.Errorf("first line is not the banner: %q", lines[0])
 			}
@@ -1113,6 +1115,35 @@ func TestOptionMatrixMessages(t *testing.T) {
 		// the file is what the operator reads.
 		if strings.TrimSpace(out) != "" {
 			t.Errorf("a failed run with -m must still keep the terminal silent, got:\n%s", out)
+		}
+	})
+
+	t.Run("追加写", func(t *testing.T) {
+		msg := filepath.Join(env.dir, "append.log")
+		const previous = "previous run\n"
+		if err := os.WriteFile(msg, []byte(previous), 0644); err != nil {
+			t.Fatalf("seed message file: %v", err)
+		}
+		out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`",
+			"-f", "del", "-o", filepath.Join(env.dir, "append.del"),
+			"-m", msg, "--log-level", "info")
+		if code != 0 {
+			t.Fatalf("export failed: exit %d\n%s", code, out)
+		}
+		text := readFile(t, msg)
+		if !strings.HasPrefix(text, previous) {
+			t.Errorf("-m must append, not truncate, the existing records:\n%s", text)
+		}
+		added := strings.TrimPrefix(text, previous)
+		lines := splitLines(added)
+		if len(lines) == 0 || !strings.Contains(lines[0], "imex starting") {
+			t.Errorf("the appended run must start with its banner: %q", added)
+		}
+		if !strings.Contains(added, "export completed") {
+			t.Errorf("the appended run is incomplete:\n%s", added)
+		}
+		if strings.TrimSpace(out) != "" {
+			t.Errorf("an appending run must still keep the terminal silent, got:\n%s", out)
 		}
 	})
 }

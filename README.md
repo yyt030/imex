@@ -17,7 +17,7 @@
 - **无包裹符模式**：支持导入导出不使用字符串定界符的纯分隔符文件
 - **OceanBase 兼容**：MySQL 模式共用同一套协议、语句与文件格式，不做服务端类型探测（探测的唯一消费者随 `LOCK TABLES` 一起删除，见变更记录 72/73）
 - **云环境连接加固**：驱动层 socket 超时 + 连接池 TTL + 事务空闲提交 + 瞬断自动重试，规避 LB/NAT 静默回收
-- **日志文件**：`--messages` / `-m` 把本次运行的命令行日志整体交给该文件（终端不再打印）
+- **日志文件**：`--messages` / `-m` 把本次运行的命令行日志追加到该文件（终端不再打印；文件可保留多次运行的记录）
 - **可调进度节奏**：`--progress-interval` 控制定时进度日志的间隔（默认 5 秒），`--quiet` 则完全不打印进度记录
 - **流式处理**：支持 GB 级大文件，不在内存中缓存全量数据
 - **批量优化**：导入使用批量 INSERT（1000 行/批次），提升写入性能
@@ -241,7 +241,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--format` | `-f` | 输出格式（del/sql/parquet） | `del` |
 | `--query` | `-q` | SQL SELECT 语句（支持 OceanBase / MySQL 优化器 hint），与 `--query-file` 互斥 | 无 |
 | `--query-file` | | 从该文件读取 SQL SELECT 语句（自动去掉首尾空白与结尾分号），与 `-q` 互斥；两者必须恰好给一个 | 空 |
-| `--messages` | `-m` | 把全部日志记录写入该文件，终端不再打印（文件即命令行日志本身） | 空 |
+| `--messages` | `-m` | 把全部日志记录**追加**到该文件，终端不再打印（文件内容就是命令行日志本身；已存在的内容保留） | 空 |
 | `--progress-interval` | | 定时进度日志的间隔（必须 > 0 且 ≥ 100ms，否则用法错误退出码 2） | `5s` |
 | `--no-overwrite` | | 拒绝覆盖已存在的输出文件（默认允许覆盖；原名 `--no-replace`，已改名且不留别名） | `false` |
 | `--threads` | | 并行导出任务数（1=不并行；上限 256）。每个 worker 全程一条连接，worker 数 + 1 超过服务端 `@@max_connections` 时在数据移动前记一条 `warn` | `1` |
@@ -309,7 +309,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 | `--mode` | `-M` | 导入模式 | `insert` |
 | `--table` | `-t` | 目标表名（insert/replace/insert_update 必填；create 模式可省略，自动取 SQL 文件中 CREATE 语句的表名，指定则作为新表名重写） | 无 |
 | `--columns` | `-c` | 列映射（见下方说明） | 空 |
-| `--messages` | `-m` | 把全部日志记录写入该文件，终端不再打印（文件即命令行日志本身） | 空 |
+| `--messages` | `-m` | 把全部日志记录**追加**到该文件，终端不再打印（文件内容就是命令行日志本身；已存在的内容保留） | 空 |
 | `--progress-interval` | | 定时进度日志的间隔（必须 > 0 且 ≥ 100ms，否则用法错误退出码 2） | `5s` |
 | `--threads` | | 并行导入任务数（1=不并行；上限 256）。worker 数 + 1 超过服务端 `@@max_connections`、或 `--threads` 让重放缓冲总量（每 worker 一份，下限 8 MiB）超过进程预算时，在任何数据移动之前各记一条 `warn` | `1` |
 | `--batch-size` | | 读→写交接每批的行数（单线程与并行导入均生效；实际还受字节上限与占位符上限约束，见下） | `1000` |
@@ -407,7 +407,7 @@ imex list <object|缩写> [连接选项] [查询选项] [-f table]
 | `--all` | 不给 `-D` 时也包含系统库 | `false` |
 | `--type` | `tables` 选 `base`/`view`/`all`；`routines` 选 `procedure`/`function`/`all` | `base` / `all` |
 | `--table` | `-t`，`columns`/`indexes` 必填，`triggers` 用作过滤 | 空 |
-| `--messages` | `-m`，把日志全部写入该文件，stderr 保持安静 | 空 |
+| `--messages` | `-m`，把日志全部**追加**写入该文件，stderr 保持安静 | 空 |
 
 `table` 是唯一的输出格式：缓冲全部行后按 rune 宽度对齐，列间两个空格，NULL 输出大写 `NULL`（与字面字符串 `NULL` 无法区分），值里的反斜杠、制表符、回车、换行转成 `\\`、`\t`、`\r`、`\n`。空结果不算错误：退出码 0，仍打印表头。
 
@@ -717,7 +717,7 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
 
 版本横幅（`imex starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后是配置参数快照（`export/import config`，由 `NewExporter`/`NewImporter` 在**建立连接之前**打印，因此连不上服务端时也看得到参数；原先重复它的 `export started`/`import started` 已删除）。快照只打印**所选 `--format` 真正读取的字段**，判据与用法错误的拒绝逻辑、`--help` 里的范围标记同出自一张登记表 `internal/config/formatscope.go`：`-f sql` 不再打印 `char_del`/`col_del`/`row_del`/`escape`/`timestamp_fmt` 这些被忽略的 DEL 布局，`-f del` 不再打印 `statement_size`/`no_create`/`extended_insert`，`-f parquet` 两类都不打印（实测：`export` 的回显改动前对三种格式是**逐字节相同**的同一套 26 项，现在分别是 25/20/15；`import` 现在是 29/20/20）。字段按「连接 → 输入输出 → 并行与流水线 → 字符集 → 该格式的专属布局 → 日志」排列，且补齐了 DEL 写入器一直在读、快照却从未打印的 `date_fmt`、`no_escape`、`no_char_del` 三项；`hex_blob` 打印的是**生效值**（`--hex-blob`/`--no-hex-blob` 都没给时由字符集决定），与写入器用的是同一个判定函数；唯一例外是 `imex version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `imex version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**：主要事件词是 `config`/`progress`/`completed`/`aborted`/`failed`（`started` 只出现在版本横幅 `imex starting` 里；如 `export config`、`shard export completed`、`insert batch failed`、`worker completed`），另有 `retrying`/`executing`/`applied`/`derived` 等状态词，诊断告警则以 `slow` 开头（`slow insert batch`、`slow commit`）或以 `stalled` 结尾（`export scan stalled`），大小写敏感的一条 grep 就能覆盖全链路；配置、进度、完成、中止每次运行至多一条，慢批与扫描停顿按发生次数各一条。默认 `console` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。加 `--quiet`（或 `IMEX_QUIET=1`）可**禁止定时进度日志**，仅保留配置、结束统计、WARN 告警与 ERROR 记录；`--messages` 文件同样没有进度行（早期版本让消息文件按 DB2 格式继续记 `SQL3105N`，该例外已随报告一起取消）。
 
-`--messages` / `-m` 的文件内容**就是本次运行的命令行日志**，并且是它唯一的目的地：一条记录一个物理行，版本横幅是首行（文件在根命令打印横幅之前打开），`export/import config`（建连接之前）、定时进度、WARN 告警、`completed` 统计与收尾的 `command failed` 都在里面，stdout 与 stderr 一行也不打印；`--log-level`、`--log-format` 一样作用于文件，退出码不受影响（0 成功、1 运行时错误、2 用法错误），脚本照样能判断成败。实测同一条注定失败的导出：带 `-m` 时 stdout/stderr 均 0 字节、文件 5 条记录、退出 1，而不带 `-m` 那次的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同。两类例外：未知选项在文件打开前就失败，错误只上 stderr 且不建文件；`-m` 路径无法创建时 `failed to create message file <path>: ...` 也只上 stderr。`--help` 与 `-m` 同时给不产生文件。早期版本按 DB2 LOAD/EXPORT 风格另写一份 `SQL3104N/3105N/3107N/3109N/3110N` 报告，那份重复的记录与 `MessageWriter` 已整体删除，告警与失败只保留一条日志记录。会出现 WARN 的场景：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调、无表头文件被当作表头丢弃首行、`insert_update` 命中无唯一键的表；另有三个诊断阈值告警：扫描 10 秒取不到行（`export scan stalled`）、单批 INSERT 超过 5 秒（`slow insert batch`）、单次 COMMIT 超过 5 秒（`slow commit`）。
+`--messages` / `-m` 把命令行日志**追加**到该文件（与 DB2 的 `MESSAGES` 一致），文件是这次运行日志的唯一目的地：一条记录一个物理行，本次运行的第一条记录一定是版本横幅（文件在根命令打印横幅之前打开，所以它紧接在已有内容之后，而不是文件的绝对首行），`export/import config`（建连接之前）、定时进度、WARN 告警、`completed` 统计与收尾的 `command failed` 都在里面，stdout 与 stderr 一行也不打印；`--log-level`、`--log-format` 一样作用于文件，退出码不受影响（0 成功、1 运行时错误、2 用法错误），脚本照样能判断成败。已有内容不会被删除，多次运行按各自的横幅分段；工具不做截断、轮转或清理，需要每次独立文件请换路径或先自行删除。实测同一条注定失败的导出：**新文件**下带 `-m` 时 stdout/stderr 均 0 字节、文件 5 条记录、退出 1，而不带 `-m` 那次的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同；先写入 `previous run` 再跑同一命令，旧行仍在，新记录从横幅开始追加。两类例外：未知选项在文件打开前就失败，错误只上 stderr 且不建文件；`-m` 路径无法创建时 `failed to create message file <path>: ...` 也只上 stderr。`--help` 与 `-m` 同时给不产生文件。早期版本按 DB2 LOAD/EXPORT 风格另写一份 `SQL3104N/3105N/3107N/3109N/3110N` 报告，那份重复的记录与 `MessageWriter` 已整体删除，告警与失败只保留一条日志记录。会出现 WARN 的场景：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调、无表头文件被当作表头丢弃首行、`insert_update` 命中无唯一键的表；另有三个诊断阈值告警：扫描 10 秒取不到行（`export scan stalled`）、单批 INSERT 超过 5 秒（`slow insert batch`）、单次 COMMIT 超过 5 秒（`slow commit`）。
 
 ### 错误堆栈开关
 
@@ -956,6 +956,13 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | 文档与实现不一致：测试资产计数、日志命名规则、`--quiet` 的保留项，以及 `docs/cli-oracle.txt` 里从未折进基线的帮助改写 | ① 计数按实测改为 49 个 `_test.go` / 272 个 `Test*`（`internal/common` 11/48、`internal/import` 13/57、集成 `live_mysql_test.go` 12）；② 命名规则由“事件词固定为五个”改为“主要事件词是……”，补上 `retrying`/`executing`/`applied`/`derived` 与 `slow …`/`… stalled`，并说明阈值告警按发生次数各一行；③ `--quiet` 保留项统一为“配置、结束统计、WARN 与 ERROR”；④ `## export` 基线按当前帮助重新生成（吸收 2026-10-29 遗留的 15 行改写），`## import`/`## root` 的冻结快照差异实测 22/5 行，新增 note 14。行为零变化，详见需求文档变更记录 88 |
 | `--progress-interval` 的下限 10ms 会让进度行跟着批次走：实测 200,000 行导入分 200 批、发送段 1.391s（约 7ms 一批），10ms 档等于每批一条；更小的值更糟，`1ns` 曾有 6400 行导出打出 1355 条进度（日志 175,557 字节） | 下限提到 **100ms**（参数仍是 duration，`100ms`/`500ms`/`5s` 都合法，默认 5s 不变）：`10ms`/`1ms` 退出 **2** 并报 `invalid --progress-interval 10ms: must be >= 100ms`，`0`/负值仍是 `must be > 0`；100ms 档实测 262,144 行导出 0.18s 打 1 条、六行 `SLEEP(0.05)` 查询 0.301s 打 3 条。拒绝此前合法的取值属不兼容变更，按档位表字面取 **X+1**，版本由 0.5.3 升至 **1.0.0**；`## export` 基线重新生成（88 行，diff 为空）。详见需求文档变更记录 89。**注（2026-10-31 用户裁决）：本行按字面定为 X+1 的结论已纠正为 Y+1——版本号最终定为 0.6.0、X 保持 0；本地 `v1.0.0` tag 已删除，纠正提交上先打 `v1.1.0`、同日按用户二次指令改打 `v0.6.0`（详见变更记录 90、91）。** |
 | 上一轮把 `--progress-interval` 下限提到 100ms 判为 X+1、版本发成 1.0.0；用户复核裁定按 **Y+1** 计，且 X 不升 | 版本先纠正为 1.1.0，同日按用户二次指令定为 **0.6.0**（`Makefile` 首行 1.0.0 → 0.6.0，0.x 期第二位 +1），行为与 `99d289d` 完全一致；删除本地未 push 的 `v1.0.0` 与中间态 `v1.1.0`，在最终纠正提交上打附注 tag `v0.6.0`（尚未 push）。验证：`gofmt -l` 空、`go vet` 干净、七包 `-race` 全通过、真实库 **131 RUN / 0 SKIP / 0 FAIL**、`statementCapSlack` = 3、help 超 118 字节 0 行。详见需求文档变更记录 90、91 |
+
+## 修复记录（v0.7.0）
+
+以下为 `v0.6.0` 之后、随 `v0.7.0` 一起发布的记录：
+
+| 缺陷 | 修复 |
+|------|------|
 | 需要一个只读元数据入口查看库、表、视图、列、索引、触发器、例程与事件，此前只能另开客户端 | 新增 **`imex list`** 命令树（8 个对象）与 `internal/list` 包：查询全部走 `information_schema` + 占位符，结果只写 stdout、日志写 stderr，支持 `table`/`tsv`/`csv`/`jsonl` 四种固定格式与 `--no-col-names`/`--pattern`/`--all`/`--type`/`-t`；`-D` 仅 `columns`/`indexes` 必填，其余对象可选。实测 MariaDB：8 个对象、四种格式、空结果（退出 0、tsv 仅表头）、`--no-col-names`、`--pattern` 无匹配、`--messages` 的 stdout/stderr 分离全部符合；缺 `-D`/`-t`、未知对象、非法 `--format`/`--type` 退出 **2** 且错误只在 stderr；`jsonl` 用真正的 `null` 区分 SQL NULL 与字面 `"NULL"`。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **149 RUN / 0 SKIP / 0 FAIL**、`_test.go` 53 / `Test*` 300、`statementCapSlack` = 3、help 超 118 字节 0 行。`docs/cli-oracle.txt` 新增 `## list` 与 8 个叶子快照、重新基线 `## root`（note 15）。版本号本轮未动（仍 0.6.0），未提交/未打 tag/未打包。详见需求文档变更记录 92 |
 | `list` 的对象全名较长（`databases`/`tables`/`triggers`…），日常排查希望少打字 | 为 8 个对象注册**固定别名**：`d`/`db`/`dbs`、`t`/`tbl`/`tab`、`v`、`c`/`col`、`i`/`idx`、`tr`/`trg`、`r`/`rt`、`e`/`evt`；单字母 `t` 归 `tables`，`triggers` 用 `tr`。别名经 Cobra `Aliases` 注册，与全名共享同一套 flag、帮助、校验与退出码；`list db -f tsv` 与 `list databases -f tsv` 输出逐字节相同，`list col`/`list trg` 同样可用。别名唯一性由 `TestObjectAliasesAreUnique` 钉住，`cmd/list_test.go` 逐一解析 17 个别名。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **150 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 303、help 超 118 字节 0 行。`docs/cli-oracle.txt` 的 8 个叶子快照加入 `Aliases:` 块（note 16）。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 93 |
 | 上一行的 list 简写有单字母、双字母、三字母多种形式，不够统一 | 每个对象改为**恰好一个三字母简写**：`dbs`、`tbl`、`vws`、`col`、`idx`、`trg`、`rtn`、`evt`。旧别名（`d`/`db`/`t`/`v`/`c`/`i`/`tr`/`r`/`e` 等）不再接受，`imex list db` 按未知对象退出 2。别名仍经 Cobra `Aliases` 注册，与全名共享 flag、帮助、校验与退出码；`list dbs -f tsv` 与 `list databases -f tsv` 输出逐字节相同，`list col`/`list trg` 正常。测试新增「每个对象恰好一个、长度必须为 3」断言，`cmd/list_test.go` 逐一解析 8 个别名。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **150 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 303、help 超 118 字节 0 行。8 个叶子快照重新生成（note 17）。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 94 |
@@ -963,6 +970,7 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | `list` 的默认格式是 `table`（按宽度对齐），脚本消费必须先写 `-f tsv` | 默认改为 **`tsv`**：每行一条记录、列间一个制表符，首行默认是列名，值内的 `\`、制表符、CR、LF 转义为 `\\`、`\t`、`\r`、`\n`，SQL NULL 输出大写 `NULL`；需要区分 NULL 与字面 `"NULL"` 时用 `jsonl`。`table` 仍可用 `-f table` 选择。实测 `list databases` 与 `list databases -f tsv` 输出逐字节相同（`database\tcharset\tcollation` / `imex_test\tlatin1\tlatin1_swedish_ci`）。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **151 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 304、help 超 118 字节 0 行；8 个叶子快照重新生成（note 18）。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 96 |
 | `list` 支持 `table`/`tsv`/`csv`/`jsonl` 四种格式，用户要求只保留默认的 table | 移除 **tsv/csv/jsonl**，`table` 成为默认且唯一格式：`--format` 仍保留但只接受 `table`，其他值退出 **2**（`invalid --format %q: only table is supported`）；表渲染器缓冲全部行后按 rune 宽度对齐、列间两个空格，`\`、制表符、CR、LF 转义，NULL 输出大写 `NULL`；空结果仍输出表头、退出 0。实测：默认与 `-f table` 逐字节相同，`-f tsv` 退出 2 且 stdout 0 字节；批量导出脚本改按「两个及以上空格」切分对齐表格，在空表、3 行表与 `--all-databases` 下都取到正确表名（`--dry-run` 系统库命中 0，`--include-system` 后出现）。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **151 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 300、`statementCapSlack` = 3、help 超 118 字节 0 行；8 个叶子快照重新生成（note 19）。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 97 |
 | `tables` 的三字母别名 `tbl` 不够直观 | 改为 **`tab`**：更新 `internal/list/aliases.go` 与 Cobra 注册后，`imex list tab --help` 显示 `Aliases: tables, tab`；`tbl` 不再接受，`imex list tbl` 退出 **2** 并报 `unknown object "tbl"`。批量导出脚本改用 `imex list tab` 枚举表名，实测成功导出一张表（5 B，首行 `"id"`）。README 的简写表、示例、批量导出段与项目树，requirements 2.5/2.1.9 同步；`## list tables` 快照重新生成（note 20）。`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、真实库 **152 RUN / 0 SKIP / 0 FAIL**、`_test.go` 54 / `Test*` 300、`statementCapSlack` = 3、help 超 118 字节 0 行。版本仍 0.6.0，未提交/未打 tag/未打包。详见需求文档变更记录 98 |
+| `-m` 的日志文件每次运行都截断：`OpenLogFile` 用 `os.Create`，想保留历史只能每次换路径；用户要求按 DB2 `MESSAGES` 的默认改为追加 | 改为 `os.OpenFile` 的 `os.O_CREATE`/`os.O_WRONLY`/`os.O_APPEND`：文件不存在时创建，存在时保留旧内容，本次运行仍以版本横幅开始（但不再是文件绝对首行）；工具不轮转、不清理，多次运行按横幅分段，需要独立文件请换路径。新增 `TestLogFileAppendsToExistingFile`，集成新增“追加写”子用例；实测预置 `previous run` 后连跑两次 `list dbs -m`，旧行保留、2 条横幅、7 行、exit 0、stderr 0。帮助文本未改，`cli-oracle` 无新增差异；五面中仅面②（日志文件内容跨运行累积）变化，版本仍 0.6.0。详见需求文档变更记录 99 |
 
 
 ## 项目结构

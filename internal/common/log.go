@@ -84,11 +84,13 @@ func (s *sink) Write(p []byte) (int, error) {
 
 // OpenLogFile hands the command log over to path: every subsequent record goes
 // to the file instead of to stderr, until CloseLogFile gives it back. The file is
-// created and truncated, so the first record written after this call is its first
-// line — which is why the root command opens it before printing the version
-// banner. Opening a second file closes the first.
+// created when absent and appended to when it already exists, the way DB2's
+// MESSAGES option treats its file. Every run's first record is therefore the
+// version banner the root command writes right after this call, but that banner
+// starts a run inside the file rather than necessarily the file itself. Opening
+// a second file closes the first.
 func OpenLogFile(path string) error {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		return errors.Wrapf(err, "failed to create message file %s", path)
 	}

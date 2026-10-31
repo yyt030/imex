@@ -118,11 +118,12 @@ func init() {
 
 		// --messages/-m hands the command log over to a file: with it, every
 		// record goes to the file instead of to stderr, so the terminal stays
-		// silent and the file is the run's only account. Opened here — before the
-		// version banner, so the banner is the file's first line, and before RunE
-		// validation, so even a usage error is recorded. The exit code is
-		// unaffected, so a script can still tell success from failure without
-		// reading the file.
+		// silent and the file is the run's only account. The file is appended to,
+		// as DB2's MESSAGES option does; opening it here, before the version
+		// banner, makes the banner this run's first record even when older runs
+		// already occupy the file. It also happens before RunE validation, so even
+		// a usage error is recorded. The exit code is unaffected, so a script can
+		// still tell success from failure without reading the file.
 		if path := strings.TrimSpace(messagesPath); path != "" {
 			if err := common.OpenLogFile(path); err != nil {
 				return err

@@ -210,6 +210,53 @@ func TestLogFileTakesOverFromStderr(t *testing.T) {
 	}
 }
 
+// The --messages file is appended to, as DB2's MESSAGES option is: opening it
+// must preserve whatever an earlier run left there and add this run's records
+// after it.
+func TestLogFileAppendsToExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.log")
+	const previous = "previous run\n"
+	if err := os.WriteFile(path, []byte(previous), 0644); err != nil {
+		t.Fatalf("seed log file: %v", err)
+	}
+	logger := newLogger(config.LogLevelInfo, LogFormatConsole)
+
+	out := captureStderr(t, func() {
+		if err := OpenLogFile(path); err != nil {
+			t.Fatalf("open log file: %v", err)
+		}
+		defer func() {
+			if err := CloseLogFile(); err != nil {
+				t.Fatalf("close log file: %v", err)
+			}
+		}()
+		logger.Info("second run")
+	})
+
+	if out != "" {
+		t.Errorf("a run with --messages must print nothing to stderr: %q", out)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	text := string(data)
+	oldPos := strings.Index(text, previous)
+	if oldPos != 0 {
+		t.Errorf("the existing records were not preserved: %q", text)
+	}
+	newPos := strings.Index(text, "second run")
+	if newPos < 0 {
+		t.Errorf("the new record is missing: %q", text)
+	} else if newPos < len(previous) {
+		t.Errorf("the new record was written before the old ones: %q", text)
+	}
+	if n := strings.Count(text, "\n"); n != 2 {
+		t.Errorf("log file holds %d lines, want the old line plus the new record:\n%s", n, text)
+	}
+}
+
 // The handlers are built once, when the process starts, and stay in place for the
 // whole run — slog's text handler would otherwise have pinned the writer it was
 // given. Opening --messages later must therefore still reach both layouts.
@@ -300,8 +347,9 @@ func TestLogFileSerializesConcurrentRecords(t *testing.T) {
 }
 
 // A second --messages path replaces the first rather than silently keeping both
-// attached (the live tests re-point the sink per case).
-func TestLogFileReplaceKeepsOnlyTheNewest(t *testing.T) {
+// attached (the live tests re-point the sink per case). Each path keeps its own
+// records; nothing is replayed into the newly attached file.
+func TestLogFileReplacesAttachment(t *testing.T) {
 	first := filepath.Join(t.TempDir(), "first.log")
 	second := filepath.Join(t.TempDir(), "second.log")
 	logger := newLogger(config.LogLevelInfo, LogFormatConsole)
