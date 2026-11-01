@@ -24,6 +24,7 @@
 - **单行 SQL 布局**：`--format sql` 默认每行一条 INSERT，文件逐行可切分；攒批统一由导入侧按 `--batch-size` 完成，导出侧的 `--extended-insert` 只用于换取更小的文件体积
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
+- **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_SOCKET`/`IMEX_DATABASE` 为六个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -149,15 +150,15 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 
 **连接选项：**
 
-| 选项 | 短选项 | 说明 | 默认值 |
-|------|--------|------|--------|
-| `--host` | `-h` | 数据库主机地址 | `127.0.0.1` |
-| `--port` | `-P` | TCP/IP 端口 | `3306` |
-| `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明） | `root` |
-| `--password` | `-p` | 数据库密码 | 空 |
-| `--socket` | `-S` | UNIX 域套接字路径 | 空 |
-| `--database` | `-D` | 数据库名 | 空 |
-| `--session-var` | | 导出前设置的会话变量（`name=value`，可重复，见下方说明） | 空 |
+| 选项 | 短选项 | 说明 | 环境变量 | 默认值 |
+|------|--------|------|----------|--------|
+| `--host` | `-h` | 数据库主机地址 | `IMEX_HOST` | `127.0.0.1` |
+| `--port` | `-P` | TCP/IP 端口 | `IMEX_PORT` | `3306` |
+| `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明） | `IMEX_USER` | `root` |
+| `--password` | `-p` | 数据库密码 | `IMEX_PASSWORD` | 空 |
+| `--socket` | `-S` | UNIX 域套接字路径 | `IMEX_SOCKET` | 空 |
+| `--database` | `-D` | 数据库名 | `IMEX_DATABASE` | 空 |
+| `--session-var` | | 导出前设置的会话变量（`name=value`，可重复，见下方说明） | | 空 |
 | `--connect-timeout` | | 建连（TCP dial）超时，对应 JDBC `connectTimeout` | `5s` |
 | `--socket-read-timeout` | | 单次 socket 读超时，对应 JDBC `socketTimeout` | `300s` |
 | `--socket-write-timeout` | | 单次 socket 写超时（Go-only，无 JDBC 对应） | `300s` |
@@ -296,7 +297,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--host`/`--port`/`--user`/`--password`/`--socket`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），`--host`（或 `--socket`）、`--user`、`--password`、`--database` 为必填。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。
+连接选项与 export 子命令相同（`--host`/`--port`/`--user`/`--password`/`--socket`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），六个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」），`--host`（或 `--socket`）、`--user`、`--password`、`--database` 为必填。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。
 
 **导入选项：**
 
@@ -366,7 +367,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema` 并只把结果写到 stdout，日志与错误写到 stderr，因此可以直接接管道。连接选项与 export 相同，但 `--database` 对大多数对象**不是必填**；`--user`、`--password` 以及 `--host`（或 `--socket`）仍为必填。对象名就是子命令名：
+`list` 读取 `information_schema` 并只把结果写到 stdout，日志与错误写到 stderr，因此可以直接接管道。连接选项与 export 相同（含六个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--user`、`--password` 以及 `--host`（或 `--socket`）仍为必填。对象名就是子命令名：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -473,6 +474,32 @@ IMEX_PASSWORD=pass scripts/export-all-tables.sh --all-databases -u root
 口令可用 `-p` 或环境变量 `IMEX_PASSWORD`（`ENC:` 密文配合 `IMEX_KEY` 同样可用）。脚本逐表串行执行、单表失败后继续其余表，最后列出失败表并以退出码 1 结束；用法错误退出 2；`--dry-run` 只打印将要执行的命令，`--fail-fast` 在首个失败处停止，`--` 之后的参数原样追加给每次 `imex export`。
 
 脚本按对齐表格解析 `imex list` 的输出，以「两个及以上空格」切分列，因此表名/库名本身含连续空格时无法与列分隔区分；这类对象请改用 `--pattern` 分批导出或直接调用 `imex export`。
+
+### 连接信息来自环境变量
+
+export、import、`list` 三条需要连库的命令，六个连接选项都可以由环境变量供值，容器与 CI 里设一次即可，不必每条命令重复写地址与口令：
+
+```bash
+export IMEX_HOST=127.0.0.1 IMEX_PORT=3306 IMEX_USER=app IMEX_PASSWORD=pass IMEX_DATABASE=mydb
+imex export -q "SELECT * FROM users" -o /backup/users.del   # 一个连接参数都没写
+imex import -i /backup/users.del -t users
+imex list tables
+```
+
+| 选项 | 环境变量 | 空白取值 | 说明 |
+|------|----------|----------|------|
+| `--host` | `IMEX_HOST` | 按未设置 | 主机地址 |
+| `--port` | `IMEX_PORT` | 按未设置 | 端口；非数字或超出 1–65535 是用法错误、退出码 `2` |
+| `--user` | `IMEX_USER` | 按未设置 | 用户名 |
+| `--password` | `IMEX_PASSWORD` | 按未设置 | 口令；`ENC:` 密文照常按 `IMEX_KEY` 解密 |
+| `--socket` | `IMEX_SOCKET` | 按未设置 | UNIX 套接字路径 |
+| `--database` | `IMEX_DATABASE` | 按未设置 | 数据库名 |
+
+- **优先级：命令行显式写下的选项 > 环境变量 > 选项的内置默认值。** 判据是这个选项在命令行上被写过没有，不看取值，因此 `IMEX_USER=svc` 时 `imex export -u root` 用的仍是 `root`，`IMEX_PASSWORD=pass` 时 `imex export -p ""` 用的仍是空口令。
+- **空白等于没设**：变量不存在、为空、或去掉首尾空白后为空，都退回内置默认值；供值的变量两端空白会被去掉。
+- **socket 与 TCP 二选一时同样按优先级**：显式给了 `--socket` 就走 socket；显式给了 `--host` 或 `--port` 就走 TCP，此时 `IMEX_SOCKET` **被忽略**并记一条 WARN；两者都没写时 `IMEX_SOCKET` 优先于 `IMEX_HOST`（默认的 `127.0.0.1` 不代表用户要求 TCP）。
+- **日志只出现变量名，绝不出现值**：有变量供值时记 INFO `connection values supplied by environment variables="[IMEX_USER IMEX_PASSWORD]"`；被上面那条地址规则跳过时记 WARN `connection variable ignored variable=IMEX_SOCKET reason="…"`。这些记录同样进 `--messages` 文件，所以口令（含 `ENC:` 密文）不会落到任何产物里。
+- 这与四个全局开关的语义**相反**，是刻意的：`IMEX_ERROR_STACK`/`IMEX_ECHO_SQL_VALUES`/`IMEX_NO_SQL_TAG`/`IMEX_LOG_FORMAT` 是**覆盖**（布尔与布局只有「打开/选一个」这一维），连接变量是**默认值的来源**（让 env 压过命令行写下的地址，同一条命令就会连到操作者没写的那个库）。
 
 ### 并行导出
 
@@ -956,6 +983,14 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | 文档与实现不一致：测试资产计数、日志命名规则、`--quiet` 的保留项，以及 `docs/cli-oracle.txt` 里从未折进基线的帮助改写 | ① 计数按实测改为 49 个 `_test.go` / 272 个 `Test*`（`internal/common` 11/48、`internal/import` 13/57、集成 `live_mysql_test.go` 12）；② 命名规则由“事件词固定为五个”改为“主要事件词是……”，补上 `retrying`/`executing`/`applied`/`derived` 与 `slow …`/`… stalled`，并说明阈值告警按发生次数各一行；③ `--quiet` 保留项统一为“配置、结束统计、WARN 与 ERROR”；④ `## export` 基线按当前帮助重新生成（吸收 2026-10-29 遗留的 15 行改写），`## import`/`## root` 的冻结快照差异实测 22/5 行，新增 note 14。行为零变化，详见需求文档变更记录 88 |
 | `--progress-interval` 的下限 10ms 会让进度行跟着批次走：实测 200,000 行导入分 200 批、发送段 1.391s（约 7ms 一批），10ms 档等于每批一条；更小的值更糟，`1ns` 曾有 6400 行导出打出 1355 条进度（日志 175,557 字节） | 下限提到 **100ms**（参数仍是 duration，`100ms`/`500ms`/`5s` 都合法，默认 5s 不变）：`10ms`/`1ms` 退出 **2** 并报 `invalid --progress-interval 10ms: must be >= 100ms`，`0`/负值仍是 `must be > 0`；100ms 档实测 262,144 行导出 0.18s 打 1 条、六行 `SLEEP(0.05)` 查询 0.301s 打 3 条。拒绝此前合法的取值属不兼容变更，按档位表字面取 **X+1**，版本由 0.5.3 升至 **1.0.0**；`## export` 基线重新生成（88 行，diff 为空）。详见需求文档变更记录 89。**注（2026-10-31 用户裁决）：本行按字面定为 X+1 的结论已纠正为 Y+1——版本号最终定为 0.6.0、X 保持 0；本地 `v1.0.0` tag 已删除，纠正提交上先打 `v1.1.0`、同日按用户二次指令改打 `v0.6.0`（详见变更记录 90、91）。** |
 | 上一轮把 `--progress-interval` 下限提到 100ms 判为 X+1、版本发成 1.0.0；用户复核裁定按 **Y+1** 计，且 X 不升 | 版本先纠正为 1.1.0，同日按用户二次指令定为 **0.6.0**（`Makefile` 首行 1.0.0 → 0.6.0，0.x 期第二位 +1），行为与 `99d289d` 完全一致；删除本地未 push 的 `v1.0.0` 与中间态 `v1.1.0`，在最终纠正提交上打附注 tag `v0.6.0`（尚未 push）。验证：`gofmt -l` 空、`go vet` 干净、七包 `-race` 全通过、真实库 **131 RUN / 0 SKIP / 0 FAIL**、`statementCapSlack` = 3、help 超 118 字节 0 行。详见需求文档变更记录 90、91 |
+
+## 功能记录（v0.14.0）
+
+以下为 `v0.13.0` 之后、随 `v0.14.0` 一起发布的功能记录（本机 MariaDB 10.6.23，4C/8G；`imex_probe_xs.big3m` 3,000,000 行、latin1、`CHECKSUM TABLE` = 1113224199）：
+
+| 变更 | 实现 |
+|------|------|
+| 连库参数每轮都要手输：容器与 CI 里地址、端口、口令、库名在每条 `export`/`import`/`list` 上重复一遍，写进 shell 历史还容易泄明文 | `--host`/`--port`/`--user`/`--password`/`--socket`/`--database` 六个连接选项新增环境变量形式 `IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_SOCKET`/`IMEX_DATABASE`（不设配置文件，`cmd/conn_env.go` 单文件收口）。**优先级：命令行显式写下的选项 > 环境变量 > 选项内置默认值**，判据是 pflag 的 `Changed()` 而不是取值比较——按值比较的话 `IMEX_USER=svc` 会让 `imex export -u root` 悄悄改连 `svc`，而 `-u admin` 不变，同一选项因填的正好是默认值而换来源。**空白等于没设**，供值的变量两端空白被裁掉；`IMEX_PORT` 非数字或超出 1–65535 是用法错误、退出码 **2**（`invalid IMEX_PORT "abc": must be a port number between 1 and 65535`，在建连之前短路）；`IMEX_PASSWORD` 里的 `ENC:` 密文照常按 `IMEX_KEY` 解密。传输方式同样按优先级：显式 `-S` 走 socket，显式 `-h` 或 `-P` 走 TCP 且 `IMEX_SOCKET` **被忽略**并记 WARN，两者都没写时 `IMEX_SOCKET` 优先于 `IMEX_HOST`（默认值 `127.0.0.1` 不代表用户要求 TCP）。日志**只记变量名不记取值**（INFO `connection values supplied by environment variables="[IMEX_USER IMEX_PASSWORD]"`；WARN `connection variable ignored variable=IMEX_SOCKET reason="…"`），因为这些记录同样进 `--messages` 文件。与四个全局开关（`IMEX_ERROR_STACK`/`IMEX_ECHO_SQL_VALUES`/`IMEX_NO_SQL_TAG`/`IMEX_LOG_FORMAT`）的「env 覆盖 flag」语义**刻意相反**，理由见需求文档 2.1.10 与 3.3.2 的注。实测：只设 env、命令行零连接参数，`list`/`export`/`import --threads 4` 三条全部走通，200,000 行产物与逐条写 flag 的形式**md5 相同**（DEL `a75ed46064134dfc86ef3f969a1dff54`、SQL `60b8d3ced7b5e85f27a5dbd834f332c0`，socket 传输与 TCP 传输也逐字节相同），墙钟 0.12/0.12/0.13 s 对 0.12 s、峰值 RSS 19,252 KB 对 19,156 KB（不主张性能变化）；env 侧并行导入落库 `BIT_XOR(CRC32(CONCAT_WS('|',id,gid,v)))` = **2180467309**，与源表同式切片一致；`general_log` 取证的两次服务端语句流除线程 ID 外**逐条相同**（`SET NAMES utf8mb4` → `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` → `START TRANSACTION WITH CONSISTENT SNAPSHOT` → `/* imex:ffc992b */ SELECT …`），口令在 general log 与运行日志里命中 **0**。测试：新增 `cmd/conn_env_test.go`（8 个顶层用例，覆盖 env 补默认、显式 flag 压过 env、`-p ""` 这类显式空值、空白即未设与裁空白、`IMEX_PORT` 七档取值、传输方式四情形含 `BuildDSN` 的 `@tcp`/`@unix`、`-P` 单独显式也构成地址、import 与 list 共用同一 helper），另有 1 用例把 logger 换成 text handler 断言两条记录的字段、行数与「不含取值」；`^func Test` **319→328**、`_test.go` **55→56**、`Fuzz` 6、`Benchmark` 12；`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、实库 `-race` **157 PASS / 0 FAIL / 0 SKIP**（14.660 s）。契约面：① CLI 与 help **变**（flag 集合未增删，六个选项帮助补变量名，新增一条退出码 2 的错误文本）、② 产物格式**不变**、③ 退出码**不变**、④ `IMEX_*` **变**（新增六个）、⑤ 服务端可见 SQL **不变**；均为追加式，无既有调用形态被拒绝或改义，按档位表取 **Y+1**，`Makefile` 首行 **0.13.0 → 0.14.0**。`cli-oracle` 按 note 23 重基线（`## export` 与八个 `## list <object>` 逐字节重生成、`## import`/`## root` 仍为 4934dd2 快照且只就地改写六行连接选项），12 份 help 超 118 字节 **0 行**。详见需求文档变更记录 112 |
 
 ## 修复记录（v0.13.0）
 

@@ -59,6 +59,15 @@ Examples:
 			exportCfg.DefaultCharset = exportDefaultCharset
 		}
 
+		// Fill the connection fields the run left unset from the environment
+		// (IMEX_HOST, IMEX_PORT, IMEX_USER, IMEX_PASSWORD, IMEX_SOCKET,
+		// IMEX_DATABASE). This happens before the required-parameter checks so an
+		// environment-supplied database satisfies them exactly like a typed -D.
+		connEnv, err := applyConnEnv(cmd.Flags(), &exportCfg.Config)
+		if err != nil {
+			return err
+		}
+
 		// Required connection parameters.
 		if exportCfg.Host == "" && exportCfg.Socket == "" {
 			return common.Usagef("--host or --socket is required")
@@ -98,6 +107,7 @@ Examples:
 
 		// Init logger with user's chosen level.
 		common.InitLogger(exportCfg.LogLevel)
+		logConnEnv(connEnv)
 
 		// Parse session variables.
 		vars, err := common.ParseSessionVars(exportCfg.SessionVars)

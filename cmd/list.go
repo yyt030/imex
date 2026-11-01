@@ -96,12 +96,13 @@ func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 	// Override the default help flag so -h stays available for --host.
 	f.BoolP("help", "?", false, "help for list "+cmd.Use)
 
-	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address")
-	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port")
-	f.StringVarP(&cfg.User, "user", "u", "root", "Database username")
-	f.StringVarP(&cfg.Password, "password", "p", "", "Database password")
-	f.StringVarP(&cfg.Socket, "socket", "S", "", "UNIX domain socket path")
-	f.StringVarP(&cfg.Database, "database", "D", "", "Database to inspect (required for columns and indexes)")
+	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
+	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
+	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
+	f.StringVarP(&cfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
+	f.StringVarP(&cfg.Socket, "socket", "S", "", "UNIX domain socket path (also IMEX_SOCKET)")
+	f.StringVarP(&cfg.Database, "database", "D", "",
+		"Database to inspect (required for columns and indexes; also IMEX_DATABASE)")
 
 	f.DurationVar(&cfg.ConnectTimeout, "connect-timeout", config.DefaultConnectTimeout, "TCP connect timeout")
 	f.DurationVar(&cfg.SocketReadTimeout, "socket-read-timeout", config.DefaultSocketTimeout, "Per-read socket timeout")
@@ -116,6 +117,14 @@ func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 
 func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 	cfg.Object = object
+
+	// Same rule as export and import: an unset connection field may be filled
+	// from its IMEX_* variable before validation looks at the value.
+	connEnv, err := applyConnEnv(cmd.Flags(), &cfg.Config)
+	if err != nil {
+		return err
+	}
+
 	if err := validateListConfig(cfg); err != nil {
 		return err
 	}
@@ -127,6 +136,7 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 	cfg.Password = password
 
 	common.InitLogger(cfg.LogLevel)
+	logConnEnv(connEnv)
 	common.Logger.Info("list config",
 		"object", object,
 		"database", cfg.Database,

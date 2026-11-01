@@ -21,13 +21,13 @@ func registerImportFlags(cmd *cobra.Command) {
 	// Override default help flag to free up -h for --host.
 	f.BoolP("help", "?", false, "help for import")
 
-	// Connection options
-	f.StringVarP(&importCfg.Host, "host", "h", "127.0.0.1", "Database host address")
-	f.IntVarP(&importCfg.Port, "port", "P", 3306, "TCP/IP port")
-	f.StringVarP(&importCfg.User, "user", "u", "root", "Database username")
-	f.StringVarP(&importCfg.Password, "password", "p", "", "Database password")
-	f.StringVarP(&importCfg.Socket, "socket", "S", "", "UNIX domain socket path")
-	f.StringVarP(&importCfg.Database, "database", "D", "", "Database name")
+	// Connection options; each also reads IMEX_* when the flag is not given.
+	f.StringVarP(&importCfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
+	f.IntVarP(&importCfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
+	f.StringVarP(&importCfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
+	f.StringVarP(&importCfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
+	f.StringVarP(&importCfg.Socket, "socket", "S", "", "UNIX domain socket path (also IMEX_SOCKET)")
+	f.StringVarP(&importCfg.Database, "database", "D", "", "Database name (also IMEX_DATABASE)")
 
 	// Timeouts
 	f.DurationVar(&importCfg.ConnectTimeout, "connect-timeout", 5*time.Second, "TCP connect timeout (maps to JDBC connectTimeout)")

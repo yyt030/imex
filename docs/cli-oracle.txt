@@ -291,6 +291,20 @@
 # flag's help now reads "SQL SELECT statement, or @file to read it from a file". Both bodies
 # were regenerated from the working tree and diff empty; `## import` and `## root` remain the
 # 4934dd2 snapshot (note 21 still records their --quiet delta). Every line remains <= 118 bytes.
+# Re-baselined note 23 (2026-11-01): the six connection options gained environment-variable
+# forms (IMEX_HOST/IMEX_PORT/IMEX_USER/IMEX_PASSWORD/IMEX_SOCKET/IMEX_DATABASE, precedence
+# explicit flag > env > built-in default; see requirements.md 2.1.10), and their help lines now
+# name the variable the way the four global switches already did. `## export` and the eight
+# `## list <object>` bodies were regenerated from the working tree; `## import` is still the
+# 4934dd2 snapshot, so only its six connection lines were rewritten in place and notes 21/22
+# still describe the rest of its delta. No option was added or removed, so no section changed
+# length — 60 lines differ, 60 lines are replaced. Two descriptions carry slightly reworded
+# text alongside the variable name: list's --database joins its two clauses with a semicolon
+# ("required for columns and indexes; also IMEX_DATABASE", 116 bytes — the ceiling is 118), and
+# the export/import --database line keeps its own stem. The six lines still over 118 bytes are
+# all pre-existing 4934dd2 import-snapshot lines (--default-charset, --session-var,
+# --echo-sql-values, --log-format, --no-sql-tag, --quiet); none is a connection option, and the
+# shipped binary's own help is <= 118 bytes on all twelve surfaces.
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.
@@ -338,7 +352,7 @@ Flags:
       --col-del string                  Column delimiter (only with --format del) (default ",")
       --connect-timeout duration        TCP connect timeout (maps to JDBC connectTimeout) (default 5s)
       --create                          Output a CREATE TABLE statement (only with --format sql)
-  -D, --database string                 Database name
+  -D, --database string                 Database name (also IMEX_DATABASE)
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
       --default-charset string          Connection & output-file charset (utf8mb4 default)
       --escape string                   Escape character (only with --format del) (default "\"")
@@ -346,7 +360,7 @@ Flags:
   -f, --format string                   Output file format (del/sql/parquet) (default "del")
   -?, --help                            help for export
       --hex-blob                        Binary columns as 0x hex literals (not with --format parquet)
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-char-del                     Do not use string delimiter (only with --format del)
@@ -357,21 +371,21 @@ Flags:
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Output file path (required)
       --parquet-compression string      Compression: none, snappy, zstd (only with --format parquet) (default "none")
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pipeline-buffer int             Hand-off queue depth in batches; --threads>1 is a usage error (default 10)
-  -P, --port int                        TCP/IP port (default 3306)
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
       --progress-interval duration      Periodic progress log interval (min 100ms) (default 5s)
   -q, --query string                    SQL SELECT statement, or @file to read it from a file
       --row-del string                  Row delimiter (only with --format del) (default "\n")
       --session-var stringArray         Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES
       --shard-key string                Column used to shard a parallel export; defaults to the primary key
-  -S, --socket string                   UNIX domain socket path
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)
       --statement-size int              Max bytes per merged INSERT (only with --format sql) (default 8388608)
       --threads int                     Number of parallel export tasks (1 = no parallelism) (default 1)
       --timestamp-fmt string            Timestamp format (only with --format del) (default "yyyy-MM-dd HH:mm:ss")
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
@@ -413,13 +427,13 @@ Flags:
   -c, --columns string                  Target column list (comma-separated) or mapping (file_col=table_col,...)
       --commit-count int                Commit every n rows (default 1000)
       --connect-timeout duration        TCP connect timeout (maps to JDBC connectTimeout) (default 5s)
-  -D, --database string                 Database name
+  -D, --database string                 Database name (also IMEX_DATABASE)
       --date-fmt string                 Date format (default "yyyy-MM-dd")
       --default-charset string          Connection & input-file charset (utf8mb4 default; also utf8, latin1, ascii, gbk, gb18030)
       --escape string                   Escape character (default "\"")
   -f, --format string                   Input file format (del/sql/parquet) (default "del")
   -?, --help                            help for import
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
   -i, --input string                    Input file path (required)
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Message file path
@@ -427,20 +441,20 @@ Flags:
       --no-char-del                     Do not use string delimiter
       --no-col-names                    First line is not column names
       --no-escape                       Disable escaping
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pipeline-buffer int             Hand-off queue depth, in batches (default 10)
-  -P, --port int                        TCP/IP port (default 3306)
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
       --row-count int                   Import at most n rows (0=unlimited)
       --row-del string                  Row delimiter (default "\n")
       --session-var stringArray         Set a MySQL/OceanBase session variable before import (repeatable), e.g. --session-var "sql_mode=STRICT_TRANS_TABLES" --session-var foreign_key_checks=0
       --skip-count int                  Skip first n rows
-  -S, --socket string                   UNIX domain socket path
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)
   -t, --table string                    Target table name
       --threads int                     Number of parallel import tasks (1 = no parallelism) (default 1)
       --timestamp-fmt string            Timestamp format (default "yyyy-MM-dd HH:mm:ss")
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
@@ -493,20 +507,20 @@ Aliases:
 
 Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
-  -D, --database string                 Database to inspect (required for columns and indexes)
+  -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
   -?, --help                            help for list databases
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-col-names                    Do not print the header row
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (default 3306)
-  -S, --socket string                   UNIX domain socket path
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
@@ -525,21 +539,21 @@ Aliases:
 Flags:
       --all                             Include system schemas when --database is not given
       --connect-timeout duration        TCP connect timeout (default 5s)
-  -D, --database string                 Database to inspect (required for columns and indexes)
+  -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
   -?, --help                            help for list tables
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-col-names                    Do not print the header row
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (default 3306)
-  -S, --socket string                   UNIX domain socket path
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --type string                     Object type: base, view or all (default "base")
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
@@ -558,20 +572,20 @@ Aliases:
 Flags:
       --all                             Include system schemas when --database is not given
       --connect-timeout duration        TCP connect timeout (default 5s)
-  -D, --database string                 Database to inspect (required for columns and indexes)
+  -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
   -?, --help                            help for list views
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-col-names                    Do not print the header row
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (default 3306)
-  -S, --socket string                   UNIX domain socket path
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
@@ -589,21 +603,21 @@ Aliases:
 
 Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
-  -D, --database string                 Database to inspect (required for columns and indexes)
+  -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
   -?, --help                            help for list columns
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-col-names                    Do not print the header row
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (default 3306)
-  -S, --socket string                   UNIX domain socket path
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -t, --table string                    Table to inspect
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
@@ -621,21 +635,21 @@ Aliases:
 
 Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
-  -D, --database string                 Database to inspect (required for columns and indexes)
+  -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
   -?, --help                            help for list indexes
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-col-names                    Do not print the header row
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (default 3306)
-  -S, --socket string                   UNIX domain socket path
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -t, --table string                    Table to inspect
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
@@ -654,21 +668,21 @@ Aliases:
 Flags:
       --all                             Include system schemas when --database is not given
       --connect-timeout duration        TCP connect timeout (default 5s)
-  -D, --database string                 Database to inspect (required for columns and indexes)
+  -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
   -?, --help                            help for list triggers
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-col-names                    Do not print the header row
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (default 3306)
-  -S, --socket string                   UNIX domain socket path
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -t, --table string                    Only list triggers of this table
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
@@ -687,21 +701,21 @@ Aliases:
 Flags:
       --all                             Include system schemas when --database is not given
       --connect-timeout duration        TCP connect timeout (default 5s)
-  -D, --database string                 Database to inspect (required for columns and indexes)
+  -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
   -?, --help                            help for list routines
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-col-names                    Do not print the header row
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (default 3306)
-  -S, --socket string                   UNIX domain socket path
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --type string                     Routine type: procedure, function or all (default "all")
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
@@ -720,20 +734,20 @@ Aliases:
 Flags:
       --all                             Include system schemas when --database is not given
       --connect-timeout duration        TCP connect timeout (default 5s)
-  -D, --database string                 Database to inspect (required for columns and indexes)
+  -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
   -?, --help                            help for list events
-  -h, --host string                     Database host address (default "127.0.0.1")
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-col-names                    Do not print the header row
-  -p, --password string                 Database password
+  -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (default 3306)
-  -S, --socket string                   UNIX domain socket path
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
-  -u, --user string                     Database username (default "root")
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
       --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
