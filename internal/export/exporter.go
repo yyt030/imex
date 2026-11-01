@@ -728,6 +728,19 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 // exportShard serializes one shard into its pipe; the stream writer owns the
 // output file and consumes the pipes in shard order.
 func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, shardInfo *ShardInfo, shardRange ShardRange, columns []string, out *shardPipe) (rowCount int64, err error) {
+	// Serialize the shard into its pipe. The stream writer consumes pipes in shard
+	// order, so it must see a close on every exit path — including the setup
+	// failures below (a bad query, a refused connection, a rejected shard SQL) —
+	// or it waits for an EOF that never arrives and the whole export hangs. It is
+	// registered first so nothing can return before the shard is handed over, and
+	// because defer is LIFO it still runs after releaseDB's defer, keeping the
+	// connection the first thing given up.
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = errors.Wrapf(cerr, "failed to finish shard %d output", shardIdx)
+		}
+	}()
+
 	// Build shard-specific query using SQL parser
 	shardQuery, err := e.sqlParser.BuildShardedQuery(e.config.Query, shardInfo, shardRange)
 	if err != nil {
@@ -771,15 +784,9 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 		db.Close()
 	}
 
-	// Serialize the shard into its pipe. The stream writer consumes pipes in shard
-	// order, so it must see a close on every exit path — including failures — or
-	// it waits for an EOF that never arrives. It is registered before releaseDB's
-	// defer so the database is always the first thing given up.
-	defer func() {
-		if cerr := out.Close(); cerr != nil && err == nil {
-			err = errors.Wrapf(cerr, "failed to finish shard %d output", shardIdx)
-		}
-	}()
+	// The shard's pipe was already promised a close at the top of this function;
+	// only the connection release is registered here, because the resources it
+	// closes do not exist until this point. LIFO makes it run before that close.
 	defer releaseDB()
 
 	// Detect YEAR columns so "0" (the wire text for YEAR(0000)) can be

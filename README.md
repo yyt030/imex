@@ -955,6 +955,16 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | `--progress-interval` 的下限 10ms 会让进度行跟着批次走：实测 200,000 行导入分 200 批、发送段 1.391s（约 7ms 一批），10ms 档等于每批一条；更小的值更糟，`1ns` 曾有 6400 行导出打出 1355 条进度（日志 175,557 字节） | 下限提到 **100ms**（参数仍是 duration，`100ms`/`500ms`/`5s` 都合法，默认 5s 不变）：`10ms`/`1ms` 退出 **2** 并报 `invalid --progress-interval 10ms: must be >= 100ms`，`0`/负值仍是 `must be > 0`；100ms 档实测 262,144 行导出 0.18s 打 1 条、六行 `SLEEP(0.05)` 查询 0.301s 打 3 条。拒绝此前合法的取值属不兼容变更，按档位表字面取 **X+1**，版本由 0.5.3 升至 **1.0.0**；`## export` 基线重新生成（88 行，diff 为空）。详见需求文档变更记录 89。**注（2026-10-31 用户裁决）：本行按字面定为 X+1 的结论已纠正为 Y+1——版本号最终定为 0.6.0、X 保持 0；本地 `v1.0.0` tag 已删除，纠正提交上先打 `v1.1.0`、同日按用户二次指令改打 `v0.6.0`（详见变更记录 90、91）。** |
 | 上一轮把 `--progress-interval` 下限提到 100ms 判为 X+1、版本发成 1.0.0；用户复核裁定按 **Y+1** 计，且 X 不升 | 版本先纠正为 1.1.0，同日按用户二次指令定为 **0.6.0**（`Makefile` 首行 1.0.0 → 0.6.0，0.x 期第二位 +1），行为与 `99d289d` 完全一致；删除本地未 push 的 `v1.0.0` 与中间态 `v1.1.0`，在最终纠正提交上打附注 tag `v0.6.0`（尚未 push）。验证：`gofmt -l` 空、`go vet` 干净、七包 `-race` 全通过、真实库 **131 RUN / 0 SKIP / 0 FAIL**、`statementCapSlack` = 3、help 超 118 字节 0 行。详见需求文档变更记录 90、91 |
 
+## 修复记录（v0.12.1）
+
+以下为 `v0.12.0` 之后、随 `v0.12.1` 一起发布的记录：
+
+| 缺陷 | 修复 |
+|------|------|
+| `-q "SELECT * FROM db.tbl" --threads >1` 的每条分片语句都是非法 SQL：分片条件用整个点号串当标识符限定列，发出 `` select * from db.tbl where `db.tbl`.id >= 1 ``，服务端一律报 Error 1054（Unknown column 'db.tbl.id' in 'WHERE'） | 新增 `shardAliasName`：FROM 项没有显式别名时用**裸表名**限定（MySQL 认 `` `tbl`.`col` `` 与 `` `db`.`tbl`.`col` ``，不认 `"db.tbl"."col"`；`FROM db.tbl` 的隐式别名就是 `tbl`），有别名仍用别名；`buildTableAliasMap` 与 `processJoinTableExpr` 三处统一到该函数。实测 20,000 行表 `-q "SELECT * FROM imex_ign.qtest" --threads 4` 由挂起变为 `parallel export completed rows=20000`，与不带库名的同查询产物**逐字节相同**（`4b8175b7…`）；300 万行同法产物 md5 `1cb12c038fb0c406d1a5145dc75eb8e7` 与 v0.12.0 的 `-q "SELECT * FROM big3m" --threads 4` 完全一致，且整轮日志里 `shard query failed` 计数为 0。新增 `TestBuildShardedQuery_QualifiedTableName` 与实库 `TestBoundaryQualifiedTableShardsInsteadOfHanging` |
+| 同一场景下进程**永久挂起**（不退出、不报错、退出码拿不到）：`exportShard` 在 `BuildShardedQuery` 失败、建连失败、`QueryContext` 失败三处早退，都早于注册「关闭本分片 pipe」的 `defer`，而 `writeShardStream` 按分片顺序消费、必须见到每个 pipe 的 EOF 才能返回 | 把关闭 pipe 的 `defer` 提到 `exportShard` 的第一句（`shardPipe.Close` 本身幂等、空块也安全），三条早退路径全部覆盖；`defer` 是 LIFO，`releaseDB` 仍在其后注册、仍最先释放连接，v0.11.0 定下的「先交连接、再交尾块」顺序不变。新增 `TestExportShard_SetupFailuresStillClosePipe`（三个子用例分别打断建语句、建连、服务端拒绝，断言 `exportShard` 返回错误且 pipe 到达 EOF，5 秒超时兜底），修复前该测试挂在超时、修复后通过；旧二进制 `/tmp/imex-a2` 同命令仍复现挂起（`timeout` 退出 124，输出停在 31 字节的 `SET NAMES` 头） |
+| 本轮属纯缺陷修复：帮助、格式、`IMEX_*`、退出码取值范围一律未动，服务端可见 SQL 只在「原本必然报错」的路径上由非法变合法，其余路径一字不变 | 版本按档位表取 **Z 档**，`Makefile` 首行 **0.12.0 → 0.12.1**（本轮修复未提交、未打 tag、未 push、未打包，等指令）。QA：`^func Test` **309→312**、`_test.go` 54、`Fuzz` 6、`Benchmark` 12；`gofmt -l` 空、`go vet` 干净、八包 `-race` 全通过、实库 **156 RUN / 156 PASS / 0 SKIP / 0 FAIL**（新增 1 条实库用例）、`statementCapSlack` = 3、12 份 help 超 118 字节 0 行、`./bin/imex version` = 0.12.1；性能复测 3 轮交替与 v0.12.0 同档（本机 MariaDB 刚重启、缓冲池冷，绝对值高于上一轮，差异落在噪声内）。详见需求文档变更记录 109 |
+
 ## 修复记录（v0.12.0）
 
 以下为 `v0.11.0` 之后、随 `v0.12.0` 一起发布的记录（本轮从内存分配与类型转换两个角度重新画像，基线二进制 `imex-a0` 为 v0.11.0 状态、终态 `imex-a2`；同一轮交替 7 次取中位，pprof 与 `/usr/bin/time` 数字均为实测）：

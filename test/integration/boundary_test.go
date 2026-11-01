@@ -479,3 +479,61 @@ func firstLineContaining(text, needle string) string {
 	}
 	return ""
 }
+
+// A schema-qualified table in -q used to be fatal for a parallel export, twice
+// over: the shard condition qualified the column with the whole dotted name
+// ("db.tbl"."id"), which no server accepts (Error 1054), and a shard that failed
+// before its first row returned before its pipe was promised a close — so the
+// in-order stream writer waited forever for that shard's EOF. The run neither
+// exited nor reported an error; the output kept only its file header.
+func TestBoundaryQualifiedTableShardsInsteadOfHanging(t *testing.T) {
+	env := newCLILive(t)
+	table := env.liveTable(t, "bound_qual")
+	env.exec(t, "CREATE TABLE `"+table+"` (id INT PRIMARY KEY, v VARCHAR(200))")
+	env.exec(t, "INSERT INTO `"+table+"` (id, v) VALUES (1, 'a'), (2, 'b')")
+	// Enough rows that --threads 4 really splits the key space.
+	for i := 0; i < 6; i++ {
+		var n int64
+		if err := env.db.QueryRow("SELECT COUNT(*) FROM `" + table + "`").Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		env.exec(t, "INSERT INTO `"+table+"` (id, v) SELECT id + ?, v FROM `"+table+"`", n)
+	}
+	var want int64
+	if err := env.db.QueryRow("SELECT COUNT(*) FROM `" + table + "`").Scan(&want); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+
+	out, code := env.runExportCLI(t, "-q",
+		"SELECT * FROM `"+env.liveEnv.base.Database+"`.`"+table+"`",
+		"-f", "sql", "-o", filepath.Join(env.dir, table+"_qual.sql"), "--threads", "4", "--log-level", "info")
+	if code != 0 {
+		t.Fatalf("parallel export of a schema-qualified query exited %d\n%s", code, out)
+	}
+	if strings.Contains(out, "falling back to single-threaded") {
+		t.Errorf("schema-qualified parallel export fell back instead of sharding:\n%s", out)
+	}
+	for _, bad := range []string{"shard query failed", "Unknown column", "failed to build sharded query"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("parallel export reported %q:\n%s", bad, out)
+		}
+	}
+	if !strings.Contains(out, "parallel export completed") || !strings.Contains(out, fmt.Sprintf("rows=%d", want)) {
+		t.Errorf("parallel export of %d rows did not complete:\n%s", want, out)
+	}
+
+	// The file has to hold the rows, not just the preamble the hang used to leave.
+	data, err := os.ReadFile(filepath.Join(env.dir, table+"_qual.sql"))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	inserts := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "INSERT INTO") {
+			inserts++
+		}
+	}
+	if int64(inserts) != want {
+		t.Errorf("output holds %d INSERT lines for %d rows; head=%q", inserts, want, string(data[:min(len(data), 200)]))
+	}
+}

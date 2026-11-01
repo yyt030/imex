@@ -235,3 +235,34 @@ func TestBuildShardedQuery_NullShard(t *testing.T) {
 		t.Errorf("query = %q, want no range comparison for the NULL shard", q)
 	}
 }
+
+// TestBuildShardedQuery_QualifiedTableName pins the qualifier a shard condition
+// uses when the query names its table with a schema. MySQL resolves
+// `schema`.`tbl`.`col` and `tbl`.`col`, never "schema.tbl"."col", so the
+// condition has to address the bare table (or the explicit alias). Emitting
+// `db.tbl`.`id` made every shard query fail with Error 1054 — and, because a
+// failed shard used to leave its pipe open, hang the whole parallel export.
+func TestBuildShardedQuery_QualifiedTableName(t *testing.T) {
+	p := NewSQLParser()
+	shard := &ShardInfo{Columns: []string{"id"}}
+	rng := ShardRange{Mins: []interface{}{int64(1)}, Maxs: []interface{}{int64(4)}, IsLast: true}
+
+	cases := map[string]string{
+		"SELECT * FROM imex_ign.qtest":     "qtest.id",
+		"SELECT * FROM `imex_ign`.`qtest`": "qtest.id",
+		"SELECT * FROM imex_ign.qtest t":   "t.id",
+		"SELECT * FROM qtest":              "qtest.id",
+	}
+	for query, want := range cases {
+		out, err := p.BuildShardedQuery(query, shard, rng)
+		if err != nil {
+			t.Fatalf("BuildShardedQuery(%q): %v", query, err)
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("BuildShardedQuery(%q) = %q, want it to contain %s", query, out, want)
+		}
+		if strings.Contains(out, "imex_ign.qtest.") || strings.Contains(out, "`imex_ign.qtest`") {
+			t.Errorf("BuildShardedQuery(%q) = %q, dotted name must not become one identifier", query, out)
+		}
+	}
+}

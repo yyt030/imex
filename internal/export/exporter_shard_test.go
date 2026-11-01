@@ -25,6 +25,9 @@ type fakeShard struct {
 	rows   int
 	closed chan struct{}
 	once   sync.Once
+	// queryErr, when set, makes every query against this fake fail — the shape
+	// of a shard SQL the server rejects.
+	queryErr error
 }
 
 func (f *fakeShard) markClosed() { f.once.Do(func() { close(f.closed) }) }
@@ -61,6 +64,9 @@ func (s *fakeShardStmt) Exec([]driver.Value) (driver.Result, error) {
 }
 
 func (s *fakeShardStmt) Query([]driver.Value) (driver.Rows, error) {
+	if s.f.queryErr != nil {
+		return nil, s.f.queryErr
+	}
 	return &fakeShardRows{n: s.f.rows}, nil
 }
 
@@ -240,5 +246,72 @@ func TestExportShard_EmptyShardReleasesConnectionAndClosesPipe(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("empty shard never closed its pipe")
+	}
+}
+
+// TestExportShard_SetupFailuresStillClosePipe covers the three ways a shard can
+// die before it reads a single row — an unparseable base query, a connection the
+// pool refuses, a shard SQL the server rejects. Every one of them used to return
+// before the pipe close was registered, so the in-order stream writer waited for
+// an EOF that never arrived and the whole parallel export hung: no exit, no
+// error, output left at the file header.
+func TestExportShard_SetupFailuresStillClosePipe(t *testing.T) {
+	cases := map[string]func(*Exporter, *fakeShard){
+		"unparseable base query": func(e *Exporter, _ *fakeShard) { e.config.Query = "THIS IS NOT A SELECT" },
+		"connection refused": func(e *Exporter, _ *fakeShard) {
+			e.openShard = func() (*sql.DB, error) { return nil, errors.New("shard connect refused") }
+		},
+		"server rejects the shard SQL": func(_ *Exporter, f *fakeShard) {
+			f.queryErr = errors.New("Error 1054 (42S22): Unknown column 'db.tbl.id' in 'WHERE'")
+		},
+	}
+
+	for name, breakSetup := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeShard{rows: 3, closed: make(chan struct{})}
+			e := newFakeShardExporter(t, f)
+			breakSetup(e, f)
+
+			p := newShardPipe(context.Background(), 0, shardBlockSize)
+			done := make(chan error, 1)
+			go func() {
+				_, err := e.exportShard(context.Background(), 0, 0,
+					&ShardInfo{
+						Columns:   []string{"id"},
+						Mins:      []interface{}{int64(1)},
+						Maxs:      []interface{}{int64(9)},
+						IsNumeric: []bool{true},
+					},
+					ShardRange{Mins: []interface{}{int64(1)}, Maxs: []interface{}{int64(4)}},
+					[]string{"note"}, p)
+				done <- err
+			}()
+
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(5 * time.Second):
+				p.terminate()
+				t.Fatal("exportShard did not return after its setup failed")
+			}
+			if err == nil {
+				t.Fatal("exportShard reported success after its setup failed")
+			}
+
+			// The consumer's view: the pipe must reach EOF rather than stay open.
+			drained := make(chan int, 1)
+			go func() {
+				n := 0
+				for range p.ch {
+					n++
+				}
+				drained <- n
+			}()
+			select {
+			case <-drained:
+			case <-time.After(5 * time.Second):
+				t.Fatal("a failed shard left its pipe open — the stream writer would hang")
+			}
+		})
 	}
 }

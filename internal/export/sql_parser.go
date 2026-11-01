@@ -173,6 +173,22 @@ func (p *SQLParser) injectShardCondition(stmt *sqlparser.Select, shardInfo *Shar
 	}
 }
 
+// shardAliasName is the identifier a shard condition has to use to address this
+// FROM item. MySQL resolves `schema`.`tbl`.`col` and `tbl`.`col`, never
+// "schema.tbl"."col": an unaliased schema-qualified table ("FROM db.tbl") is
+// addressable by its bare name, because the implicit alias of a FROM item is its
+// table name, not the whole dotted string. Using sqlparser.String(Expr) here is
+// what emitted “ where `db.tbl`.id >= 1 “ — Error 1054 on the server.
+func shardAliasName(t *sqlparser.AliasedTableExpr) string {
+	if !t.As.IsEmpty() {
+		return t.As.String()
+	}
+	if tn, ok := t.Expr.(sqlparser.TableName); ok {
+		return tn.Name.String()
+	}
+	return sqlparser.String(t.Expr)
+}
+
 // buildTableAliasMap builds a map of table aliases to table names
 func (p *SQLParser) buildTableAliasMap(from []sqlparser.TableExpr) map[string]string {
 	aliases := make(map[string]string)
@@ -180,12 +196,7 @@ func (p *SQLParser) buildTableAliasMap(from []sqlparser.TableExpr) map[string]st
 	for _, tableExpr := range from {
 		switch t := tableExpr.(type) {
 		case *sqlparser.AliasedTableExpr:
-			tableName := sqlparser.String(t.Expr)
-			alias := tableName
-			if !t.As.IsEmpty() {
-				alias = t.As.String()
-			}
-			aliases[alias] = tableName
+			aliases[shardAliasName(t)] = sqlparser.String(t.Expr)
 		case *sqlparser.JoinTableExpr:
 			p.processJoinTableExpr(t, aliases)
 		}
@@ -197,23 +208,13 @@ func (p *SQLParser) buildTableAliasMap(from []sqlparser.TableExpr) map[string]st
 // processJoinTableExpr recursively processes JOIN expressions
 func (p *SQLParser) processJoinTableExpr(join *sqlparser.JoinTableExpr, aliases map[string]string) {
 	if left, ok := join.LeftExpr.(*sqlparser.AliasedTableExpr); ok {
-		tableName := sqlparser.String(left.Expr)
-		alias := tableName
-		if !left.As.IsEmpty() {
-			alias = left.As.String()
-		}
-		aliases[alias] = tableName
+		aliases[shardAliasName(left)] = sqlparser.String(left.Expr)
 	} else if leftJoin, ok := join.LeftExpr.(*sqlparser.JoinTableExpr); ok {
 		p.processJoinTableExpr(leftJoin, aliases)
 	}
 
 	if right, ok := join.RightExpr.(*sqlparser.AliasedTableExpr); ok {
-		tableName := sqlparser.String(right.Expr)
-		alias := tableName
-		if !right.As.IsEmpty() {
-			alias = right.As.String()
-		}
-		aliases[alias] = tableName
+		aliases[shardAliasName(right)] = sqlparser.String(right.Expr)
 	} else if rightJoin, ok := join.RightExpr.(*sqlparser.JoinTableExpr); ok {
 		p.processJoinTableExpr(rightJoin, aliases)
 	}
