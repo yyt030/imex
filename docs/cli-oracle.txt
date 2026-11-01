@@ -277,6 +277,20 @@
 # longer accepted and falls through to `unknown object "tbl"` with exit code 2. The other
 # seven leaf bodies, `## list`, `## root`, `## export` and `## import` are unchanged, and
 # every line remains <= 118 bytes.
+# Re-baselined note 21 (2026-11-01): --quiet / IMEX_QUIET was removed. The `## export`,
+# `## list` and the eight `## list <object>` bodies were regenerated and no longer carry the
+# flag; `## export`'s --progress-interval line now reads "(min 100ms)" without the
+# "--quiet drops it" clause. `## import` and `## root` remain the 4934dd2 snapshot and still
+# show the old line; the delta is recorded here: the shipped binary has no --quiet (passing
+# it is an unknown-flag usage error, exit 2) and no IMEX_QUIET. Every line remains <= 118 bytes.
+# Re-baselined note 22 (2026-11-01): two CLI simplifications. (a) list's -f/--format is
+# gone: `table` is the only renderer, so an explicit `-f table` is now an unknown-flag usage
+# error (exit 2) and the eight `## list <object>` bodies lost that line. (b) export's
+# --query-file is folded into -q: `-q @file` reads the statement from a file (blank edges and
+# a trailing semicolon are trimmed), `@@` escapes a literal query starting with '@', and the
+# flag's help now reads "SQL SELECT statement, or @file to read it from a file". Both bodies
+# were regenerated from the working tree and diff empty; `## import` and `## root` remain the
+# 4934dd2 snapshot (note 21 still records their --quiet delta). Every line remains <= 118 bytes.
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.
@@ -297,7 +311,7 @@ Examples:
 
   # Read the query from a file instead of the command line
   imex export -h 127.0.0.1 -u root -p pass -D mydb \
-    -o /backup/users.sql -f sql --query-file /backup/users_query.sql
+    -o /backup/users.sql -f sql -q @/backup/users_query.sql
 
   # Export to Parquet format
   imex export -h 127.0.0.1 -u root -p pass -D mydb \
@@ -346,9 +360,8 @@ Flags:
   -p, --password string                 Database password
       --pipeline-buffer int             Hand-off queue depth in batches; --threads>1 is a usage error (default 10)
   -P, --port int                        TCP/IP port (default 3306)
-      --progress-interval duration      Periodic progress log interval (min 100ms; --quiet drops it) (default 5s)
-  -q, --query string                    SQL SELECT statement (mutually exclusive with --query-file)
-      --query-file string               Read the SQL SELECT statement from this file (mutually exclusive with -q)
+      --progress-interval duration      Periodic progress log interval (min 100ms) (default 5s)
+  -q, --query string                    SQL SELECT statement, or @file to read it from a file
       --row-del string                  Row delimiter (only with --format del) (default "\n")
       --session-var stringArray         Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES
       --shard-key string                Column used to shard a parallel export; defaults to the primary key
@@ -365,7 +378,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 
 ## import
 Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
@@ -468,7 +480,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 
 Use "imex list [command] --help" for more information about a command.
 ## list databases
@@ -484,7 +495,6 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes)
       --default-charset string          Connection charset (default "utf8mb4")
-  -f, --format string                   Output format: table (default "table")
   -?, --help                            help for list databases
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -503,7 +513,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 ## list tables
 List tables
 
@@ -518,7 +527,6 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes)
       --default-charset string          Connection charset (default "utf8mb4")
-  -f, --format string                   Output format: table (default "table")
   -?, --help                            help for list tables
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -538,7 +546,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 ## list views
 List views
 
@@ -553,7 +560,6 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes)
       --default-charset string          Connection charset (default "utf8mb4")
-  -f, --format string                   Output format: table (default "table")
   -?, --help                            help for list views
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -572,7 +578,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 ## list columns
 List columns of a table
 
@@ -586,7 +591,6 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes)
       --default-charset string          Connection charset (default "utf8mb4")
-  -f, --format string                   Output format: table (default "table")
   -?, --help                            help for list columns
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -606,7 +610,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 ## list indexes
 List indexes of a table
 
@@ -620,7 +623,6 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes)
       --default-charset string          Connection charset (default "utf8mb4")
-  -f, --format string                   Output format: table (default "table")
   -?, --help                            help for list indexes
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -640,7 +642,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 ## list triggers
 List triggers
 
@@ -655,7 +656,6 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes)
       --default-charset string          Connection charset (default "utf8mb4")
-  -f, --format string                   Output format: table (default "table")
   -?, --help                            help for list triggers
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -675,7 +675,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 ## list routines
 List stored procedures and functions
 
@@ -690,7 +689,6 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes)
       --default-charset string          Connection charset (default "utf8mb4")
-  -f, --format string                   Output format: table (default "table")
   -?, --help                            help for list routines
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -710,7 +708,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 ## list events
 List scheduled events
 
@@ -725,7 +722,6 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes)
       --default-charset string          Connection charset (default "utf8mb4")
-  -f, --format string                   Output format: table (default "table")
   -?, --help                            help for list events
   -h, --host string                     Database host address (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -744,7 +740,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 ## root
 imex is a table-level MySQL logical backup and restore tool.
 It supports both MySQL and OceanBase MySQL mode.

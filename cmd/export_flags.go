@@ -38,7 +38,7 @@ func registerExportFlags(cmd *cobra.Command) {
 
 	// Progress cadence
 	f.DurationVar(&exportCfg.ProgressInterval, "progress-interval", config.DefaultProgressInterval,
-		"Periodic progress log interval (min 100ms; --quiet drops it)")
+		"Periodic progress log interval (min 100ms)")
 
 	// Session variables (repeatable)
 	f.StringArrayVar(&exportCfg.SessionVars, "session-var", nil,
@@ -51,8 +51,7 @@ func registerExportFlags(cmd *cobra.Command) {
 	// Export-specific options
 	f.StringVarP(&exportCfg.Output, "output", "o", "", "Output file path (required)")
 	f.StringVarP(&exportCfg.Format, "format", "f", "del", "Output file format (del/sql/parquet)")
-	f.StringVarP(&exportCfg.Query, "query", "q", "", "SQL SELECT statement (mutually exclusive with --query-file)")
-	f.StringVar(&exportCfg.QueryFile, "query-file", "", "Read the SQL SELECT statement from this file (mutually exclusive with -q)")
+	f.StringVarP(&exportCfg.Query, "query", "q", "", "SQL SELECT statement, or @file to read it from a file")
 	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")
 	f.BoolVar(&exportCfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
 

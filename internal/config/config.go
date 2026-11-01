@@ -78,8 +78,7 @@ const (
 )
 
 // DefaultProgressInterval is how often a running export or import writes its
-// periodic progress record. --progress-interval overrides it; --quiet drops the
-// records altogether instead of making them rarer.
+// periodic progress record. --progress-interval overrides it.
 const DefaultProgressInterval = 5 * time.Second
 
 // MinProgressInterval is the lowest --progress-interval the CLI accepts. The
@@ -149,10 +148,10 @@ type ExportConfig struct {
 	Output string
 	Format string // "del", "sql" or "parquet"
 	Query  string
-	// QueryFile is a path passed to --query-file whose contents become Query. It
-	// is mutually exclusive with --query on the command line; by the time the
-	// exporter runs, RunE has read the file into Query and this field only
-	// carries the origin for the configuration record.
+	// QueryFile is the path named by a "-q @file" value whose contents become
+	// Query. Empty when the statement came inline; by the time the exporter runs,
+	// RunE has read the file into Query and this field only carries the origin
+	// for the configuration record.
 	QueryFile string
 
 	// NoOverwrite refuses to overwrite an existing output file. The default is

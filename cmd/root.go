@@ -19,7 +19,6 @@ var (
 var (
 	errorStack    bool
 	echoSQLValues bool
-	quiet         bool
 	logFormat     string
 	noSQLTag      bool
 )
@@ -85,9 +84,6 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&echoSQLValues, "echo-sql-values", false,
 		"Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)")
 
-	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false,
-		"Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)")
-
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "console",
 		"Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT")
 
@@ -101,7 +97,6 @@ func init() {
 		// Resolve env-var overrides for persistent bool flags.
 		common.ErrorStack = errorStack || envTruthy("IMEX_ERROR_STACK")
 		common.EchoSQLValues = echoSQLValues || envTruthy("IMEX_ECHO_SQL_VALUES")
-		common.Quiet = quiet || envTruthy("IMEX_QUIET")
 		common.NoSQLTag = noSQLTag || envTruthy("IMEX_NO_SQL_TAG")
 
 		// Resolve --log-format env override.

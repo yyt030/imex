@@ -108,17 +108,12 @@ func (e *Exporter) Export(ctx context.Context) error {
 	startTime := time.Now()
 	e.stats = common.NewStats()
 	e.stopMonitor = common.StartMonitor(ctx, e.config.EffectiveProgressInterval(), e.stats, func(prev, curr common.StatsSnapshot) {
-		// --quiet suppresses the periodic progress record. --messages receives the
-		// command log itself rather than a report of its own, so a suppressed
-		// record is absent from the file as well.
-		if !common.Quiet {
-			common.Logger.Info("export progress",
-				"rows", curr.Processed,
-				"rate", fmt.Sprintf("%.2f rows/sec", curr.RatePerSec()),
-				"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
-				"elapsed", common.Seconds(curr.Elapsed),
-			)
-		}
+		common.Logger.Info("export progress",
+			"rows", curr.Processed,
+			"rate", fmt.Sprintf("%.2f rows/sec", curr.RatePerSec()),
+			"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
+			"elapsed", common.Seconds(curr.Elapsed),
+		)
 	})
 	defer e.stopMonitor()
 

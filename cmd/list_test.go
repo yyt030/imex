@@ -74,7 +74,6 @@ func TestValidateListConfigRejectsBadValues(t *testing.T) {
 		{"user", func(c *config.ListConfig) { c.User = "" }, "--user is required"},
 		{"host and socket", func(c *config.ListConfig) { c.Host = ""; c.Socket = "" }, "--host or --socket is required"},
 		{"port", func(c *config.ListConfig) { c.Port = 0 }, "invalid --port"},
-		{"format", func(c *config.ListConfig) { c.Format = "yaml" }, `invalid --format "yaml"`},
 		{"log level", func(c *config.ListConfig) { c.LogLevel = "verbose" }, "invalid --log-level"},
 		{"charset", func(c *config.ListConfig) { c.DefaultCharset = "klingon" }, "invalid --default-charset"},
 		{"table type", func(c *config.ListConfig) { c.Type = "nonsense" }, "invalid --type"},
@@ -147,28 +146,17 @@ func TestListCommandAliases(t *testing.T) {
 	}
 }
 
-func TestListDefaultFormatIsTable(t *testing.T) {
-	if got := config.NewListConfig().Format; got != config.ListFormatTable {
-		t.Errorf("NewListConfig default format = %q, want %q", got, config.ListFormatTable)
-	}
-
+func TestListHasNoFormatFlag(t *testing.T) {
 	cmd := newListCmd()
 	found, _, err := cmd.Find([]string{"databases"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	flag := found.Flags().Lookup("format")
-	if flag == nil {
-		t.Fatal("--format flag not registered")
+	if flag := found.Flags().Lookup("format"); flag != nil {
+		t.Fatalf("--format must be gone, found %q", flag.Usage)
 	}
-	if flag.DefValue != config.ListFormatTable {
-		t.Errorf("--format default = %q, want %q", flag.DefValue, config.ListFormatTable)
-	}
-
-	for _, removed := range []string{"tsv", "csv", "jsonl"} {
-		if config.ValidListFormat(removed) {
-			t.Errorf("%q must not be accepted", removed)
-		}
+	if err := found.ParseFlags([]string{"-f", "table"}); err == nil {
+		t.Fatal("-f must be an unknown flag")
 	}
 }
 

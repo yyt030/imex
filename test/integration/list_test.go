@@ -262,17 +262,17 @@ func TestListCLIObjects(t *testing.T) {
 		}
 	})
 
-	t.Run("default format", func(t *testing.T) {
-		implicit, _, code := env.runListCLI(t, "databases")
+	t.Run("no format flag", func(t *testing.T) {
+		out, errOut, code := env.runListCLI(t, "databases")
 		if code != 0 {
-			t.Fatalf("default format exit %d", code)
+			t.Fatalf("default exit %d", code)
 		}
-		explicit, _, code := env.runListCLI(t, "databases", "-f", "table")
-		if code != 0 {
-			t.Fatalf("table exit %d", code)
+		if strings.Contains(out, "\t") || !strings.Contains(out, "database") ||
+			!strings.Contains(out, "charset") || !strings.Contains(out, "collation") {
+			t.Errorf("default output must be the aligned table:\n%s", out)
 		}
-		if implicit != explicit {
-			t.Errorf("default output is not table:\ndefault:\n%s\ntable:\n%s", implicit, explicit)
+		if strings.Contains(errOut, "format") {
+			t.Errorf("no format should be mentioned for a default run:\n%s", errOut)
 		}
 	})
 
@@ -315,7 +315,7 @@ func TestListCLIUsageErrors(t *testing.T) {
 		{"unknown object", []string{"tabel"}, "unknown object", true},
 		{"old table alias", []string{"tbl"}, "unknown object", true},
 		{"no object", nil, "list requires an object", true},
-		{"bad format", []string{"tables", "-f", "tsv"}, "invalid --format", false},
+		{"removed format flag", []string{"tables", "-f", "tsv"}, "unknown shorthand flag", false},
 		{"bad type", []string{"tables", "--type", "nonsense"}, "invalid --type", false},
 	}
 	for _, tc := range cases {

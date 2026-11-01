@@ -109,7 +109,6 @@ func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 	f.StringVar(&cfg.DefaultCharset, "default-charset", config.DefaultCharset, "Connection charset")
 
 	f.StringVar(&cfg.Pattern, "pattern", "", "LIKE pattern for object names (% and _ are wildcards)")
-	f.StringVarP(&cfg.Format, "format", "f", config.ListFormatTable, "Output format: table")
 	f.BoolVar(&cfg.NoColNames, "no-col-names", false, "Do not print the header row")
 	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")
 	f.StringVar((*string)(&cfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
@@ -133,7 +132,6 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 		"database", cfg.Database,
 		"table", cfg.Table,
 		"pattern", cfg.Pattern,
-		"format", cfg.Format,
 	)
 
 	dsn := common.BuildDSN(&cfg.Config)
@@ -185,10 +183,6 @@ func validateListConfig(cfg *config.ListConfig) error {
 	if err := validateLogLevel(string(cfg.LogLevel)); err != nil {
 		return err
 	}
-	if !config.ValidListFormat(cfg.Format) {
-		return common.Usagef("invalid --format %q: only table is supported", cfg.Format)
-	}
-
 	switch cfg.Object {
 	case list.ObjectDatabases, list.ObjectViews, list.ObjectTriggers, list.ObjectEvents:
 		return nil

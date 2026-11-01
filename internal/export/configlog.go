@@ -51,9 +51,9 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		{"output", "output", cfg.Output},
 		{"format", "format", cfg.Format},
 		{"query", "query", cfg.Query},
-		// query_file is only meaningful when --query-file was the source of the
-		// query; a -q run leaves it empty and prints nothing, so the record keeps
-		// naming where the SQL came from.
+		// query_file is only meaningful when "-q @file" was the source of the
+		// query; an inline -q leaves it empty and prints nothing, so the record
+		// keeps naming where the SQL came from.
 		{"query-file", "query_file", cfg.QueryFile},
 		{"no-overwrite", "no_overwrite", cfg.NoOverwrite},
 

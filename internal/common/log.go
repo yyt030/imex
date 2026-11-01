@@ -38,11 +38,6 @@ var (
 	// IMEX_ERROR_STACK.
 	ErrorStack bool
 
-	// Quiet, when true, suppresses the periodic (5s) progress logs. Completion
-	// summaries, configuration and ERROR records are still printed. Controlled
-	// by --quiet / IMEX_QUIET.
-	Quiet bool
-
 	// LogFormat selects the record layout: "console" (the default, a fixed-width
 	// `time level detail` line resembling a JUL formatter, which greps and
 	// tail-friendly) or "text" (slog's own key=value handler). Controlled by

@@ -84,7 +84,6 @@ func newLiveEnv(t *testing.T) *liveEnv {
 		base.Host, base.Port = host, p
 	}
 
-	common.Quiet = true
 	common.InitLogger(config.LogLevelError)
 	return &liveEnv{db: db, base: base}
 }
@@ -800,9 +799,6 @@ func TestLive_ProgressNeverOutlivesCompletion(t *testing.T) {
 	env.exec(t, "INSERT INTO `"+src+"` VALUES (1,'seed','1.0000','note','2026-01-01 00:00:00',NULL,0)")
 	env.growTable(t, src, 13) // 8192 rows: a run long enough for hundreds of ticks
 	env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
-
-	defer func(q bool) { common.Quiet = q }(common.Quiet)
-	common.Quiet = false // progress records are what is under test
 
 	// The command log is the stream an operator reads, so the ordering is checked
 	// there (see teeLogToFile: with --messages attached the records go only to

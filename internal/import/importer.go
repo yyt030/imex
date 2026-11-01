@@ -108,21 +108,16 @@ func (imp *Importer) Import(ctx context.Context) error {
 	startTime := time.Now()
 	imp.stats = common.NewStats()
 	imp.stopMonitor = common.StartMonitor(ctx, imp.cfg.EffectiveProgressInterval(), imp.stats, func(prev, curr common.StatsSnapshot) {
-		// --quiet suppresses the periodic progress record. --messages receives the
-		// command log itself rather than a report of its own, so a suppressed
-		// record is absent from the file as well.
-		if !common.Quiet {
-			common.Logger.Info("import progress",
-				"read", curr.Processed,
-				"inserted", curr.Inserted,
-				"updated", curr.Updated,
-				"unchanged", curr.Unchanged,
-				"failed", curr.Failed,
-				"rate", fmt.Sprintf("%.2f rows/sec", curr.RatePerSec()),
-				"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
-				"elapsed", common.Seconds(curr.Elapsed),
-			)
-		}
+		common.Logger.Info("import progress",
+			"read", curr.Processed,
+			"inserted", curr.Inserted,
+			"updated", curr.Updated,
+			"unchanged", curr.Unchanged,
+			"failed", curr.Failed,
+			"rate", fmt.Sprintf("%.2f rows/sec", curr.RatePerSec()),
+			"interval_rate", fmt.Sprintf("%.2f rows/sec", curr.IntervalRate(prev)),
+			"elapsed", common.Seconds(curr.Elapsed),
+		)
 	})
 	defer imp.stopMonitor()
 

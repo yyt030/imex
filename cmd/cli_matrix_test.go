@@ -508,9 +508,9 @@ func TestCLIInsertLayout(t *testing.T) {
 // TestCLIProgressInterval pins the cadence option: absent flag keeps the
 // shipped 5 s default on both subcommands, a value at or above the floor reaches
 // the config verbatim, and anything else is a usage error. Two floors are pinned
-// here: a non-positive value, which would panic time.NewTicker (an operator who
-// writes 0 means "never", which is what --quiet already says, so the option does
-// not take on that meaning too), and config.MinProgressInterval, because an
+// here: a non-positive value, which would panic time.NewTicker (0 is not a
+// second way to spell "no progress" — no option switches the heartbeat off, so
+// it stays a usage error), and config.MinProgressInterval, because an
 // interval shorter than a batch turns the heartbeat into a per-batch line — a
 // 200,000-row import runs 200 batches in ~1.4 s (~7 ms each), and at 1ns a
 // 10-row, 4 ms import wrote 780 records and 132 KB of log.

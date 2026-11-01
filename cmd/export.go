@@ -38,7 +38,7 @@ Examples:
 
   # Read the query from a file instead of the command line
   imex export -h 127.0.0.1 -u root -p pass -D mydb \
-    -o /backup/users.sql -f sql --query-file /backup/users_query.sql
+    -o /backup/users.sql -f sql -q @/backup/users_query.sql
 
   # Export to Parquet format
   imex export -h 127.0.0.1 -u root -p pass -D mydb \
@@ -53,7 +53,7 @@ Examples:
     -o /backup/users.del --char-del '!' --col-del '@' \
     -q "SELECT * FROM users"`,
 	SilenceUsage: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		// Apply --default-charset override if explicitly provided.
 		if exportDefaultCharset != "" {
 			exportCfg.DefaultCharset = exportDefaultCharset
@@ -75,7 +75,7 @@ Examples:
 		if exportCfg.Output == "" {
 			return common.Usagef("--output is required")
 		}
-		if err := resolveExportQuery(cmd); err != nil {
+		if err := resolveExportQuery(); err != nil {
 			return err
 		}
 
@@ -130,36 +130,40 @@ func init() {
 	registerExportFlags(exportCmd)
 }
 
-// resolveExportQuery decides where the SELECT comes from and makes it the single
-// effective --query. -q and --query-file are mutually exclusive: asking for both
-// is a usage error rather than a flag-order tie. Exactly one source must supply
-// a non-empty statement, so a missing --query, an empty file, and "neither flag"
-// all fail here, before any connection is opened. The file's surrounding
-// whitespace and a single trailing semicolon are trimmed, because a query file is
-// normally written for a SQL client and both would otherwise reach the parser.
-func resolveExportQuery(cmd *cobra.Command) error {
-	qFlag := cmd.Flags().Changed("query")
-	fFlag := cmd.Flags().Changed("query-file")
-	if qFlag && fFlag {
-		return common.Usagef("--query and --query-file are mutually exclusive")
+// resolveExportQuery turns the -q value into the single effective query. A
+// value starting with "@" is a file name: its contents become the statement,
+// with surrounding whitespace and a single trailing semicolon trimmed (a query
+// file is normally written for a SQL client). "@@" escapes a literal leading
+// "@", so a statement that really starts with an at-sign can still be passed
+// inline. An empty value, an unreadable file, and a file with no statement all
+// fail here, before any connection is opened.
+func resolveExportQuery() error {
+	if exportCfg.Query == "" {
+		return common.Usagef("-q is required (use -q @file to read it from a file)")
 	}
-	if fFlag {
-		data, err := os.ReadFile(exportCfg.QueryFile)
-		if err != nil {
-			return common.Usagef("cannot read --query-file %q: %v", exportCfg.QueryFile, err)
-		}
-		sqlText := strings.TrimSpace(string(data))
-		sqlText = strings.TrimRight(sqlText, ";")
-		sqlText = strings.TrimSpace(sqlText)
-		if sqlText == "" {
-			return common.Usagef("--query-file %q contains no SQL statement", exportCfg.QueryFile)
-		}
-		exportCfg.Query = sqlText
+	if strings.HasPrefix(exportCfg.Query, "@@") {
+		exportCfg.Query = exportCfg.Query[1:]
 		return nil
 	}
-	if exportCfg.Query == "" {
-		return common.Usagef("--query or --query-file is required")
+	if !strings.HasPrefix(exportCfg.Query, "@") {
+		return nil
 	}
+	path := exportCfg.Query[1:]
+	if path == "" {
+		return common.Usagef("invalid -q: missing file path after @")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return common.Usagef("cannot read query file %q: %v", path, err)
+	}
+	sqlText := strings.TrimSpace(string(data))
+	sqlText = strings.TrimRight(sqlText, ";")
+	sqlText = strings.TrimSpace(sqlText)
+	if sqlText == "" {
+		return common.Usagef("query file %q contains no SQL statement", path)
+	}
+	exportCfg.Query = sqlText
+	exportCfg.QueryFile = path
 	return nil
 }
 

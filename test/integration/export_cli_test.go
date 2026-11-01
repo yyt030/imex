@@ -3,7 +3,7 @@ package integration
 // These cases drive the real binary against a real database and pin three
 // behaviours that changed together:
 //
-//   1. A --query/--query-file statement that names a schema ("SELECT * FROM
+//   1. A -q statement (inline or @file) that names a schema ("SELECT * FROM
 //      db.tbl") used to re-attach the connection's own database and fail with
 //      Error 1146 (table 'db.db.tbl' doesn't exist). The dump now references the
 //      bare table everywhere, while SHOW CREATE is looked up in the schema the
@@ -11,8 +11,8 @@ package integration
 //   2. SQL export is data-only by default; --create brings the CREATE TABLE back,
 //      --no-create no longer exists (a plain usage error), and --create on a
 //      non-sql format is a scope reject (exit 2).
-//   3. --query-file reads the statement from a file, is mutually exclusive with
-//      -q, and requires a non-empty statement from exactly one source.
+//   3. "-q @file" reads the statement from a file, "@@" escapes a literal leading
+//      at-sign, and the statement must be non-empty.
 //
 // They share the cliEnv of option_matrix_test.go (same package): one binary built
 // by TestMain, connection flags from IMEX_TEST_DSN, gated like every other
@@ -136,10 +136,10 @@ func TestLive_ExportCreateDefault(t *testing.T) {
 	}
 }
 
-// TestLive_ExportQueryFile covers the --query-file input path and its exclusivity
-// with -q. The file's surrounding whitespace and trailing semicolons are trimmed
-// before the statement reaches the parser, and the configuration record names the
-// source file.
+// TestLive_ExportQueryFile covers the "-q @file" input path: the file's
+// surrounding whitespace and trailing semicolons are trimmed before the
+// statement reaches the parser, the configuration record keeps naming the source
+// file, and "@@" escapes a literal leading at-sign.
 func TestLive_ExportQueryFile(t *testing.T) {
 	env := newCLILive(t)
 	src, dst := env.makePair(t, "qfile")
@@ -154,9 +154,9 @@ func TestLive_ExportQueryFile(t *testing.T) {
 	// --log-level info is appended after the base flags so the config record is
 	// visible; the base already forces --log-level error, which would drop it.
 	out := filepath.Join(env.dir, "qfile.sql")
-	text, code := env.runExportCLI(t, "-f", "sql", "--log-level", "info", "--query-file", qf, "-o", out)
+	text, code := env.runExportCLI(t, "-f", "sql", "--log-level", "info", "-q", "@"+qf, "-o", out)
 	if code != 0 {
-		t.Fatalf("--query-file export must succeed, exit %d\n%s", code, text)
+		t.Fatalf("-q @file export must succeed, exit %d\n%s", code, text)
 	}
 	if !strings.Contains(text, "query_file="+qf) {
 		t.Errorf("config record must name the query source file\n%s", text)
@@ -170,14 +170,9 @@ func TestLive_ExportQueryFile(t *testing.T) {
 		want string
 	}{
 		{
-			name: "mutually_exclusive",
-			args: []string{"-f", "del", "-q", "SELECT 1", "--query-file", qf, "-o", filepath.Join(env.dir, "both.del")},
-			want: "--query and --query-file are mutually exclusive",
-		},
-		{
 			name: "neither_source",
 			args: []string{"-f", "del", "-o", filepath.Join(env.dir, "none.del")},
-			want: "--query or --query-file is required",
+			want: "-q is required",
 		},
 		{
 			name: "empty_query_file",
@@ -186,14 +181,19 @@ func TestLive_ExportQueryFile(t *testing.T) {
 				if err := os.WriteFile(e, []byte("   \n;\n  "), 0o644); err != nil {
 					t.Fatalf("write empty query file: %v", err)
 				}
-				return []string{"-f", "del", "--query-file", e, "-o", filepath.Join(env.dir, "empty_out.del")}
+				return []string{"-f", "del", "-q", "@" + e, "-o", filepath.Join(env.dir, "empty_out.del")}
 			}(),
 			want: "contains no SQL statement",
 		},
 		{
 			name: "missing_query_file",
-			args: []string{"-f", "del", "--query-file", filepath.Join(env.dir, "nope.sql"), "-o", filepath.Join(env.dir, "miss.del")},
-			want: "cannot read --query-file",
+			args: []string{"-f", "del", "-q", "@" + filepath.Join(env.dir, "nope.sql"), "-o", filepath.Join(env.dir, "miss.del")},
+			want: "cannot read query file",
+		},
+		{
+			name: "empty_path",
+			args: []string{"-f", "del", "-q", "@", "-o", filepath.Join(env.dir, "at.del")},
+			want: "missing file path after @",
 		},
 	}
 	for _, tc := range cases {
@@ -207,9 +207,21 @@ func TestLive_ExportQueryFile(t *testing.T) {
 			}
 		})
 	}
+
+	// "@@" is an inline statement whose first character is literally "@", so it
+	// must reach the server as SQL instead of being opened as a file.
+	t.Run("escaped_at", func(t *testing.T) {
+		text, code := env.runExportCLI(t, "-f", "del", "-q", "@@nonsense", "-o", filepath.Join(env.dir, "esc.del"))
+		if code != 1 {
+			t.Fatalf("inline @-statement must reach the server and fail as SQL, got %d\n%s", code, text)
+		}
+		if strings.Contains(text, "cannot read query file") {
+			t.Errorf("@@ must not be read as a file\n%s", text)
+		}
+	})
 }
 
-// TestLive_ExportQueryFileParquet confirms --query-file is format-independent: it
+// TestLive_ExportQueryFileParquet confirms "-q @file" is format-independent: it
 // is an input source, not a layout option, so parquet accepts it too and produces
 // a real file.
 func TestLive_ExportQueryFileParquet(t *testing.T) {
@@ -221,11 +233,11 @@ func TestLive_ExportQueryFileParquet(t *testing.T) {
 		t.Fatalf("write query file: %v", err)
 	}
 	out := filepath.Join(env.dir, "pq.parquet")
-	text, code := env.runExportCLI(t, "-f", "parquet", "--query-file", qf, "-o", out)
+	text, code := env.runExportCLI(t, "-f", "parquet", "-q", "@"+qf, "-o", out)
 	if code != 0 {
-		t.Fatalf("--query-file with --format parquet must succeed, exit %d\n%s", code, text)
+		t.Fatalf("-q @file with --format parquet must succeed, exit %d\n%s", code, text)
 	}
 	if fi, err := os.Stat(out); err != nil || fi.Size() == 0 {
-		t.Fatalf("--query-file parquet produced no usable output (err=%v)", err)
+		t.Fatalf("-q @file parquet produced no usable output (err=%v)", err)
 	}
 }
