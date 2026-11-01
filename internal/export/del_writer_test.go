@@ -384,18 +384,21 @@ func TestDelWriter_MultiByteDelimiters(t *testing.T) {
 
 func TestClassifyColumnKind(t *testing.T) {
 	cases := map[string]common.ColumnKind{
-		"DECIMAL":   common.KindNumber,
-		"int":       common.KindNumber,
-		"BIGINT":    common.KindNumber,
-		"DATE":      common.KindDate,
-		"TIME":      common.KindTime,
-		"DATETIME":  common.KindTimestamp,
-		"TIMESTAMP": common.KindTimestamp,
-		"YEAR":      common.KindYear,
-		"VARCHAR":   common.KindUnknown,
-		"BLOB":      common.KindUnknown,
-		"TINYTEXT":  common.KindUnknown,
-		"ENUM":      common.KindUnknown,
+		"DECIMAL":          common.KindNumber,
+		"int":              common.KindNumber,
+		"BIGINT":           common.KindNumber,
+		"UNSIGNED BIGINT":  common.KindNumber,
+		"UNSIGNED INT":     common.KindNumber,
+		"UNSIGNED DECIMAL": common.KindNumber,
+		"DATE":             common.KindDate,
+		"TIME":             common.KindTime,
+		"DATETIME":         common.KindTimestamp,
+		"TIMESTAMP":        common.KindTimestamp,
+		"YEAR":             common.KindYear,
+		"VARCHAR":          common.KindUnknown,
+		"BLOB":             common.KindUnknown,
+		"TINYTEXT":         common.KindUnknown,
+		"ENUM":             common.KindUnknown,
 	}
 	for name, want := range cases {
 		if got := common.ClassifyColumnKind(name); got != want {

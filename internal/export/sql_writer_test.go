@@ -298,6 +298,100 @@ func TestSQLWriter_YearNormalization(t *testing.T) {
 	}
 }
 
+func TestSQLWriter_NumericColumnsUnquoted(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "t", []string{"id", "amount", "name", "flag", "year"},
+		config.DefaultStatementSize, false, true, "", "utf8mb4")
+	w.SetColumnKinds([]common.ColumnKind{
+		common.KindNumber, common.KindNumber, common.KindUnknown, common.KindNumber, common.KindYear,
+	})
+	if err := w.WriteHeader(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteRawRow([]sql.RawBytes{
+		sql.RawBytes("18446744073709551615"),
+		sql.RawBytes("1.2300"),
+		sql.RawBytes("123"),
+		sql.RawBytes("1"),
+		sql.RawBytes("0000"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "INSERT INTO `t` (`id`, `amount`, `name`, `flag`, `year`) " +
+		"VALUES (18446744073709551615,1.2300,'123',1,'0000');\n"
+	if !strings.Contains(buf.String(), want) {
+		t.Errorf("numeric columns must be bare literals and YEAR must stay quoted:\n got %q\nwant %q",
+			buf.String(), want)
+	}
+}
+
+func TestSQLWriter_WriteRowNumericValuesUnquoted(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "t", []string{"a", "b", "c", "d"},
+		config.DefaultStatementSize, false, true, "", "utf8mb4")
+	w.SetColumnKinds([]common.ColumnKind{
+		common.KindNumber, common.KindNumber, common.KindNumber, common.KindUnknown,
+	})
+	if err := w.WriteHeader(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteRow([]interface{}{[]byte("7"), "8.50", int64(9), "text"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := "VALUES (7,8.50,9,'text');"; !strings.Contains(buf.String(), want) {
+		t.Errorf("expected %q, got:\n%s", want, buf.String())
+	}
+}
+
+func TestSQLWriter_NumericValuesStayQuotedWithoutKinds(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "t", []string{"a", "b"},
+		config.DefaultStatementSize, false, true, "", "utf8mb4")
+	if err := w.WriteHeader(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteRawRow([]sql.RawBytes{sql.RawBytes("123"), sql.RawBytes("1.2300")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := "VALUES ('123','1.2300');"; !strings.Contains(buf.String(), want) {
+		t.Errorf("without column kinds the historical quoted layout must survive, got:\n%s", buf.String())
+	}
+}
+
+func TestSQLWriter_MergedTuplesHaveNoSpaces(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"},
+		config.DefaultStatementSize, false, true, "", "utf8mb4")
+	w.SetColumnKinds([]common.ColumnKind{common.KindNumber, common.KindUnknown})
+	if err := w.WriteHeader(nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 2; i++ {
+		if err := w.WriteRow([]interface{}{[]byte(strconv.Itoa(i)), "row"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := "VALUES (1,'row'),(2,'row');"; !strings.Contains(buf.String(), want) {
+		t.Errorf("expected tuples joined by a bare comma, got:\n%s", buf.String())
+	}
+}
+
 func TestSQLWriter_SingleRowInsert(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, config.DefaultStatementSize,
@@ -333,7 +427,7 @@ func TestSQLWriter_SingleRowInsert(t *testing.T) {
 			t.Errorf("statement is not terminated on its own line: %q", line)
 		}
 	}
-	if !strings.Contains(inserts[0], "VALUES (1, 'row');") {
+	if !strings.Contains(inserts[0], "VALUES (1,'row');") {
 		t.Errorf("unexpected statement text: %q", inserts[0])
 	}
 }
@@ -371,7 +465,7 @@ func TestSQLWriter_SingleRowInsertOverridesStatementSize(t *testing.T) {
 	if got := strings.Count(out, "INSERT INTO"); got != 2 {
 		t.Fatalf("expected 2 statements, got %d in:\n%s", got, out)
 	}
-	if strings.Contains(out, "), (") {
+	if strings.Contains(out, "),(") {
 		t.Errorf("rows were merged into one statement: %q", out)
 	}
 }
@@ -429,7 +523,7 @@ func TestSQLWriter_ExtendedInsertNeverMergedWarns(t *testing.T) {
 	if got := strings.Count(out, "INSERT INTO"); got != 3 {
 		t.Fatalf("expected one statement per row once merging is impossible, got %d in:\n%s", got, out)
 	}
-	if strings.Contains(out, "), (") {
+	if strings.Contains(out, "),(") {
 		t.Errorf("rows merged despite --statement-size 64:\n%s", out)
 	}
 	if n := strings.Count(logs.String(), "--extended-insert never merged"); n != 1 {
@@ -504,5 +598,27 @@ func TestSQLWriter_SingleRowInsertWarnsOnceOnly(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "--extended-insert never merged") {
 		t.Errorf("single-row layout must not report a failed merge: %s", logs.String())
+	}
+}
+
+// TestAppendQuotedSQLEscaping pins the byte-level escaping the append writer
+// performs, including the control bytes that only show up in binary-ish text.
+func TestAppendQuotedSQLEscaping(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"plain", "'plain'"},
+		{"it's", "'it''s'"},
+		{`back\slash`, `'back\\slash'`},
+		{"a\nb\rc\td", `'a\nb\rc\td'`},
+		{"nul\x00z\x1ain", `'nul\0z\Zin'`},
+		{"中文😀", "'中文😀'"},
+		{"", "''"},
+	}
+	for _, tt := range cases {
+		if got := string(appendQuotedSQL(nil, tt.in)); got != tt.want {
+			t.Errorf("appendQuotedSQL(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }

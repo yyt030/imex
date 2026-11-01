@@ -880,11 +880,13 @@ CREATE TABLE `users` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Data for users
-INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (1,'Alice','alice@example.com','2026-01-01 10:00:00');
-INSERT INTO `users` (`id`,`name`,`email`,`created_at`) VALUES (2,'Bob','bob@example.com','2026-01-02 11:00:00');
+INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (1,'Alice','alice@example.com','2026-01-01 10:00:00');
+INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (2,'Bob','bob@example.com','2026-01-02 11:00:00');
 ```
 
 SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended-insert` 的布局），`--extended-insert` 才把多行合并进一条语句。攒批交给导入侧是刻意的分工：导入器把语句拆成行后按 `--batch-size` 重新组批，文件是单行还是合并布局，服务端收到的语句一模一样（实测 20,000 行、`--batch-size 1000`：单行文件 20,000 条语句与合并文件 1 条语句都只产生 20 条服务端 INSERT）。合并布局在导出侧换到的只有体积——100 万行窄表实测：单行 2.5 s / 峰值内存 33 MB / 278,790,434 B（gzip 28,247,005 B），合并 2.7 s / 70 MB / 153,792,809 B（gzip 27,050,101 B，19 条语句）；代价是导入侧要一次性解析整条语句，同一份数据在 `--batch-size 1000` 下峰值内存 44 MB（单行）对 216 MB（合并）。
+
+数值列按列类型写成裸字面量（不加引号），与 mysqldump 的 `VALUES (1,'Alice',…)` 一致：`INT`/`BIGINT`（含 `UNSIGNED`）、`DECIMAL`、`FLOAT`、`DOUBLE` 都直接输出驱动返回的文本；字符串、日期时间与 `YEAR` 仍加引号（`YEAR` 是独立列类型，`'0000'` 的写法保持可读且不依赖两位年份规则）。元组内部与元组之间的分隔符都是 `,`，元组之间的连接形态是 `),(`（无空格）；列名列表仍保留 `, ` 便于阅读。实测 3 行边界表：`BIGINT UNSIGNED` 最大值、`DECIMAL(65,30)` 的 65 位精度、`DOUBLE` 的 `5e-324` 都原样回导，旧（带引号）与新（裸字面量）两种文件加载后的 `CHECKSUM TABLE` 相同。
 
 ### 三类格式共有的值处理
 
@@ -952,6 +954,14 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | 文档与实现不一致：测试资产计数、日志命名规则、`--quiet` 的保留项，以及 `docs/cli-oracle.txt` 里从未折进基线的帮助改写 | ① 计数按实测改为 49 个 `_test.go` / 272 个 `Test*`（`internal/common` 11/48、`internal/import` 13/57、集成 `live_mysql_test.go` 12）；② 命名规则由“事件词固定为五个”改为“主要事件词是……”，补上 `retrying`/`executing`/`applied`/`derived` 与 `slow …`/`… stalled`，并说明阈值告警按发生次数各一行；③ `--quiet` 保留项统一为“配置、结束统计、WARN 与 ERROR”；④ `## export` 基线按当前帮助重新生成（吸收 2026-10-29 遗留的 15 行改写），`## import`/`## root` 的冻结快照差异实测 22/5 行，新增 note 14。行为零变化，详见需求文档变更记录 88 |
 | `--progress-interval` 的下限 10ms 会让进度行跟着批次走：实测 200,000 行导入分 200 批、发送段 1.391s（约 7ms 一批），10ms 档等于每批一条；更小的值更糟，`1ns` 曾有 6400 行导出打出 1355 条进度（日志 175,557 字节） | 下限提到 **100ms**（参数仍是 duration，`100ms`/`500ms`/`5s` 都合法，默认 5s 不变）：`10ms`/`1ms` 退出 **2** 并报 `invalid --progress-interval 10ms: must be >= 100ms`，`0`/负值仍是 `must be > 0`；100ms 档实测 262,144 行导出 0.18s 打 1 条、六行 `SLEEP(0.05)` 查询 0.301s 打 3 条。拒绝此前合法的取值属不兼容变更，按档位表字面取 **X+1**，版本由 0.5.3 升至 **1.0.0**；`## export` 基线重新生成（88 行，diff 为空）。详见需求文档变更记录 89。**注（2026-10-31 用户裁决）：本行按字面定为 X+1 的结论已纠正为 Y+1——版本号最终定为 0.6.0、X 保持 0；本地 `v1.0.0` tag 已删除，纠正提交上先打 `v1.1.0`、同日按用户二次指令改打 `v0.6.0`（详见变更记录 90、91）。** |
 | 上一轮把 `--progress-interval` 下限提到 100ms 判为 X+1、版本发成 1.0.0；用户复核裁定按 **Y+1** 计，且 X 不升 | 版本先纠正为 1.1.0，同日按用户二次指令定为 **0.6.0**（`Makefile` 首行 1.0.0 → 0.6.0，0.x 期第二位 +1），行为与 `99d289d` 完全一致；删除本地未 push 的 `v1.0.0` 与中间态 `v1.1.0`，在最终纠正提交上打附注 tag `v0.6.0`（尚未 push）。验证：`gofmt -l` 空、`go vet` 干净、七包 `-race` 全通过、真实库 **131 RUN / 0 SKIP / 0 FAIL**、`statementCapSlack` = 3、help 超 118 字节 0 行。详见需求文档变更记录 90、91 |
+
+## 修复记录（v0.9.0）
+
+以下为 `v0.8.0` 之后、随 `v0.9.0` 一起发布的记录：
+
+| 缺陷 | 修复 |
+|------|------|
+| SQL 导出把数值列也写成带引号的字符串，`VALUES` 元组内和元组间还保留 `, ` 空格，产物比 mysqldump 大，数值列的类型信息在文本里也看不出来 | `SQLWriter` 新增 `SetColumnKinds`，导出器把 `ApplyColumnKinds(colTypes)` 传入；`KindNumber` 列直接写驱动返回的裸文本，`UNSIGNED` 前缀在分类时剥掉（`BIGINT UNSIGNED` 最大值不再加引号），字符串/日期时间/`YEAR` 仍加引号。元组内与元组间的分隔符改为 `,`，列名列表仍保留 `, `。3 行边界表实测：文件 800 B → 710 B（少 60 个引号 + 30 个元组空格），旧/新文件加载后的 `CHECKSUM TABLE` 均为 `3660138194`，`DECIMAL(65,30)`、`BIGINT UNSIGNED` 最大值、`DOUBLE` 的 `5e-324` 均无位数丢失；`imex import` 回导 3 行、退出 0。`FLOAT` 的 6 位文本精度是 MariaDB 文本协议的既有问题，加不加引号都一样，本轮未改。 |
 
 ## 修复记录（v0.8.0）
 
@@ -1077,3 +1087,4 @@ imex/
 ## 许可证
 
 MIT License
+| SQL 导出逐行在 `strings.Builder` 里拼值、再整行复制进批次、刷新时再复制进 `bufio`，300 万行单线程合并要 2.95 s，一次导出触发 215 次 GC | SQL 写入器改为字节追加：`row`/`batch` 改用复用的 `[]byte`，数值与字符串直接追加（`appendQuotedSQL` 就地转义），合并批次一次写出。同一张 300 万行表、5 次交错实测中位数：单行 2.73→2.33 s（-15%）、合并单线程 2.95→2.21 s（-25%）、合并 4 线程 2.16→1.70 s（-21%），SQL 产物 md5 全部不变；GC 次数 362→213、215→71；峰值 RSS 单线程 56→50 MB、4 线程 156→139 MB。DEL 写入器试改后仅 1–3%，已回退，`del_writer.go` 未改。 |

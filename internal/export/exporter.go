@@ -278,6 +278,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		}
 		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, e.config.Create, !e.config.NoData, createStmt, e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
+		sqlWriter.SetColumnKinds(common.ApplyColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		writer = sqlWriter
 	case "parquet":
@@ -739,6 +740,7 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 		}
 		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, false, !e.config.NoData, "", e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
+		sqlWriter.SetColumnKinds(common.ApplyColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		writer = sqlWriter
 	default:

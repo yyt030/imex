@@ -22,7 +22,10 @@ const (
 
 // ClassifyColumnKind maps a driver DatabaseTypeName to a ColumnKind.
 func ClassifyColumnKind(databaseTypeName string) ColumnKind {
-	switch strings.ToUpper(databaseTypeName) {
+	// go-sql-driver/mysql prefixes unsigned columns with "UNSIGNED "
+	// (e.g. "UNSIGNED BIGINT"), while the base type is what decides the kind.
+	name := strings.TrimPrefix(strings.ToUpper(databaseTypeName), "UNSIGNED ")
+	switch name {
 	case "DECIMAL", "DEC", "NUMERIC", "FLOAT", "DOUBLE", "REAL",
 		"TINYINT", "SMALLINT", "MEDIUMINT", "INT", "INTEGER", "BIGINT", "SERIAL":
 		return KindNumber

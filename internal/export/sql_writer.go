@@ -27,15 +27,23 @@ type SQLWriter struct {
 	// obtain it before opening the streaming cursor, because the single
 	// export connection is held by the open result set.
 	createStmt string
-	batchBuf   strings.Builder
-	valueBuf   strings.Builder // Reuse for each row to avoid allocation
+	// batch holds the pending VALUES tuples (without the INSERT prefix);
+	// row is the scratch tuple for the row being formatted. Both are byte
+	// slices reused across rows: formatting appends in place instead of
+	// building a string per value and copying it again into the batch.
+	batch      []byte
+	row        []byte
 	batchCount int
-	colList    string // cached column list string
+	colList    []byte // cached INSERT prefix, including the column list
 	charset    string // connection charset for SET NAMES header
 	// binaryFlags[i] marks column i as a binary column (BLOB/BINARY/etc).
 	// When hexBlob is true, binary columns are written as 0x... hex literals.
 	binaryFlags []bool
 	hexBlob     bool
+	// kinds[i] is the SQL literal kind of column i. Numeric columns are written
+	// as bare literals (no quotes) so the output matches mysqldump; when kinds
+	// is nil every value keeps the historical quoted representation.
+	kinds []common.ColumnKind
 	// singleRow emits one INSERT per row instead of accumulating VALUES tuples
 	// up to statementSize.
 	singleRow      bool
@@ -71,6 +79,19 @@ func NewSQLWriter(w io.Writer, tableName string, columns []string, statementSize
 func (s *SQLWriter) SetBinaryFormat(binaryFlags []bool, hexBlob bool) {
 	s.binaryFlags = binaryFlags
 	s.hexBlob = hexBlob
+}
+
+// SetColumnKinds configures per-column SQL literal kinds. Numeric columns are
+// written unquoted; other kinds keep the quoted string representation.
+func (s *SQLWriter) SetColumnKinds(kinds []common.ColumnKind) {
+	s.kinds = kinds
+}
+
+func (s *SQLWriter) columnKind(idx int) common.ColumnKind {
+	if idx >= 0 && idx < len(s.kinds) {
+		return s.kinds[idx]
+	}
+	return common.KindUnknown
 }
 
 // WriteHeader writes the SET NAMES charset line, then CREATE TABLE if enabled.
@@ -132,37 +153,21 @@ func (s *SQLWriter) WriteRow(values []interface{}) error {
 	if !s.writeData {
 		return nil
 	}
+	s.ensureColList()
 
-	// Build column list if not cached
-	if s.colList == "" {
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO `")
-		sb.WriteString(s.tableName)
-		sb.WriteString("` (")
-		for i, col := range s.columns {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("`")
-			sb.WriteString(col)
-			sb.WriteString("`")
-		}
-		sb.WriteString(") VALUES ")
-		s.colList = sb.String()
-	}
-
-	// Build VALUES tuple (reuse valueBuf to avoid allocation)
-	s.valueBuf.Reset()
-	s.valueBuf.WriteString("(")
+	// Build VALUES tuple in the scratch row buffer, appending in place. The
+	// historical implementation built one string per value and copied the
+	// tuple again into the batch, which cost three passes over every row.
+	s.row = s.row[:0]
+	s.row = append(s.row, '(')
 	for i, val := range values {
 		if i > 0 {
-			s.valueBuf.WriteString(", ")
+			s.row = append(s.row, ',')
 		}
-		s.valueBuf.WriteString(s.formatSQLValue(val, i))
+		s.row = s.appendSQLValue(s.row, val, i)
 	}
-	s.valueBuf.WriteString(")")
+	s.row = append(s.row, ')')
 
-	// Add to batch
 	return s.appendValueTuple()
 }
 
@@ -171,75 +176,77 @@ func (s *SQLWriter) WriteRawRow(values []sql.RawBytes) error {
 	if !s.writeData {
 		return nil
 	}
+	s.ensureColList()
 
-	// Build column list if not cached
-	if s.colList == "" {
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO `")
-		sb.WriteString(s.tableName)
-		sb.WriteString("` (")
-		for i, col := range s.columns {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("`")
-			sb.WriteString(col)
-			sb.WriteString("`")
-		}
-		sb.WriteString(") VALUES ")
-		s.colList = sb.String()
-	}
-
-	// Build VALUES tuple (reuse valueBuf to avoid allocation)
-	s.valueBuf.Reset()
-	s.valueBuf.WriteString("(")
+	s.row = s.row[:0]
+	s.row = append(s.row, '(')
 	for i, val := range values {
 		if i > 0 {
-			s.valueBuf.WriteString(", ")
+			s.row = append(s.row, ',')
 		}
-		s.valueBuf.WriteString(s.formatRawSQLValue(val, i))
+		s.row = s.appendRawSQLValue(s.row, val, i)
 	}
-	s.valueBuf.WriteString(")")
+	s.row = append(s.row, ')')
 
-	// Add to batch
 	return s.appendValueTuple()
 }
 
-// appendValueTuple hands the tuple built in valueBuf to the output: in batched
+// ensureColList builds the cached "INSERT INTO `t` (`a`, `b`) VALUES " prefix.
+func (s *SQLWriter) ensureColList() {
+	if len(s.colList) > 0 {
+		return
+	}
+	buf := make([]byte, 0, 64)
+	buf = append(buf, "INSERT INTO `"...)
+	buf = append(buf, s.tableName...)
+	buf = append(buf, "` ("...)
+	for i, col := range s.columns {
+		if i > 0 {
+			buf = append(buf, ',', ' ')
+		}
+		buf = append(buf, '`')
+		buf = append(buf, col...)
+		buf = append(buf, '`')
+	}
+	buf = append(buf, ") VALUES "...)
+	s.colList = buf
+}
+
+// appendValueTuple hands the tuple built in row to the output: in batched
 // mode it joins the pending VALUES list, flushing the statement once
 // --statement-size is reached; in single-row mode it writes the row as its own
 // INSERT immediately.
 func (s *SQLWriter) appendValueTuple() error {
 	if s.singleRow {
-		size := len(s.colList) + s.valueBuf.Len() + 2 // ";\n"
+		size := len(s.colList) + len(s.row) + 2 // ";\n"
 		if size > s.statementSize {
 			s.warnOversizedStatement(size)
 		}
-		return s.writeStatement(s.valueBuf.String())
+		return s.writeStatement(s.row)
 	}
 
-	if s.batchBuf.Len()+s.valueBuf.Len()+len(s.colList) > s.statementSize && s.batchCount > 0 {
+	if len(s.batch)+len(s.row)+len(s.colList) > s.statementSize && s.batchCount > 0 {
 		if err := s.flushBatch(); err != nil {
 			return err
 		}
 	}
 
 	if s.batchCount > 0 {
-		s.batchBuf.WriteString(", ")
+		s.batch = append(s.batch, ',')
 		s.everMerged = true
 	}
-	s.batchBuf.WriteString(s.valueBuf.String())
+	s.batch = append(s.batch, s.row...)
 	s.batchCount++
 	s.mergedTuples++
 	return nil
 }
 
 // writeStatement emits one complete INSERT on exactly one physical line.
-func (s *SQLWriter) writeStatement(tuple string) error {
-	if _, err := s.bw.WriteString(s.colList); err != nil {
+func (s *SQLWriter) writeStatement(tuple []byte) error {
+	if _, err := s.bw.Write(s.colList); err != nil {
 		return err
 	}
-	if _, err := s.bw.WriteString(tuple); err != nil {
+	if _, err := s.bw.Write(tuple); err != nil {
 		return err
 	}
 	_, err := s.bw.WriteString(";\n")
@@ -279,12 +286,12 @@ func (s *SQLWriter) flushBatch() error {
 		return nil
 	}
 
-	if err := s.writeStatement(s.batchBuf.String()); err != nil {
+	if err := s.writeStatement(s.batch); err != nil {
 		return err
 	}
 
-	// Reset batch state
-	s.batchBuf.Reset()
+	// Reset batch state, keeping the buffer capacity for the next statement.
+	s.batch = s.batch[:0]
 	s.batchCount = 0
 	return nil
 }
@@ -311,9 +318,12 @@ func (s *SQLWriter) WriteFooter() error {
 	return s.bw.Flush()
 }
 
-func (s *SQLWriter) formatSQLValue(val interface{}, colIdx int) string {
+// appendSQLValue appends the SQL literal for one value to dst. Numeric columns
+// are emitted as bare literals; strings are quoted and escaped in place, with
+// no intermediate string allocation on the common path.
+func (s *SQLWriter) appendSQLValue(dst []byte, val interface{}, colIdx int) []byte {
 	if val == nil {
-		return "NULL"
+		return append(dst, "NULL"...)
 	}
 
 	// Binary column with hex encoding: write as 0x... literal.
@@ -321,88 +331,119 @@ func (s *SQLWriter) formatSQLValue(val interface{}, colIdx int) string {
 	if s.hexBlob && colIdx < len(s.binaryFlags) && s.binaryFlags[colIdx] {
 		switch v := val.(type) {
 		case []byte:
-			return "0x" + hex.EncodeToString(v)
+			dst = append(dst, '0', 'x')
+			return append(dst, hex.EncodeToString(v)...)
 		case string:
-			return "0x" + hex.EncodeToString([]byte(v))
+			dst = append(dst, '0', 'x')
+			return append(dst, hex.EncodeToString([]byte(v))...)
+		}
+	}
+
+	// Numeric columns are emitted as bare SQL literals. The driver returns
+	// numeric wire text as []byte, so without this branch every number would
+	// be quoted like a string and the dump would diverge from mysqldump.
+	if s.columnKind(colIdx) == common.KindNumber {
+		switch v := val.(type) {
+		case []byte:
+			return append(dst, v...)
+		case sql.RawBytes:
+			return append(dst, v...)
+		case string:
+			return append(dst, v...)
 		}
 	}
 
 	switch v := val.(type) {
 	case []byte:
-		return "'" + escapeSQLString(string(v)) + "'"
+		return appendQuotedSQL(dst, bytesToString(v))
 	case string:
-		return "'" + escapeSQLString(v) + "'"
+		return appendQuotedSQL(dst, v)
 	case time.Time:
-		return "'" + v.Format("2006-01-02 15:04:05") + "'"
+		dst = append(dst, '\'')
+		dst = append(dst, v.Format("2006-01-02 15:04:05")...)
+		return append(dst, '\'')
 	case int:
-		return strconv.FormatInt(int64(v), 10)
+		return strconv.AppendInt(dst, int64(v), 10)
 	case int8:
-		return strconv.FormatInt(int64(v), 10)
+		return strconv.AppendInt(dst, int64(v), 10)
 	case int16:
-		return strconv.FormatInt(int64(v), 10)
+		return strconv.AppendInt(dst, int64(v), 10)
 	case int32:
-		return strconv.FormatInt(int64(v), 10)
+		return strconv.AppendInt(dst, int64(v), 10)
 	case int64:
-		return strconv.FormatInt(v, 10)
+		return strconv.AppendInt(dst, v, 10)
 	case uint:
-		return strconv.FormatUint(uint64(v), 10)
+		return strconv.AppendUint(dst, uint64(v), 10)
 	case uint8:
-		return strconv.FormatUint(uint64(v), 10)
+		return strconv.AppendUint(dst, uint64(v), 10)
 	case uint16:
-		return strconv.FormatUint(uint64(v), 10)
+		return strconv.AppendUint(dst, uint64(v), 10)
 	case uint32:
-		return strconv.FormatUint(uint64(v), 10)
+		return strconv.AppendUint(dst, uint64(v), 10)
 	case uint64:
-		return strconv.FormatUint(v, 10)
+		return strconv.AppendUint(dst, v, 10)
 	case float32:
-		return strconv.FormatFloat(float64(v), 'f', -1, 32)
+		return strconv.AppendFloat(dst, float64(v), 'f', -1, 32)
 	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64)
+		return strconv.AppendFloat(dst, v, 'f', -1, 64)
 	case bool:
 		if v {
-			return "1"
+			return append(dst, '1')
 		}
-		return "0"
+		return append(dst, '0')
 	default:
-		return "'" + escapeSQLString(fmt.Sprintf("%v", v)) + "'"
+		return appendQuotedSQL(dst, fmt.Sprintf("%v", v))
 	}
 }
 
-// Global SQL escape replacer - reuse to avoid allocation overhead
+// needEscapeChars lists every byte appendQuotedSQL has to rewrite.
+const needEscapeChars = "'\n\r\t\\\x00\x1a"
+
+// appendQuotedSQL appends a single-quoted, escaped SQL string literal.
 // Single quotes use SQL-standard double-write (”), not backslash escape.
 // Newline, carriage return, tab and backslash use backslash escapes so every
 // INSERT fits on a single physical line (file is line-splittable).
-var sqlEscapeReplacer = strings.NewReplacer(
-	"\\", "\\\\",
-	"'", "''",
-	"\n", "\\n",
-	"\r", "\\r",
-	"\t", "\\t",
-	"\x00", "\\0",
-	"\x1a", "\\Z",
-)
-
-// needEscapeChars 包含所有需要转义的字符
-const needEscapeChars = "'\n\r\t\\\x00\x1a"
-
-func escapeSQLString(s string) string {
-	// 快速路径：检查是否需要转义
+func appendQuotedSQL(dst []byte, s string) []byte {
+	dst = append(dst, '\'')
 	if !strings.ContainsAny(s, needEscapeChars) {
-		return s
+		dst = append(dst, s...)
+		return append(dst, '\'')
 	}
-	return sqlEscapeReplacer.Replace(s)
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\'':
+			dst = append(dst, '\'', '\'')
+		case '\n':
+			dst = append(dst, '\\', 'n')
+		case '\r':
+			dst = append(dst, '\\', 'r')
+		case '\t':
+			dst = append(dst, '\\', 't')
+		case 0:
+			dst = append(dst, '\\', '0')
+		case 0x1a:
+			dst = append(dst, '\\', 'Z')
+		default:
+			dst = append(dst, c)
+		}
+	}
+	return append(dst, '\'')
 }
 
-// formatRawSQLValue formats sql.RawBytes directly to avoid allocation
-func (s *SQLWriter) formatRawSQLValue(val sql.RawBytes, colIdx int) string {
+// appendRawSQLValue is appendSQLValue for the sql.RawBytes fast path.
+func (s *SQLWriter) appendRawSQLValue(dst []byte, val sql.RawBytes, colIdx int) []byte {
 	if val == nil {
-		return "NULL"
+		return append(dst, "NULL"...)
 	}
 	// Binary column with hex encoding: write as 0x... literal.
-	// Empty binary values write as 0x (zero-length hex literal), not '' or NULL.
 	if s.hexBlob && colIdx < len(s.binaryFlags) && s.binaryFlags[colIdx] {
-		return "0x" + hex.EncodeToString(val)
+		dst = append(dst, '0', 'x')
+		return append(dst, hex.EncodeToString(val)...)
 	}
-	// 零拷贝转换：[]byte -> string，避免内存分配
-	return "'" + escapeSQLString(bytesToString(val)) + "'"
+	if s.columnKind(colIdx) == common.KindNumber {
+		return append(dst, val...)
+	}
+	return appendQuotedSQL(dst, bytesToString(val))
 }

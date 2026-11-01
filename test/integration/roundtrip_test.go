@@ -467,7 +467,7 @@ func TestSQLRoundTrip_SingleRowInsert(t *testing.T) {
 		t.Fatalf("expected %d INSERT statements, got %d in:\n%s", len(rows), len(lines), text)
 	}
 	for _, line := range statementLines(text) {
-		if strings.Count(line, "), (") != 0 {
+		if strings.Count(line, "),(") != 0 {
 			t.Fatalf("statement merged rows: %q", line)
 		}
 	}

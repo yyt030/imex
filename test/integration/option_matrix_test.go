@@ -457,9 +457,9 @@ func TestOptionMatrixPartialOutputCleanup(t *testing.T) {
 
 // statementCapSlack is how far a completed multi-row INSERT may exceed
 // --statement-size. The writer tests the cap before appending a tuple, counting
-// the pending VALUES and the column list but not the ", " that joins the new
-// tuple or the ";\n" that closes the statement, so four bytes is the ceiling.
-const statementCapSlack = 4
+// the pending VALUES and the column list but not the "," that joins the new
+// tuple or the ";\n" that closes the statement, so three bytes is the ceiling.
+const statementCapSlack = 3
 
 // TestOptionMatrixSQLBatching asserts the SQL layout contract from both sides:
 // the default writes one INSERT per row, --extended-insert merges them (bounded
@@ -518,9 +518,9 @@ func TestOptionMatrixSQLBatching(t *testing.T) {
 					// A single row larger than the cap must still be emitted whole
 					// (graceful degradation), so only multi-row statements are bound.
 					// The cap is checked as "pending VALUES + new tuple + column list",
-					// so the ", " join and the ";\n" terminator land on top of it: four
+					// so the "," join and the ";\n" terminator land on top of it: three
 					// bytes is the most a completed statement can run over.
-					if strings.Count(line, "), (") > 0 && len(line) > tc.maxStmtBytes+statementCapSlack {
+					if strings.Count(line, "),(") > 0 && len(line) > tc.maxStmtBytes+statementCapSlack {
 						t.Errorf("multi-row statement is %d bytes, over the %d-byte --statement-size: %s",
 							len(line), tc.maxStmtBytes, firstLines(line, 1))
 					}
@@ -594,9 +594,9 @@ func TestOptionMatrixParallelOutput(t *testing.T) {
 				t.Errorf("parallel dump has %d INSERT headers vs %d serial, extra=%d out of bounds for %d ranges",
 					nParallel, nSerial, extra, maxRanges)
 			}
-			// Each extra statement costs exactly one header: the row separator ", "
-			// and the statement terminator + newline ";\n" are the same width.
-			if delta := len(got) - len(mergedText); delta != extra*len(header) {
+			// Each extra statement costs exactly one header plus one byte: the row
+			// separator "," is replaced by the statement terminator + newline ";\n".
+			if delta := len(got) - len(mergedText); delta != extra*(len(header)+1) {
 				t.Errorf("parallel dump is %d bytes larger than serial for %d extra statements (header %d bytes)",
 					delta, extra, len(header))
 			}

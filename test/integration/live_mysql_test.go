@@ -342,6 +342,69 @@ func TestLive_RoundTripEveryFormat(t *testing.T) {
 	}
 }
 
+// TestLive_SQLNumericLiteralsUnquoted pins the exporter wiring, not just the
+// writer: the exporter must pass the driver column types to the SQL writer so
+// numeric values lose their quotes (including BIGINT UNSIGNED, whose driver
+// type name carries an "UNSIGNED " prefix). YEAR is not a number for this
+// purpose and stays quoted.
+func TestLive_SQLNumericLiteralsUnquoted(t *testing.T) {
+	env := newLiveEnv(t)
+	dir := t.TempDir()
+
+	src := env.liveTable(t, "sqlnum_src")
+	dst := env.liveTable(t, "sqlnum_dst")
+	env.exec(t, "CREATE TABLE `"+src+"` ("+
+		"id INT NOT NULL PRIMARY KEY, "+
+		"u BIGINT UNSIGNED, "+
+		"d DECIMAL(10,4), "+
+		"s VARCHAR(16), "+
+		"db DOUBLE, "+
+		"y YEAR"+
+		")")
+	env.exec(t, "INSERT INTO `"+src+"` VALUES (?,?,?,?,?,?)",
+		1, uint64(18446744073709551615), "1.2300", "x", 5e-324, 0)
+	env.exec(t, "INSERT INTO `"+src+"` VALUES (?,?,?,?,?,?)",
+		2, uint64(0), "-0.0001", "y", 1.7976931348623157e308, 2155)
+
+	file := filepath.Join(dir, "numeric.sql")
+	env.export(t, exportOptions{table: src, format: "sql", output: file, threads: 1})
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	out := string(data)
+	for _, want := range []string{
+		"VALUES (1,18446744073709551615,1.2300,'x',5e-324,'0000');",
+		"VALUES (2,0,-0.0001,'y',1.7976931348623157e+308,'2155');",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing numeric literal %q in:\n%s", want, out)
+		}
+	}
+	for _, quoted := range []string{
+		"'18446744073709551615'", "'1.2300'", "'5e-324'", "'1.7976931348623157e+308'",
+	} {
+		if strings.Contains(out, quoted) {
+			t.Errorf("numeric value %s is still quoted:\n%s", quoted, out)
+		}
+	}
+
+	env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
+	env.importFile(t, importOptions{
+		input: file, format: "sql", mode: config.ImportModeInsert, table: dst, threads: 1,
+	})
+	var mismatches int
+	if err := env.db.QueryRow(
+		"SELECT COUNT(*) FROM `" + src + "` s JOIN `" + dst + "` d USING(id) " +
+			"WHERE NOT (s.u <=> d.u AND s.d <=> d.d AND s.s <=> d.s AND s.db <=> d.db AND s.y <=> d.y)",
+	).Scan(&mismatches); err != nil {
+		t.Fatalf("compare numeric rows: %v", err)
+	}
+	if mismatches != 0 {
+		t.Errorf("numeric SQL round trip has %d mismatching rows", mismatches)
+	}
+}
+
 // TestLive_GeneratedColumnsExcluded pins the import behaviour for computed
 // columns: the export carries their values, but writing them back is rejected
 // under strict mode (Error 1906), so the INSERT list must leave them out and let
