@@ -69,15 +69,15 @@ func shardRangeCount(threads int) int {
 // Every fallback here is the behaviour this function had before sampling
 // existed, so sampling can speed a run up and cannot change what it writes for
 // any table that used to get good boundaries.
-func planShardRanges(db *sql.DB, tableName string, info *ShardInfo, numRanges int) []ShardRange {
+func planShardRanges(db *sql.DB, target shardTarget, info *ShardInfo, numRanges int) []ShardRange {
 	if numRanges < 2 {
 		return GenerateShardRanges(info, numRanges)
 	}
 
-	rows, avgRowLen, ok := tableStats(db, tableName)
+	rows, avgRowLen, ok := tableStats(db, target)
 	if !ok {
 		common.Logger.Debug("no row estimate for the table, splitting the key range by value width",
-			"table", tableName)
+			"table", target.display())
 		return GenerateShardRanges(info, numRanges)
 	}
 
@@ -85,10 +85,10 @@ func planShardRanges(db *sql.DB, tableName string, info *ShardInfo, numRanges in
 		return GenerateShardRanges(info, numRanges)
 	}
 
-	ranges, err := sampleShardRanges(db, tableName, info, numRanges, rows)
+	ranges, err := sampleShardRanges(db, target, info, numRanges, rows)
 	if err != nil {
 		common.Logger.Warn("shard boundary sampling unavailable, splitting the key range by value width",
-			"table", tableName, "shard_key", info.Columns[0], "reason", err.Error())
+			"table", target.display(), "shard_key", info.Columns[0], "reason", err.Error())
 		return GenerateShardRanges(info, numRanges)
 	}
 	return ranges
@@ -151,15 +151,15 @@ func denseEnoughForEqualWidth(info *ShardInfo, rows int64) bool {
 // derive them from index samples and they are good to a few percent — which is
 // enough to place boundaries, because a boundary is always a value the probe
 // actually found, never an interpolated one.
-func tableStats(db *sql.DB, tableName string) (rows, avgRowLen int64, ok bool) {
+func tableStats(db *sql.DB, target shardTarget) (rows, avgRowLen int64, ok bool) {
 	query := `
 		SELECT TABLE_ROWS, AVG_ROW_LENGTH
 		FROM INFORMATION_SCHEMA.TABLES
-		WHERE TABLE_SCHEMA = DATABASE()
+		WHERE ` + schemaFilter + `
 			AND TABLE_NAME = ?
 	`
-	common.LogInteractionSQL(query, tableName)
-	if err := db.QueryRow(common.TagSQL(query), tableName).Scan(&rows, &avgRowLen); err != nil {
+	common.LogInteractionSQL(query, target.schema, target.table)
+	if err := db.QueryRow(common.TagSQL(query), target.schema, target.table).Scan(&rows, &avgRowLen); err != nil {
 		return 0, 0, false
 	}
 	if rows <= 0 {
@@ -201,7 +201,7 @@ func probeArg(v interface{}, integer bool) interface{} {
 // estimate moves all later boundaries together instead of opening a hole: the
 // ranges stay a contiguous, duplicate-free cover of the key space, which is what
 // the merged dump's correctness rests on.
-func sampleShardRanges(db *sql.DB, tableName string, info *ShardInfo, numRanges int, rows int64) ([]ShardRange, error) {
+func sampleShardRanges(db *sql.DB, target shardTarget, info *ShardInfo, numRanges int, rows int64) ([]ShardRange, error) {
 	col := info.Columns[0]
 	quoted := fmt.Sprintf("`%s`", col)
 	integer := isIntegerKeyType(info.ColumnTypes[0])
@@ -217,8 +217,8 @@ func sampleShardRanges(db *sql.DB, tableName string, info *ShardInfo, numRanges 
 		// The offset is one less than the step: the boundary sought is the
 		// rowsPerRange-th row after the previous one.
 		probeSQL := fmt.Sprintf(
-			"SELECT %s FROM `%s` WHERE %s > ? ORDER BY %s LIMIT 1 OFFSET %d",
-			quoted, tableName, quoted, quoted, rowsPerRange-1)
+			"SELECT %s FROM %s WHERE %s > ? ORDER BY %s LIMIT 1 OFFSET %d",
+			quoted, target.source(), quoted, quoted, rowsPerRange-1)
 		probeBound := probeArg(bounds[len(bounds)-1], integer)
 		common.LogInteractionSQL(probeSQL, probeBound)
 		query := common.TagSQL(probeSQL)
@@ -251,7 +251,7 @@ func sampleShardRanges(db *sql.DB, tableName string, info *ShardInfo, numRanges 
 	}
 	if common.Logger != nil {
 		common.Logger.Debug("shard boundaries sampled from the key distribution",
-			"table", tableName, "shard_key", col, "ranges", len(bounds),
+			"table", target.display(), "shard_key", col, "ranges", len(bounds),
 			"rows_per_range", rowsPerRange)
 	}
 	return rangesFromBounds(info, bounds), nil

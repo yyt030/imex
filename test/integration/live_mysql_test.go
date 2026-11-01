@@ -98,6 +98,21 @@ func (e *liveEnv) liveTable(t *testing.T, prefix string) string {
 	return name
 }
 
+// liveSchema returns a run-unique scratch database and registers its removal. A
+// test that has to show a query's own schema beating --database needs a second
+// schema to name; nothing else on the server distinguishes the two.
+func (e *liveEnv) liveSchema(t *testing.T, prefix string) string {
+	t.Helper()
+	name := fmt.Sprintf("imex_it_%s_%d", prefix, time.Now().UnixNano())
+	if _, err := e.db.Exec("CREATE DATABASE `" + name + "`"); err != nil {
+		t.Skipf("CREATE DATABASE needs a test user with that privilege: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.db.Exec("DROP DATABASE IF EXISTS `" + name + "`")
+	})
+	return name
+}
+
 func (e *liveEnv) exec(t *testing.T, query string, args ...interface{}) {
 	t.Helper()
 	if _, err := e.db.Exec(query, args...); err != nil {

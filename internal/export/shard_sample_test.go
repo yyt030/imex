@@ -306,7 +306,7 @@ func TestPlanShardRangesTextKey(t *testing.T) {
 	db := newSampleDB(t, f)
 
 	info := textKeyInfo("0000", "ffff")
-	ranges := planShardRanges(db, "bench_str2", info, 8)
+	ranges := planShardRanges(db, shardTarget{table: "bench_str2"}, info, 8)
 
 	// Three values came back, so three internal boundaries: four ranges, and the
 	// run stops asking once the server says there is no such row.
@@ -371,7 +371,7 @@ func TestPlanShardRangesSkipsDuplicateBoundaries(t *testing.T) {
 	}
 	db := newSampleDB(t, f)
 
-	ranges := planShardRanges(db, "bench_str2", textKeyInfo("0000", "ffff"), 8)
+	ranges := planShardRanges(db, shardTarget{table: "bench_str2"}, textKeyInfo("0000", "ffff"), 8)
 	if len(ranges) != 3 {
 		t.Fatalf("ranges = %d, want 3 (%+v)", len(ranges), ranges)
 	}
@@ -388,7 +388,7 @@ func TestPlanShardRangesKeepsEqualWidthForADenseSmallKey(t *testing.T) {
 	db := newSampleDB(t, f)
 
 	info := numericKeyInfo(int64(1), int64(1000000))
-	got := planShardRanges(db, "bench_1m", info, 8)
+	got := planShardRanges(db, shardTarget{table: "bench_1m"}, info, 8)
 	want := GenerateShardRanges(info, 8)
 
 	if len(got) != len(want) {
@@ -422,7 +422,7 @@ func TestPlanShardRangesSparseIntegerKey(t *testing.T) {
 	db := newSampleDB(t, f)
 
 	info := numericKeyInfo(int64(1), int64(200000000))
-	ranges := planShardRanges(db, "bench_skew2", info, 8)
+	ranges := planShardRanges(db, shardTarget{table: "bench_skew2"}, info, 8)
 	if len(ranges) != 8 {
 		t.Fatalf("ranges = %d, want 8", len(ranges))
 	}
@@ -497,7 +497,7 @@ func TestPlanShardRangesFallsBackToEqualWidth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db := newSampleDB(t, tc.fake)
 
-			ranges := planShardRanges(db, "t", tc.info, 4)
+			ranges := planShardRanges(db, shardTarget{table: "t"}, tc.info, 4)
 			if len(ranges) != tc.wantRanges {
 				t.Fatalf("ranges = %d, want %d (%+v)", len(ranges), tc.wantRanges, ranges)
 			}
@@ -522,7 +522,7 @@ func TestPlanShardRangesSingleRangeSendsNoQueries(t *testing.T) {
 	f := &sampleFake{statsRows: 1000000, statsAvg: 140}
 	db := newSampleDB(t, f)
 
-	if got := planShardRanges(db, "t", numericKeyInfo(int64(1), int64(100)), 1); len(got) != 1 {
+	if got := planShardRanges(db, shardTarget{table: "t"}, numericKeyInfo(int64(1), int64(100)), 1); len(got) != 1 {
 		t.Fatalf("ranges = %d, want 1", len(got))
 	}
 	if len(f.queries) != 0 {

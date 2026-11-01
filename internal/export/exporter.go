@@ -547,27 +547,33 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 		return e.exportSingle(ctx, startTime)
 	}
 
-	// Extract table name from query using SQL parser
-	tableName, err := e.sqlParser.ExtractTableName(e.config.Query)
+	// Extract the table the query reads from, with the schema it named. A query
+	// that says `FROM otherdb.t` reads otherdb.t whatever --database is, so the
+	// schema travels with the target: the key space, the statistics and the MIN/MAX
+	// bounds all have to come from the same table the shards will read, or the
+	// ranges would not cover the rows the query returns. With no qualifier the
+	// connection's own database (--database) still answers, as before.
+	schema, tableName, err := e.sqlParser.ExtractTableRef(e.config.Query)
 	if err != nil {
 		common.Logger.Warn("failed to extract table name, falling back to single-threaded export", "error", err)
 		return e.exportSingle(ctx, startTime)
 	}
+	target := shardTarget{schema: schema, table: tableName}
 
 	// Detect shard key. An explicit --shard-key that the server does not have is a
 	// refused request, not a hint: silently exporting single-threaded would report
 	// success while dropping the instruction, and the user would see a run that is
 	// several times slower with no reason. Auto-detection keeps its fallback.
-	shardInfo, err := DetectShardKey(e.db, tableName, e.config.ShardKey)
+	shardInfo, err := DetectShardKey(e.db, target, e.config.ShardKey)
 	if err != nil {
 		if e.config.ShardKey != "" {
-			return common.Usagef("invalid --shard-key %q for table %q: %v", e.config.ShardKey, tableName, err)
+			return common.Usagef("invalid --shard-key %q for table %q: %v", e.config.ShardKey, target.display(), err)
 		}
 		common.Logger.Warn("failed to detect shard key, falling back to single-threaded export", "error", err)
 		return e.exportSingle(ctx, startTime)
 	}
 
-	common.Logger.Info("parallel export detected", "table", tableName, "shard_key", shardInfo.Columns, "threads", e.config.Threads)
+	common.Logger.Info("parallel export detected", "table", target.display(), "shard_key", shardInfo.Columns, "threads", e.config.Threads)
 
 	// Every shard worker holds its own connection, so a thread count above the
 	// server's ceiling is a likely mid-run failure rather than a slowdown. The
@@ -586,7 +592,7 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	// Generate shard ranges: more ranges than workers, so a range that turns out
 	// bigger than the estimate is drained by a worker instead of by a whole slot.
 	numRanges := shardRangeCount(e.config.Threads)
-	shardRanges := planShardRanges(e.db, tableName, shardInfo, numRanges)
+	shardRanges := planShardRanges(e.db, target, shardInfo, numRanges)
 	if len(shardRanges) <= 1 {
 		common.Logger.Warn("only 1 shard range, falling back to single-threaded export")
 		return e.exportSingle(ctx, startTime)

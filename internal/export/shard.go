@@ -22,43 +22,78 @@ type ShardInfo struct {
 	Nullable    []bool        // whether each column accepts NULL
 }
 
+// shardTarget names the table the parallel path inspects: the shard key is
+// detected on it, its statistics and key distribution are sampled, and its
+// MIN/MAX bound the ranges.
+//
+// A query may name its table with a schema (`SELECT * FROM otherdb.t`), and that
+// schema wins over --database — the connection's own database is only the
+// default for a query that says nothing. Everything has to go through the target:
+// reading the key space out of the connection's same-named table instead would
+// plan shard boundaries that do not cover the rows the query actually returns.
+type shardTarget struct {
+	schema string // "" means "whatever the connection's current database is"
+	table  string
+}
+
+// source renders the target for a FROM clause, the same way the SHOW CREATE
+// lookup does: the schema only when the query named one.
+func (t shardTarget) source() string {
+	if t.schema == "" {
+		return "`" + t.table + "`"
+	}
+	return "`" + t.schema + "`.`" + t.table + "`"
+}
+
+// display is how the target is named in logs and error messages.
+func (t shardTarget) display() string {
+	if t.schema == "" {
+		return t.table
+	}
+	return t.schema + "." + t.table
+}
+
+// schemaFilter resolves an explicit schema ahead of the connection's database,
+// so one predicate serves both the qualified and the unqualified query.
+const schemaFilter = "TABLE_SCHEMA = COALESCE(NULLIF(?, ''), DATABASE())"
+
 // DetectShardKey detects the best column(s) for sharding
 // Priority: PRIMARY KEY > UNIQUE KEY > first indexed column
-func DetectShardKey(db *sql.DB, tableName string, preferKey string) (*ShardInfo, error) {
+func DetectShardKey(db *sql.DB, target shardTarget, preferKey string) (*ShardInfo, error) {
 	// If user specified a shard key, use it (single column)
 	if preferKey != "" {
-		return getShardInfo(db, tableName, []string{preferKey})
+		return getShardInfo(db, target, []string{preferKey})
 	}
 
 	// Try to find PRIMARY KEY (may be composite)
-	pkCols, err := findPrimaryKey(db, tableName)
+	pkCols, err := findPrimaryKey(db, target)
 	if err == nil && len(pkCols) > 0 {
 		common.Logger.Debug("using primary key for sharding", "columns", pkCols)
-		return getShardInfo(db, tableName, pkCols)
+		return getShardInfo(db, target, pkCols)
 	}
 
 	// Try to find any UNIQUE KEY (may be composite)
-	ukCols, err := findUniqueKey(db, tableName)
+	ukCols, err := findUniqueKey(db, target)
 	if err == nil && len(ukCols) > 0 {
 		common.Logger.Debug("using unique key for sharding", "columns", ukCols)
-		return getShardInfo(db, tableName, ukCols)
+		return getShardInfo(db, target, ukCols)
 	}
 
-	return nil, errors.Errorf("no suitable shard key found for table %s", tableName)
+	return nil, errors.Errorf("no suitable shard key found for table %s", target.display())
 }
 
 // findPrimaryKey finds all primary key columns of a table (supports composite keys)
-func findPrimaryKey(db *sql.DB, tableName string) ([]string, error) {
+func findPrimaryKey(db *sql.DB, target shardTarget) ([]string, error) {
 	query := `
 		SELECT COLUMN_NAME 
 		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-		WHERE TABLE_SCHEMA = DATABASE() 
+		WHERE ` + schemaFilter + ` 
 			AND TABLE_NAME = ? 
 			AND CONSTRAINT_NAME = 'PRIMARY'
 		ORDER BY ORDINAL_POSITION
 	`
-	common.LogInteractionSQL(query, tableName)
-	rows, err := db.Query(common.TagSQL(query), tableName)
+	common.LogInteractionSQL(query, target.schema, target.table)
+	rows, err := db.Query(common.TagSQL(query), target.schema, target.table)
 	if err != nil {
 		return nil, err
 	}
@@ -77,18 +112,18 @@ func findPrimaryKey(db *sql.DB, tableName string) ([]string, error) {
 }
 
 // findUniqueKey finds the first unique key columns (supports composite keys)
-func findUniqueKey(db *sql.DB, tableName string) ([]string, error) {
+func findUniqueKey(db *sql.DB, target shardTarget) ([]string, error) {
 	query := `
 		SELECT COLUMN_NAME, CONSTRAINT_NAME
 		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-		WHERE TABLE_SCHEMA = DATABASE() 
+		WHERE ` + schemaFilter + ` 
 			AND TABLE_NAME = ? 
 			AND CONSTRAINT_NAME != 'PRIMARY'
 			AND REFERENCED_TABLE_NAME IS NULL
 		ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
 	`
-	common.LogInteractionSQL(query, tableName)
-	rows, err := db.Query(common.TagSQL(query), tableName)
+	common.LogInteractionSQL(query, target.schema, target.table)
+	rows, err := db.Query(common.TagSQL(query), target.schema, target.table)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +158,7 @@ func findUniqueKey(db *sql.DB, tableName string) ([]string, error) {
 }
 
 // getShardInfo gets shard information for specific column(s)
-func getShardInfo(db *sql.DB, tableName string, columnNames []string) (*ShardInfo, error) {
+func getShardInfo(db *sql.DB, target shardTarget, columnNames []string) (*ShardInfo, error) {
 	if len(columnNames) == 0 {
 		return nil, errors.New("no columns provided")
 	}
@@ -142,14 +177,14 @@ func getShardInfo(db *sql.DB, tableName string, columnNames []string) (*ShardInf
 		colQuery := `
 			SELECT DATA_TYPE, IS_NULLABLE
 			FROM INFORMATION_SCHEMA.COLUMNS 
-			WHERE TABLE_SCHEMA = DATABASE() 
+			WHERE ` + schemaFilter + ` 
 				AND TABLE_NAME = ? 
 				AND COLUMN_NAME = ?
 		`
-		common.LogInteractionSQL(colQuery, tableName, colName)
+		common.LogInteractionSQL(colQuery, target.schema, target.table, colName)
 		var colType string
 		var isNullable string
-		err := db.QueryRow(common.TagSQL(colQuery), tableName, colName).Scan(&colType, &isNullable)
+		err := db.QueryRow(common.TagSQL(colQuery), target.schema, target.table, colName).Scan(&colType, &isNullable)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to get column type for %s", colName)
 		}
@@ -171,7 +206,7 @@ func getShardInfo(db *sql.DB, tableName string, columnNames []string) (*ShardInf
 		selectParts[i*2] = fmt.Sprintf("MIN(`%s`)", colName)
 		selectParts[i*2+1] = fmt.Sprintf("MAX(`%s`)", colName)
 	}
-	minMaxSQL := fmt.Sprintf("SELECT %s FROM `%s`", strings.Join(selectParts, ", "), tableName)
+	minMaxSQL := fmt.Sprintf("SELECT %s FROM %s", strings.Join(selectParts, ", "), target.source())
 	common.LogInteractionSQL(minMaxSQL)
 	minMaxQuery := common.TagSQL(minMaxSQL)
 

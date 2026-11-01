@@ -9,6 +9,7 @@ package integration
 // plus the exit code the contract promises.
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
 	"os"
@@ -535,5 +536,80 @@ func TestBoundaryQualifiedTableShardsInsteadOfHanging(t *testing.T) {
 	}
 	if int64(inserts) != want {
 		t.Errorf("output holds %d INSERT lines for %d rows; head=%q", inserts, want, string(data[:min(len(data), 200)]))
+	}
+}
+
+// A query that names a schema reads that schema, whatever --database says, and
+// the parallel path has to agree: the shard key, the row estimate and the key
+// distribution all belong to the named table. Taking them from the connection's
+// database instead is not merely a slower export — when that database happens to
+// hold a same-named table, the ranges come from its key space and cover rows the
+// query never returns, so the dump silently misses data.
+func TestBoundaryCrossSchemaQueryShardsTheNamedSchema(t *testing.T) {
+	env := newCLILive(t)
+
+	schema := env.liveSchema(t, "xs")
+	table := env.liveTable(t, "bound_xs")
+
+	// The trap lives in the connection's own database: same table name, key space
+	// nowhere near the one being exported.
+	env.exec(t, "CREATE TABLE `"+table+"` (id INT PRIMARY KEY, v VARCHAR(200))")
+	env.exec(t, "INSERT INTO `"+table+"` (id, v) VALUES (500001, 'trap'), (500002, 'trap')")
+
+	const want = 8
+	env.exec(t, "CREATE TABLE `"+schema+"`.`"+table+"` (id INT PRIMARY KEY, v VARCHAR(200))")
+	env.exec(t, "INSERT INTO `"+schema+"`.`"+table+"` (id, v) VALUES "+
+		"(1,'a'),(2,'b'),(3,'c'),(4,'d'),(1000001,'e'),(1000002,'f'),(1000003,'g'),(1000004,'h')")
+
+	query := "SELECT * FROM `" + schema + "`.`" + table + "`"
+	parallel := filepath.Join(env.dir, table+"_cross_par.sql")
+	out, code := env.runExportCLI(t, "-q", query, "-f", "sql", "-o", parallel,
+		"--threads", "4", "--log-level", "info")
+	if code != 0 {
+		t.Fatalf("cross-schema parallel export exited %d\n%s", code, out)
+	}
+	if strings.Contains(out, "falling back to single-threaded") {
+		t.Errorf("cross-schema export fell back instead of sharding the named schema:\n%s", out)
+	}
+	if !strings.Contains(out, "parallel export completed") || !strings.Contains(out, fmt.Sprintf("rows=%d", want)) {
+		t.Errorf("cross-schema export did not report %d rows:\n%s", want, out)
+	}
+	if !strings.Contains(out, "table="+schema+"."+table) {
+		t.Errorf("run did not name the queried schema in its report:\n%s", out)
+	}
+
+	data, err := os.ReadFile(parallel)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	// The trap's rows are the proof the boundaries came from the right table.
+	if strings.Contains(string(data), "trap") {
+		t.Errorf("output contains the same-named table from --database; head=%q", string(data[:min(len(data), 200)]))
+	}
+	inserts := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "INSERT INTO") {
+			inserts++
+		}
+	}
+	if inserts != want {
+		t.Errorf("output holds %d INSERT lines for %d rows; head=%q", inserts, want, string(data[:min(len(data), 200)]))
+	}
+	// The dump still references the bare table, so a cross-schema export loads
+	// into any database — the schema belongs to the query, not to the product.
+	if strings.Contains(string(data), schema) {
+		t.Errorf("output leaks the queried schema %q into the dump", schema)
+	}
+
+	single := filepath.Join(env.dir, table+"_cross_single.sql")
+	if out, code := env.runExportCLI(t, "-q", query, "-f", "sql", "-o", single, "--log-level", "info"); code != 0 {
+		t.Fatalf("cross-schema single-threaded export exited %d\n%s", code, out)
+	}
+	singleData, err := os.ReadFile(single)
+	if err != nil {
+		t.Fatalf("read single-threaded output: %v", err)
+	}
+	if !bytes.Equal(data, singleData) {
+		t.Errorf("parallel output (%d B) differs from single-threaded output (%d B)", len(data), len(singleData))
 	}
 }
