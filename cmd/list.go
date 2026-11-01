@@ -173,7 +173,7 @@ func validateListConfig(cfg *config.ListConfig) error {
 		return common.Usagef("--user is required")
 	}
 	if cfg.Password == "" {
-		return common.Usagef("password is required")
+		return common.Usagef("--password is required (or set IMEX_PASSWORD)")
 	}
 	if err := validatePort(cfg.Port); err != nil {
 		return err

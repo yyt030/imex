@@ -345,3 +345,48 @@ func TestConnEnvAppliesToImportAndList(t *testing.T) {
 		t.Errorf("list did not read the environment: %+v", cfg.Config)
 	}
 }
+
+// A required-parameter message has to name what the operator can act on. The
+// password check used to read `password is required`, naming neither the option
+// nor the variable — and a password is the field most likely to come from the
+// environment rather than the command line, so that reader has the least way to
+// guess which of the two to set. All three commands that connect now emit the same
+// string, naming --password and IMEX_PASSWORD.
+func TestMissingPasswordMessageNamesBothSources(t *testing.T) {
+	const want = "--password is required (or set IMEX_PASSWORD)"
+
+	// Blank means unset, so the environment cannot supply the value here either.
+	t.Setenv("IMEX_PASSWORD", "")
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"export", []string{"export", "-h", "127.0.0.1", "-u", "root", "-D", "mydb",
+			"-o", "/tmp/imex-missing-password.del", "-q", "SELECT 1"}},
+		{"import", []string{"import", "-h", "127.0.0.1", "-u", "root", "-D", "mydb",
+			"-i", "/tmp/imex-missing-password.del", "-t", "users"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			*exportCfg = *newExportConfigForTest()
+			*importCfg = *newImportConfigForTest()
+			logFormat = "console"
+			resetChangedFlags(exportCmd, importCmd, rootCmd)
+			rootCmd.SetArgs(tc.args)
+			err := rootCmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s: want %q, got %v", tc.name, want, err)
+			}
+			if !common.IsUsageError(err) {
+				t.Errorf("%s: want a usage error (exit code 2), got %T", tc.name, err)
+			}
+		})
+	}
+
+	cfg := config.NewListConfig()
+	cfg.Host, cfg.User, cfg.Database, cfg.Table, cfg.Password = "127.0.0.1", "root", "mydb", "users", ""
+	err := validateListConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("list: want %q, got %v", want, err)
+	}
+}

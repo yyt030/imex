@@ -60,7 +60,7 @@ Examples:
 			return common.Usagef("--user is required")
 		}
 		if importCfg.Password == "" {
-			return common.Usagef("password is required")
+			return common.Usagef("--password is required (or set IMEX_PASSWORD)")
 		}
 		if importCfg.Database == "" {
 			return common.Usagef("--database is required")

@@ -76,7 +76,7 @@ Examples:
 			return common.Usagef("--user is required")
 		}
 		if exportCfg.Password == "" {
-			return common.Usagef("password is required")
+			return common.Usagef("--password is required (or set IMEX_PASSWORD)")
 		}
 		if exportCfg.Database == "" {
 			return common.Usagef("--database is required")

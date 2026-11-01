@@ -163,7 +163,7 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 | `--socket-read-timeout` | | 单次 socket 读超时，对应 JDBC `socketTimeout` | `300s` |
 | `--socket-write-timeout` | | 单次 socket 写超时（Go-only，无 JDBC 对应） | `300s` |
 
-`--host`（或 `--socket`）、`--user`、`--password`、`--database` 为必填项，缺失时命令直接报错退出。
+`--password` 与 `--database` 没有默认值，任一缺失即是用法错误、退出码 `2`；缺口令时的提示同时点名两个来源（`--password is required (or set IMEX_PASSWORD)`）。`--host`（或 `--socket`）与 `--user` 有内置默认值（`127.0.0.1`、`root`），只有把它们**显式写成空值**（`-h ""`、`-u ""`）才会被判为缺失并以退出码 `2` 拒绝，此时不会回落到 `IMEX_HOST`/`IMEX_USER`（见「连接信息来自环境变量」）。
 
 由于 `-h` 被 `--host` 占用，帮助短选项为 `-?`。
 
@@ -297,7 +297,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--host`/`--port`/`--user`/`--password`/`--socket`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），六个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」），`--host`（或 `--socket`）、`--user`、`--password`、`--database` 为必填。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。
+连接选项与 export 子命令相同（`--host`/`--port`/`--user`/`--password`/`--socket`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），六个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host`（或 `--socket`）与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。
 
 **导入选项：**
 
@@ -367,7 +367,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema` 并只把结果写到 stdout，日志与错误写到 stderr，因此可以直接接管道。连接选项与 export 相同（含六个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--user`、`--password` 以及 `--host`（或 `--socket`）仍为必填。对象名就是子命令名：
+`list` 读取 `information_schema` 并只把结果写到 stdout，日志与错误写到 stderr，因此可以直接接管道。连接选项与 export 相同（含六个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host`（或 `--socket`）与 `--user` 同样走内置默认值。对象名就是子命令名：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -457,23 +457,19 @@ imex encrypt "my-password"
 
 ### 批量导出所有表
 
-`scripts/export-all-tables.sh` 用 `imex list tab` 取表名，再对每张表执行一次 `imex export -q "SELECT * FROM <表>"`，输出到 `<out-dir>/<database>/<table>.<format>`：
+仓库不附带批量脚本（原 `scripts/export-all-tables.sh` 已于 2026-11-01 移除，见「功能记录（v0.15.0）」）。多表场景由调用方自己循环 `imex export`，表名用 `imex list tab` 枚举——`list` 的日志与错误走 stderr，stdout 只有对齐的结果，首行是表头、第 2 列是表名：
 
 ```bash
-# 导出 shop 库的全部基础表（DEL，默认 ./export/shop/）
-scripts/export-all-tables.sh -D shop -u root -p pass
-
-# 导出指定数据库中的匹配表，SQL 格式并带建表语句，每张表 4 线程
-scripts/export-all-tables.sh -D shop -u root -p pass \
-  -o /backup/shop -f sql --create --threads 4 --pattern 'order%'
-
-# 导出所有非系统库；系统库需显式 --include-system
-IMEX_PASSWORD=pass scripts/export-all-tables.sh --all-databases -u root
+imex list tab -D shop -u root -p pass 2>/dev/null | awk 'NR > 1 { print $2 }' |
+  while read -r t; do
+    imex export -D shop -u root -p pass -q "SELECT * FROM \`$t\`" \
+      -o "export/shop/$t.del"
+  done
 ```
 
-口令可用 `-p` 或环境变量 `IMEX_PASSWORD`（`ENC:` 密文配合 `IMEX_KEY` 同样可用）。脚本逐表串行执行、单表失败后继续其余表，最后列出失败表并以退出码 1 结束；用法错误退出 2；`--dry-run` 只打印将要执行的命令，`--fail-fast` 在首个失败处停止，`--` 之后的参数原样追加给每次 `imex export`。
-
-脚本按对齐表格解析 `imex list` 的输出，以「两个及以上空格」切分列，因此表名/库名本身含连续空格时无法与列分隔区分；这类对象请改用 `--pattern` 分批导出或直接调用 `imex export`。
+- 换成 SQL 产物就把 `-o` 的后缀改为 `.sql` 并加 `-f sql`，需要建表语句时再加 `--create`；`--pattern 'order%'` 可以直接加在 `imex list tab` 上做名字过滤。
+- 每条 `imex export` 各开一次 `START TRANSACTION WITH CONSISTENT SNAPSHOT`，**表与表的时点不一致**（v0.14.0 的 `general_log` 取证见变更记录 112 ⑦）。要整库一致快照属于尚未实现的数据库级批量导出，见变更记录 111 之后的功能差距讨论。
+- 表名或库名本身含连续空格时，`awk` 按「两个及以上空格」切列无法把它与列分隔区分——这是 `list` 对齐输出的固有性质，这类对象请改用 `--pattern` 分批或直接调用 `imex export`。
 
 ### 连接信息来自环境变量
 
@@ -497,6 +493,7 @@ imex list tables
 
 - **优先级：命令行显式写下的选项 > 环境变量 > 选项的内置默认值。** 判据是这个选项在命令行上被写过没有，不看取值，因此 `IMEX_USER=svc` 时 `imex export -u root` 用的仍是 `root`，`IMEX_PASSWORD=pass` 时 `imex export -p ""` 用的仍是空口令。
 - **空白等于没设**：变量不存在、为空、或去掉首尾空白后为空，都退回内置默认值；供值的变量两端空白会被去掉。
+- **缺值提示点名两个来源**：`--password` 是唯一既没有默认值、又最常被放进环境的必填项，缺失时的用法错误文案为 `--password is required (or set IMEX_PASSWORD)`，export、import、`list` 三条命令一字不差。它是一句静态文案，只说明「这个值有两个来源」：写了 `-p ""` 而 `IMEX_PASSWORD` 有值时，按优先级用的仍是那个空值、打出的仍是这句提示，此时该改的是命令行上的空值而不是环境变量。
 - **socket 与 TCP 二选一时同样按优先级**：显式给了 `--socket` 就走 socket；显式给了 `--host` 或 `--port` 就走 TCP，此时 `IMEX_SOCKET` **被忽略**并记一条 WARN；两者都没写时 `IMEX_SOCKET` 优先于 `IMEX_HOST`（默认的 `127.0.0.1` 不代表用户要求 TCP）。
 - **日志只出现变量名，绝不出现值**：有变量供值时记 INFO `connection values supplied by environment variables="[IMEX_USER IMEX_PASSWORD]"`；被上面那条地址规则跳过时记 WARN `connection variable ignored variable=IMEX_SOCKET reason="…"`。这些记录同样进 `--messages` 文件，所以口令（含 `ENC:` 密文）不会落到任何产物里。
 - 这与四个全局开关的语义**相反**，是刻意的：`IMEX_ERROR_STACK`/`IMEX_ECHO_SQL_VALUES`/`IMEX_NO_SQL_TAG`/`IMEX_LOG_FORMAT` 是**覆盖**（布尔与布局只有「打开/选一个」这一维），连接变量是**默认值的来源**（让 env 压过命令行写下的地址，同一条命令就会连到操作者没写的那个库）。
@@ -984,6 +981,15 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | `--progress-interval` 的下限 10ms 会让进度行跟着批次走：实测 200,000 行导入分 200 批、发送段 1.391s（约 7ms 一批），10ms 档等于每批一条；更小的值更糟，`1ns` 曾有 6400 行导出打出 1355 条进度（日志 175,557 字节） | 下限提到 **100ms**（参数仍是 duration，`100ms`/`500ms`/`5s` 都合法，默认 5s 不变）：`10ms`/`1ms` 退出 **2** 并报 `invalid --progress-interval 10ms: must be >= 100ms`，`0`/负值仍是 `must be > 0`；100ms 档实测 262,144 行导出 0.18s 打 1 条、六行 `SLEEP(0.05)` 查询 0.301s 打 3 条。拒绝此前合法的取值属不兼容变更，按档位表字面取 **X+1**，版本由 0.5.3 升至 **1.0.0**；`## export` 基线重新生成（88 行，diff 为空）。详见需求文档变更记录 89。**注（2026-10-31 用户裁决）：本行按字面定为 X+1 的结论已纠正为 Y+1——版本号最终定为 0.6.0、X 保持 0；本地 `v1.0.0` tag 已删除，纠正提交上先打 `v1.1.0`、同日按用户二次指令改打 `v0.6.0`（详见变更记录 90、91）。** |
 | 上一轮把 `--progress-interval` 下限提到 100ms 判为 X+1、版本发成 1.0.0；用户复核裁定按 **Y+1** 计，且 X 不升 | 版本先纠正为 1.1.0，同日按用户二次指令定为 **0.6.0**（`Makefile` 首行 1.0.0 → 0.6.0，0.x 期第二位 +1），行为与 `99d289d` 完全一致；删除本地未 push 的 `v1.0.0` 与中间态 `v1.1.0`，在最终纠正提交上打附注 tag `v0.6.0`（尚未 push）。验证：`gofmt -l` 空、`go vet` 干净、七包 `-race` 全通过、真实库 **131 RUN / 0 SKIP / 0 FAIL**、`statementCapSlack` = 3、help 超 118 字节 0 行。详见需求文档变更记录 90、91 |
 
+## 功能记录（v0.15.0）
+
+以下为 `v0.14.0` 之后、随 `v0.15.0` 一起发布的记录（本机 MariaDB 10.6.23，4C/8G；`imex_env_it.t` 205,303 行）：
+
+| 变更 | 实现 |
+|------|------|
+| 全套必填提示里只有缺口令那条不点名任何来源（写作 `password is required`，既没提 `--password` 也没提 `IMEX_PASSWORD`），而口令恰恰是最常被放进环境的一项；README 又把「有内置默认值的 `--host`/`--user`」与「默认为空的 `--password`/`--database`」并列写成「必填项，缺失时命令直接报错退出」，与实现语义不符 | 三条连库命令的缺口令提示统一为 `--password is required (or set IMEX_PASSWORD)`（`cmd/export.go`、`cmd/import.go`、`cmd/list.go`，退出码仍 `2`，触发条件一字未动；新串包含旧串，按旧串 grep 日志的脚本仍命中）。README 与 requirements 2.1.2/2.1.10 写清「必输」的边界：默认空的只有 `--password`/`--database`；`--host`/`--user` 有内置默认值（`127.0.0.1`/`root`），只有**显式写成空值**才被判为缺失，此时按优先级不回落到 `IMEX_HOST`/`IMEX_USER`。新增 `cmd/conn_env_test.go:TestMissingPasswordMessageNamesBothSources` 把三条命令钉成同一个常量。实测（`make build` 后的二进制）：三条命令在缺 `-p`/缺 `IMEX_PASSWORD` 下全部退出 2 且文案逐字节相同；只设 `IMEX_PASSWORD` 导出成功，产物与「六变量全设、命令行零连接参数」逐字节相同（md5 `8e9a0e787fc69eb1217acabb8237cb89`）；`IMEX_PASSWORD='   '` 仍按未设；`-p ""` + `IMEX_PASSWORD` 有值仍是退出 2 的同一句，这条静态文案的已知不精确处已写入文档而不是加分支 |
+| 用户裁定「不保留 scripts 目录」：`scripts/export-all-tables.sh` 是仓库唯一的 shell 交付物，靠解析 `imex list` 的对齐输出取表名，本身不参与五面契约 | 删除 `scripts/`（该目录工作区里另有一处**非本轮产生**的未提交改动——`list tab`→`list tbl` 与新增 `-f tsv`，两项在当前 CLI 上都不成立：`tbl` 不是别名（只有 `tab`），`list` 的 `-f/--format` 已按变更记录 102 删除——随目录一并移除，未进入任何提交）。README 的「批量导出所有表」改写为一段自述式 shell 循环（实测：`imex_env_it` 枚举出 `t`、`t2` 两表，逐表导出 9,555,585 B 与 25 B 两个 DEL 产物），并写明逐表调用各自开 `START TRANSACTION WITH CONSISTENT SNAPSHOT`、表与表时点不一致，整库一致快照属未实现的数据库级批量导出；requirements 2.1.9 收束为移除说明，项目结构图删掉该分支 |
+
 ## 功能记录（v0.14.0）
 
 以下为 `v0.13.0` 之后、随 `v0.14.0` 一起发布的功能记录（本机 MariaDB 10.6.23，4C/8G；`imex_probe_xs.big3m` 3,000,000 行、latin1、`CHECKSUM TABLE` = 1113224199）：
@@ -1147,8 +1153,6 @@ imex/
 │       ├── list_test.go         # list 八类对象、table 格式、stdout/stderr 分离与用法错误
 │       ├── lock_contention_test.go # 重复主键 × 导入并发的锁冲突回归（真实二进制 + 真实库）
 │       └── export_cli_test.go   # 导出 CLI 三项：schema 限定查询、`--create` 默认、`-q @file`
-├── scripts/
-│   └── export-all-tables.sh   # 按 imex list 枚举表并逐表导出（bash）
 ├── docs/
 │   ├── requirements.md          # 需求文档
 │   └── cli-oracle.txt           # 已发布二进制的 --help 契约快照（回归基线）
