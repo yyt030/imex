@@ -32,6 +32,10 @@ type DelWriter struct {
 	// binaryFlags[i] marks column i as binary; hexBlob controls 0x encoding.
 	binaryFlags []bool
 	hexBlob     bool
+	// hexBuf is the scratch the 0x encoder writes into. hex.EncodeToString would
+	// allocate a new string per binary value; the buffer is reused across rows
+	// because one writer is only ever used by one goroutine.
+	hexBuf []byte
 }
 
 // NewDelWriter creates a new DEL format writer. kinds may be nil, in which
@@ -113,7 +117,7 @@ func (d *DelWriter) WriteRawRow(values []sql.RawBytes) error {
 		if d.hexBlob && i < len(d.binaryFlags) && d.binaryFlags[i] {
 			if val != nil {
 				d.bw.WriteString("0x")
-				d.bw.WriteString(hex.EncodeToString(val))
+				d.writeHex(val)
 			}
 			// nil (NULL) or empty: write nothing (NULL) or 0x (empty)
 			continue
@@ -127,6 +131,13 @@ func (d *DelWriter) WriteRawRow(values []sql.RawBytes) error {
 // WriteFooter flushes the buffered writer
 func (d *DelWriter) WriteFooter() error {
 	return d.bw.Flush()
+}
+
+// writeHex appends the hex encoding of val to the output, reusing the scratch
+// buffer instead of allocating an encoded string per value.
+func (d *DelWriter) writeHex(val []byte) {
+	d.hexBuf = hex.AppendEncode(d.hexBuf[:0], val)
+	d.bw.Write(d.hexBuf)
 }
 
 // Flush flushes the buffered writer (for testing)
@@ -145,11 +156,11 @@ func (d *DelWriter) writeRow(values []interface{}) error {
 				d.bw.WriteString("0x")
 				switch v := val.(type) {
 				case []byte:
-					d.bw.WriteString(hex.EncodeToString(v))
+					d.writeHex(v)
 				case string:
-					d.bw.WriteString(hex.EncodeToString([]byte(v)))
+					d.writeHex([]byte(v))
 				default:
-					d.bw.WriteString(hex.EncodeToString([]byte(fmt.Sprintf("%v", v))))
+					d.writeHex([]byte(fmt.Sprintf("%v", v)))
 				}
 			}
 			continue

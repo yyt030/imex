@@ -82,6 +82,37 @@ func shardStreamQueueBlocks(shards int) int {
 	return blocks
 }
 
+// blockPool holds shard hand-off blocks.
+//
+// A block is one shardBlockSize (256 KiB) copy of serialized shard output, and a
+// parallel dump needs one per block of the file: a 144 MB export allocated 137 MB
+// of fresh blocks and left the garbage collector to walk all of them. The pool
+// cannot live on the pipe — a pipe is per shard range and the consumer that
+// finishes with a block is a different goroutine — so it is package level, keyed
+// implicitly by the fixed block size. Blocks of any other size are not returned
+// to it, and the pool is emptied by every GC, so a run that stops does not keep
+// the memory.
+var blockPool = sync.Pool{New: func() any { return make([]byte, 0, shardBlockSize) }}
+
+// recycleBlock gives a handed-over block back to the pool. The consumer calls it
+// once it has written the block; anything with a different capacity came from a
+// one-off allocation and is dropped instead.
+func recycleBlock(b []byte) {
+	if cap(b) == shardBlockSize {
+		blockPool.Put(b[:0])
+	}
+}
+
+// newBlock takes the next hand-off block, from the pool when the pipe runs on the
+// standard block size. A pipe with some other size (only tests do that) allocates
+// its own, because a pooled block would be filled and re-grown instead of reused.
+func (p *shardPipe) newBlock() []byte {
+	if p.blockSize == shardBlockSize {
+		return blockPool.Get().([]byte)
+	}
+	return make([]byte, 0, p.blockSize)
+}
+
 // Write implements io.Writer. Blocks are copies, not aliases of the caller's
 // buffer: the bufio writer that calls us owns that memory and overwrites it on
 // its next fill, while the consumer may still be writing the block to disk.
@@ -89,7 +120,7 @@ func (p *shardPipe) Write(b []byte) (int, error) {
 	total := len(b)
 	for len(b) > 0 {
 		if p.pending == nil {
-			p.pending = make([]byte, 0, p.blockSize)
+			p.pending = p.newBlock()
 		}
 		space := p.blockSize - len(p.pending)
 		if space <= 0 {

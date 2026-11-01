@@ -988,6 +988,9 @@ func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string) error 
 			if _, err := outputFile.Write(block); err != nil {
 				return errors.Wrapf(err, "failed to write shard %d output", i)
 			}
+			// The block has reached the file, so nothing refers to it any more and
+			// the next producer fill can have it back.
+			recycleBlock(block)
 		}
 	}
 

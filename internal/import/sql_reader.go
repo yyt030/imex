@@ -23,13 +23,16 @@ import (
 // that window instead of re-rendering the statement as a string. Nothing copies
 // a statement twice, there is no whole-statement upper-case copy, and the
 // quoting state is carried across lines instead of re-scanning the text built
-// so far. Only the values the caller keeps are copied, so the cost per row is
-// proportional to its own data, not to the size of the statement it sits in.
+// so far. Only the values the caller keeps are copied, and only for the chunk of
+// up to rowChunkRows rows being parsed, so the cost per row is proportional to
+// its own data and the rows in flight are bounded by the chunk, not by the size
+// of the largest statement in the file.
 type SQLReader struct {
 	rd          *recordReader
 	stmt        []byte // scratch for a statement spanning several lines
 	columns     []string
 	createStmts []string        // captured CREATE TABLE statements for create mode
+	cur         insertCursor    // parse position inside the INSERT being read
 	pending     [][]interface{} // rows parsed from the current INSERT, not yet returned
 	hasData     bool            // ReadHeader found at least one INSERT statement
 	// unrecognized records a statement ReadHeader could not classify as DDL,
@@ -76,8 +79,10 @@ func (s *SQLReader) ReadHeader() ([]string, error) {
 			cols := s.extractColumns(stmt)
 			s.columns = cols
 			s.hasData = true
-			rows := s.extractRows(stmt)
-			s.pending = rows
+			// The statement is parsed chunk by chunk from here on, so the header
+			// only points the cursor at it: a one-million-row INSERT must not be
+			// materialised before the importer has taken its first batch.
+			s.cur.reset(stmt, len(cols))
 			return cols, nil
 		default:
 			// Skip SET/LOCK/UNLOCK/other preamble statements. Anything else is
@@ -150,7 +155,7 @@ func (s *SQLReader) nextStatement() ([]byte, bool) {
 	return nil, false
 }
 
-// stmtState is the quoting state machine behind nextStatement and extractRows:
+// stmtState is the quoting state machine behind nextStatement and insertCursor:
 // whether the scan is inside a quoted string, which quote opened it, and whether
 // the next byte is escaped. Only the quote characters, the backslash and ';'
 // move it, so whitespace and newlines are inert. That lets a statement split
@@ -274,6 +279,13 @@ func (s *SQLReader) GetCreateStatements() []string {
 // and parsing new INSERTs as needed.
 func (s *SQLReader) ReadRow() ([]interface{}, error) {
 	for len(s.pending) == 0 {
+		// Finish the statement being read before opening the next one: the cursor
+		// hands out its rows in bounded chunks, and the statement window it parses
+		// from is only reused once it is exhausted.
+		if rows := s.cur.nextChunk(); len(rows) > 0 {
+			s.pending = rows
+			break
+		}
 		stmt, ok := s.nextStatement()
 		if !ok {
 			if err := s.rd.Err(); err != nil {
@@ -284,7 +296,7 @@ func (s *SQLReader) ReadRow() ([]interface{}, error) {
 		head := bytes.TrimLeft(stmt, " \t")
 		switch {
 		case hasPrefixFold(head, "INSERT "):
-			s.pending = s.extractRows(stmt)
+			s.cur.reset(stmt, len(s.columns))
 		case hasPrefixFold(head, "CREATE TABLE"), hasPrefixFold(head, "CREATE TEMPORARY"):
 			s.createStmts = append(s.createStmts, string(stmt))
 		default:
@@ -321,37 +333,90 @@ func (s *SQLReader) extractColumns(stmt []byte) []string {
 	return cols
 }
 
-// extractRows parses every VALUES tuple in an INSERT statement into rows. Each
-// tuple is handed to parseValueList as a window into the statement instead of a
-// freshly copied buffer, which is what keeps the row cost independent of how
-// many tuples share the statement.
-func (s *SQLReader) extractRows(stmt []byte) [][]interface{} {
+// rowChunkRows bounds how many rows of one INSERT statement are materialised before
+// the importer gets a piece of them.
+//
+// The import queue is measured in rows (--batch-size x --pipeline-buffer, 10,000 by
+// default), but a dump that packs a million tuples into one INSERT used to be
+// parsed end to end first: 24 MB of row headers and a 48 MB value arena stayed
+// reachable for the whole run even though the importer could only be working on
+// 10,000 rows at a time. Everything the collector had to mark sat in the reader, and
+// peak RSS tracked the largest statement in the file rather than the queue. A chunk
+// of 4,096 rows costs a few hundred KB, so the live set follows the queue and the
+// statement window can stay the only large buffer in the run.
+const rowChunkRows = 4096
+
+// maxValuePrealloc bounds the value arena one chunk reserves up front. A chunk with
+// more columns than that grows the ordinary way.
+const maxValuePrealloc = 1 << 20 // 1,048,576 value slots (16 MB)
+
+// tupleSpan is one VALUES tuple's body, as offsets into the statement's VALUES
+// region: body is the first byte after '(' and end is the closing ')' itself.
+type tupleSpan struct {
+	body, end int
+}
+
+// insertCursor is the parse position inside one INSERT statement's VALUES region.
+// The region is a window into the reader's statement buffer, which stays valid
+// because the reader assembles the next statement only once the cursor is done.
+//
+// One cursor serves every statement in the run: reset clears the position but keeps
+// the boundary scratch, so a dump of three million single-row INSERTs does not
+// allocate a cursor per statement.
+type insertCursor struct {
+	after []byte      // the VALUES region of the current statement
+	cols  int         // column count the header announced, for sizing the arena
+	pos   int         // first unread byte of after
+	done  bool        // after is exhausted
+	spans []tupleSpan // this chunk's tuple boundaries; capacity rowChunkRows
+}
+
+// reset points the cursor at stmt's VALUES region and forgets any previous
+// statement. It reports false when the statement carries no VALUES at all.
+func (c *insertCursor) reset(stmt []byte, cols int) bool {
 	valuesIdx := indexFold(stmt, "VALUES")
 	if valuesIdx == -1 {
+		return false
+	}
+	c.after = stmt[valuesIdx+len("VALUES"):]
+	c.cols = cols
+	c.pos = 0
+	c.done = false
+	return true
+}
+
+// nextChunk parses the next run of tuples, at most rowChunkRows of them, and returns
+// the rows. Every plain value is a substring of the chunk's own copy of its bytes,
+// so the rows outlive the statement window they were read from; an empty result
+// means the statement is exhausted.
+func (c *insertCursor) nextChunk() [][]interface{} {
+	if c.done || c.pos >= len(c.after) {
+		c.done = true
 		return nil
 	}
+	start := c.pos
+	if cap(c.spans) == 0 {
+		c.spans = make([]tupleSpan, 0, rowChunkRows)
+	}
+	spans := c.spans[:0]
 
-	after := stmt[valuesIdx+len("VALUES"):]
-
-	var rows [][]interface{}
+	// First pass: walk tuples and record their boundaries. The walk is the same
+	// quoting state machine the value parser uses; because a chunk always stops at
+	// a tuple boundary, the state restarts clean at the next chunk.
 	var st stmtState
-	i := 0
-	for i < len(after) {
-		// Find next tuple opening '('
-		for i < len(after) && after[i] != '(' {
+	i := start
+	for i < len(c.after) && len(spans) < rowChunkRows {
+		for i < len(c.after) && c.after[i] != '(' {
 			i++
 		}
-		if i >= len(after) {
+		if i >= len(c.after) {
 			break
 		}
 		i++ // skip '('
 		body := i
-
-		// Walk to the tuple's closing ')' at top level: inside a quoted value
-		// a ')' is data, and a backslash consumes the next byte.
-		closed := false
-		for i < len(after) {
-			ch := after[i]
+		end := len(c.after)
+		for i < len(c.after) {
+			ch := c.after[i]
 			if st.escaped {
 				st.escaped = false
 				i++
@@ -374,19 +439,51 @@ func (s *SQLReader) extractRows(stmt []byte) [][]interface{} {
 				continue
 			}
 			if ch == ')' {
+				end = i
 				i++
-				closed = true
 				break
 			}
 			i++
 		}
-		end := len(after)
-		if closed {
-			end = i - 1 // offset of the closing ')'
+		spans = append(spans, tupleSpan{body: body, end: end})
+		if end == len(c.after) && i >= len(c.after) && st.inString {
+			// Truncated statement: the last tuple runs to the end of the region.
+			break
 		}
-		rows = append(rows, parseValueList(after[body:end]))
+	}
+	c.pos = i
+	c.spans = spans
+	if len(spans) == 0 {
+		c.done = true
+		return nil
+	}
+	if i >= len(c.after) {
+		c.done = true
 	}
 
+	// The chunk's bytes are copied once; the statement window is not read again
+	// after this, so the rows only keep this bounded copy alive.
+	text := string(c.after[start:i])
+
+	// Both containers are sized from the chunk's tuple count rather than grown by
+	// append.
+	rows := make([][]interface{}, 0, len(spans))
+	slots := 0
+	if c.cols > 0 {
+		if len(spans) > maxValuePrealloc/c.cols {
+			slots = maxValuePrealloc
+		} else {
+			slots = len(spans) * c.cols
+		}
+	}
+	values := make([]interface{}, 0, slots)
+
+	st = stmtState{}
+	for _, sp := range spans {
+		var row []interface{}
+		values, row = parseValueList(values, c.after[sp.body:sp.end], text, sp.body-start, c.cols)
+		rows = append(rows, row)
+	}
 	return rows
 }
 
@@ -415,18 +512,27 @@ func equalFoldNull(b []byte) bool {
 	return true
 }
 
-// parseValueList splits a single VALUES tuple body into typed values. It walks
-// the body token by token, treating single/double-quoted regions as string
-// literals (delimiter-free, inner whitespace preserved) and everything else as
-// a bare token (numbers, NULL, 0x hex literals, keywords). Surrounding
+// parseValueList splits a single VALUES tuple body into typed values, appending
+// them to dst and returning both the grown arena and the row window inside it.
+// It walks the body token by token, treating single/double-quoted regions as
+// string literals (delimiter-free, inner whitespace preserved) and everything
+// else as a bare token (numbers, NULL, 0x hex literals, keywords). Surrounding
 // inter-token whitespace is ignored; only content *inside* quotes is kept
 // verbatim.
 //
-// The body is a window, so every value that is returned as a string or byte
-// slice is copied out of it. The fast path for a plain literal or a plain token
-// is that copy and nothing else.
-func parseValueList(body []byte) []interface{} {
-	var values []interface{}
+// The body is a window into text (textBase is its offset there): the chunk was
+// copied once, so a plain literal or plain token becomes a substring of that
+// copy with no allocation of its own. Only values that need rewriting — a
+// collapsed doubled quote, a backslash escape, or a 0x literal — allocate.
+func parseValueList(dst []interface{}, body []byte, text string, textBase, expected int) ([]interface{}, []interface{}) {
+	start := len(dst)
+	if expected > 0 && cap(dst)-start < expected {
+		// Growth is rare: nextChunk sizes dst from the chunk's tuple count and
+		// the header's column count. This only covers a row wider than its header.
+		grown := make([]interface{}, len(dst), len(dst)+expected)
+		copy(grown, dst)
+		dst = grown
+	}
 	n := len(body)
 	i := 0
 	for {
@@ -449,7 +555,7 @@ func parseValueList(body []byte) []interface{} {
 			case escaped:
 				val = unescapeSQLString(string(raw))
 			default:
-				val = string(raw)
+				val = text[textBase+i+1 : textBase+contentEnd]
 			}
 			i = next
 		} else {
@@ -459,6 +565,7 @@ func parseValueList(body []byte) []interface{} {
 				end++
 			}
 			token := bytes.TrimSpace(body[i:end])
+			trimmed := strings.TrimSpace(text[textBase+i : textBase+end])
 			i = end
 			switch {
 			case len(token) == 0 || equalFoldNull(token):
@@ -466,10 +573,10 @@ func parseValueList(body []byte) []interface{} {
 			case isHexLiteralBytes(token):
 				val = decodeHexLiteralBytes(token)
 			default:
-				val = string(token)
+				val = trimmed
 			}
 		}
-		values = append(values, val)
+		dst = append(dst, val)
 
 		// Skip trailing whitespace, then consume the separating comma if present.
 		for i < n && isSpaceByte(body[i]) {
@@ -481,7 +588,7 @@ func parseValueList(body []byte) []interface{} {
 		}
 		break
 	}
-	return values
+	return dst, dst[start:]
 }
 
 // literalScan walks the quoted literal whose opening quote sits at body[start-1]

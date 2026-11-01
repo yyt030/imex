@@ -3,7 +3,9 @@ package _import
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -350,5 +352,143 @@ func TestSQLReader_KeywordCaseAndNonASCII(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("row %d = %q, want %q (only the bare NULL token folds to nil)", i, got[i], want[i])
 		}
+	}
+}
+
+func TestSQLReader_ValuesSurviveStatementBufferReuse(t *testing.T) {
+	// Values are substrings of a per-statement copy, and plain values share the
+	// row arena. Reading on to the next statement reuses the recordReader's line
+	// buffer; the earlier row must still hold its own bytes.
+	input := "INSERT INTO `t` (`a`,`b`) VALUES ('keep-me', 42);\n" +
+		"INSERT INTO `t` (`a`,`b`) VALUES ('second', NULL),('third', 0x41);\n"
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+
+	cols, err := sr.ReadHeader()
+	if err != nil {
+		t.Fatalf("ReadHeader: %v", err)
+	}
+	if len(cols) != 2 {
+		t.Fatalf("columns: %v", cols)
+	}
+
+	first, err := sr.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow first: %v", err)
+	}
+	second, err := sr.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow second: %v", err)
+	}
+	third, err := sr.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow third: %v", err)
+	}
+
+	if got := first[0]; got != "keep-me" {
+		t.Errorf("first[0] after buffer reuse = %v, want keep-me", got)
+	}
+	if got := first[1]; got != "42" {
+		t.Errorf("first[1] after buffer reuse = %v, want 42", got)
+	}
+	if got := second[0]; got != "second" || second[1] != nil {
+		t.Errorf("second = %v, want [second <nil>]", second)
+	}
+	if got := third[0]; got != "third" {
+		t.Errorf("third[0] = %v, want third", got)
+	}
+	if got, ok := third[1].([]byte); !ok || !bytes.Equal(got, []byte("A")) {
+		t.Errorf("third[1] = %v, want A from 0x41", third[1])
+	}
+}
+
+func TestSQLReader_StatementSpansChunks(t *testing.T) {
+	// One INSERT holds more tuples than a parse chunk, so the reader has to keep
+	// going inside the same statement and hand out the rows in order. The tricky
+	// values sit exactly on the chunk boundaries, where the parser restarts,
+	// because that is where a re-entry bug would first show up.
+	tricky := map[int]string{
+		0:                  "'dq''uo'",
+		rowChunkRows - 1:   "'bs\\\\slash'",
+		rowChunkRows:       "0x41",
+		2*rowChunkRows - 1: "'nl\\nnl'",
+		2 * rowChunkRows:   "NULL",
+	}
+	total := 3*rowChunkRows + 5
+
+	var sb strings.Builder
+	sb.WriteString("INSERT INTO `t` (`a`,`b`) VALUES ")
+	for i := 0; i < total; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		v, ok := tricky[i]
+		if !ok {
+			v = "'v" + strconv.Itoa(i) + "'"
+		}
+		sb.WriteByte('(')
+		sb.WriteString(v)
+		sb.WriteByte(',')
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteByte(')')
+	}
+	sb.WriteString(";")
+
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(sb.String())))
+	cols, err := sr.ReadHeader()
+	if err != nil {
+		t.Fatalf("ReadHeader: %v", err)
+	}
+	if len(cols) != 2 {
+		t.Fatalf("columns: %v", cols)
+	}
+
+	var first, mid []interface{}
+	want := make([]string, total)
+	for i := 0; i < total; i++ {
+		row, err := sr.ReadRow()
+		if err != nil {
+			t.Fatalf("ReadRow %d: %v", i, err)
+		}
+		if len(row) != 2 {
+			t.Fatalf("row %d has %d values, want 2", i, len(row))
+		}
+		if got := fmt.Sprint(row[1]); got != strconv.Itoa(i) {
+			t.Fatalf("row %d index value = %q, want %q (chunk boundary dropped or reordered a row)", i, got, strconv.Itoa(i))
+		}
+		want[i] = fmt.Sprint(row[0])
+		if i == 0 {
+			first = row
+		}
+		if i == rowChunkRows {
+			mid = row
+		}
+	}
+	if _, err := sr.ReadRow(); err != io.EOF {
+		t.Fatalf("after the last row got %v, want EOF", err)
+	}
+
+	// The first row was parsed several chunks ago and must still hold its bytes.
+	if got := fmt.Sprint(first[0]); got != want[0] {
+		t.Errorf("first row value after later chunks = %q, want %q", got, want[0])
+	}
+	if got := fmt.Sprint(mid[0]); got != want[rowChunkRows] {
+		t.Errorf("boundary row value = %q, want %q", got, want[rowChunkRows])
+	}
+	// Spot-check the boundary values themselves: doubled quote, backslash escape,
+	// hex literal, embedded newline and NULL.
+	if got := want[0]; got != "dq'uo" {
+		t.Errorf("doubled quote at chunk start = %q, want dq'uo", got)
+	}
+	if got := want[rowChunkRows-1]; got != `bs\slash` {
+		t.Errorf("backslash escape at chunk end = %q, want bs\\slash", got)
+	}
+	if got := want[rowChunkRows]; got != "[65]" {
+		t.Errorf("hex literal at chunk start = %q, want [65]", got)
+	}
+	if got := want[2*rowChunkRows-1]; got != "nl\nnl" {
+		t.Errorf("escaped newline = %q, want nl\\nnl", got)
+	}
+	if want[2*rowChunkRows] != "<nil>" {
+		t.Errorf("NULL at chunk start = %q, want <nil>", want[2*rowChunkRows])
 	}
 }
