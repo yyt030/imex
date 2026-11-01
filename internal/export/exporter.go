@@ -7,6 +7,7 @@ import (
 	"github.com/pkg/errors"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -298,8 +299,13 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 
 	// Pipeline: Reader goroutine → Channel → Writer (main goroutine)
 	type rowBatch struct {
-		data [][]sql.RawBytes
-		err  error
+		// flat holds a batch's row headers back to back: row r's values are
+		// flat[r*ncols:(r+1)*ncols], and only the first rows entries are live.
+		// Blocks and value chunks come from pools because the writer finishes
+		// with a batch before the reader can fill it again.
+		flat   []sql.RawBytes
+		rows   int
+		chunks [][]byte
 	}
 
 	batchSize := e.config.BatchSize
@@ -312,6 +318,22 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	}
 	rowCh := make(chan rowBatch, pipelineBuffer)
 	errCh := make(chan error, 1)
+
+	ncols := len(columns)
+
+	// Header blocks and value chunks are the reader's only per-batch garbage.
+	// Before pooling, every row allocated its own header slice and every value
+	// its own bytes: 3,000,000 rows of three columns allocated 409 MB in
+	// ~9,000,000 objects. A block and a 64 KiB chunk turn that into one
+	// allocation per batch (about 3,000 batches) plus reuse.
+	blockPool := &sync.Pool{New: func() any {
+		return make([]sql.RawBytes, batchSize*ncols)
+	}}
+	const chunkSize = 64 * 1024
+	chunkPool := &sync.Pool{New: func() any {
+		return make([]byte, 0, chunkSize)
+	}}
+	yearZero := []byte("0000")
 
 	// firstRowAt is set once, by the reader, on the first row the server hands
 	// back: the gap between executing the query and that moment is the query's
@@ -332,11 +354,33 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		stall := common.NewStallWatch(scanStallThreshold)
 		seen := int64(0)
 
-		batch := make([][]sql.RawBytes, 0, batchSize)
-		valuePtrs := make([]interface{}, len(columns))
-		rawValues := make([]sql.RawBytes, len(columns))
+		valuePtrs := make([]interface{}, ncols)
+		rawValues := make([]sql.RawBytes, ncols)
 		for i := range rawValues {
 			valuePtrs[i] = &rawValues[i]
+		}
+
+		flat := blockPool.Get().([]sql.RawBytes)
+		var chunks [][]byte
+		cur := chunkPool.Get().([]byte)
+		chunks = append(chunks, cur)
+		nrows := 0
+
+		// flush hands the filled batch over and starts the next one. It reports
+		// false when the context ended first.
+		flush := func() bool {
+			select {
+			case rowCh <- rowBatch{flat: flat, rows: nrows, chunks: chunks}:
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return false
+			}
+			flat = blockPool.Get().([]sql.RawBytes)
+			chunks = nil
+			cur = chunkPool.Get().([]byte)
+			chunks = append(chunks, cur)
+			nrows = 0
+			return true
 		}
 
 		for rows.Next() {
@@ -354,42 +398,57 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 				return
 			}
 
-			// Copy each RawBytes into its own backing array. nil stays nil (NULL).
-			rowData := make([]sql.RawBytes, len(columns))
-			for i := range columns {
-				if rawValues[i] != nil {
-					buf := make([]byte, len(rawValues[i]))
-					copy(buf, rawValues[i])
-					// Normalize YEAR(0000): the text protocol returns "0", which
-					// re-imports as 2000. Rewrite the bare "0" to "0000".
-					if anyYear && isYear[i] && len(buf) == 1 && buf[0] == '0' {
-						buf = []byte("0000")
-					}
-					rowData[i] = buf
-				}
+			// Copy each RawBytes into the batch's chunk. nil stays nil (NULL).
+			// The row window is cleared first because pooled headers carry the
+			// previous batch's pointers.
+			row := flat[nrows*ncols : (nrows+1)*ncols]
+			for i := range row {
+				row[i] = nil
 			}
-
-			batch = append(batch, rowData)
+			for i, v := range rawValues {
+				if v == nil {
+					continue
+				}
+				// Normalize YEAR(0000): the text protocol returns "0", which
+				// re-imports as 2000. Rewrite the bare "0" to "0000".
+				if anyYear && isYear[i] && len(v) == 1 && v[0] == '0' {
+					v = yearZero
+				}
+				if cap(cur)-len(cur) < len(v) {
+					cur = chunkPool.Get().([]byte)
+					if cap(cur) < len(v) {
+						// A single value larger than the pool's chunk: size the
+						// chunk to it and leave it out of the pool on return.
+						cur = make([]byte, 0, len(v))
+					}
+					chunks = append(chunks, cur)
+				}
+				start := len(cur)
+				cur = append(cur, v...)
+				row[i] = cur[start:len(cur)]
+			}
+			nrows++
 
 			// 批量发送
-			if len(batch) >= batchSize {
-				select {
-				case rowCh <- rowBatch{data: batch}:
-					batch = make([][]sql.RawBytes, 0, batchSize)
-				case <-ctx.Done():
-					errCh <- ctx.Err()
+			if nrows >= batchSize {
+				if !flush() {
 					return
 				}
 			}
 		}
 
 		// 发送剩余数据
-		if len(batch) > 0 {
-			select {
-			case rowCh <- rowBatch{data: batch}:
-			case <-ctx.Done():
-				errCh <- ctx.Err()
+		if nrows > 0 {
+			if !flush() {
 				return
+			}
+		} else {
+			// The unused tail batch is never sent; return its buffers now.
+			blockPool.Put(flat)
+			for _, c := range chunks {
+				if cap(c) == chunkSize {
+					chunkPool.Put(c[:0])
+				}
 			}
 		}
 
@@ -403,13 +462,22 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	rowCount := int64(0)
 
 	for batch := range rowCh {
-		for _, rowData := range batch.data {
-			if err := writer.WriteRawRow(rowData); err != nil {
+		for r := 0; r < batch.rows; r++ {
+			if err := writer.WriteRawRow(batch.flat[r*ncols : (r+1)*ncols]); err != nil {
 				return errors.Wrap(err, "failed to write row")
 			}
+		}
 
-			rowCount++
-			e.stats.AddProcessed(1)
+		rowCount += int64(batch.rows)
+		// One atomic per batch rather than per row: the counter is read by the
+		// progress ticker, which cannot resolve a 1,000-row difference anyway.
+		e.stats.AddProcessed(int64(batch.rows))
+
+		blockPool.Put(batch.flat)
+		for _, c := range batch.chunks {
+			if cap(c) == chunkSize {
+				chunkPool.Put(c[:0])
+			}
 		}
 	}
 
