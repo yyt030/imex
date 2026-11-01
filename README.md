@@ -983,7 +983,7 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 
 ## 功能记录（v0.15.0）
 
-以下为 `v0.14.0` 之后、随 `v0.15.0` 一起发布的记录（本机 MariaDB 10.6.23，4C/8G；`imex_env_it.t` 205,303 行）：
+以下为 `v0.14.0` 之后、随 `v0.15.0` 一起发布的记录（本机 MariaDB 10.6.23，4C/8G；`imex_env_it.t` 205,303 行）。本轮提交为 `33f6c12`，附注 tag `v0.15.0`（tag 对象 `8bf7aba`）与 `main` 均已推送至 `origin`，细节见 requirements.md 变更记录 113、114：
 
 | 变更 | 实现 |
 |------|------|
