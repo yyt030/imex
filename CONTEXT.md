@@ -94,6 +94,7 @@
 - 父级那句误导性的 `unknown shorthand flag`（kind 或对象拼错时拿不到 `Did you mean`）。
 - 是否把 `scripts/` 写进 `.gitignore`。
 - `export` 在 `SHOW CREATE TABLE` 里对标识符的朴素加引号。
+- `README.md` 与 `docs/requirements.md` 普通表格里 14 行单元数与表头不一致（121 ④ 列了行号与分类，其中至少四行疑似比对脚本误报）——纪律 3 只约束变更记录，这 14 行不在条文范围内，逐处要判断「缺列还是缺转义」，未点名不动。
 
 ### 4.2 与 mydumper/mysqldump 的已知功能差距
 
@@ -153,7 +154,7 @@ done
 |---|---|
 | 命令怎么用、选项含义 | `README.md`（`### list`、`### show`，以及 list 那节里 list/show 共用的「输出通道」表） |
 | 设计来龙去脉、实测取证、分级理由 | `docs/requirements.md` 二节（2.3 日志 / 2.5 list / 2.6 show）、3.4.1 SQL 回显、3.6 通道与 show 定稿 |
-| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 120） |
+| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 121） |
 | 帮助文本的冻结基线 | `docs/cli-oracle.txt`（20 段 / 1,106 行，头注 note 1–25 记录了每次重基线、漂移处理与基线提交号 `4934dd2` 的取回路径） |
 | 测试矩阵与资产清单 | `docs/requirements.md` 十一节（11.1 资产表、11.2 未自动化场景） |
 | 打包/tag/文档纪律 | `<workspace>/AGENTS.md`（工作区约定，不在仓库内） |
