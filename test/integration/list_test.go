@@ -7,9 +7,7 @@ package integration
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,19 +48,28 @@ func runListRaw(t *testing.T, args ...string) (string, string, int) {
 	return runIMEXSplit(t, append([]string{"list"}, args...))
 }
 
-// runListNoDatabase is runListCLI with the -D flag removed.
-func (c *cliEnv) runListNoDatabase(t *testing.T, args ...string) (string, string, int) {
-	t.Helper()
+// withDatabaseRemoved drops the -D flag from the shared connection flags and
+// returns the function that puts them back. list and show both have a mode where
+// the scope comes from somewhere else than the flag.
+func (c *cliEnv) withDatabaseRemoved() func() {
+	prev := c.base
 	var base []string
-	for i := 0; i < len(c.base); i++ {
-		if c.base[i] == "-D" {
+	for i := 0; i < len(prev); i++ {
+		if prev[i] == "-D" {
 			i++
 			continue
 		}
-		base = append(base, c.base[i])
+		base = append(base, prev[i])
 	}
-	c.base, base = base, c.base
-	defer func() { c.base = base }()
+	c.base = base
+	return func() { c.base = prev }
+}
+
+// runListNoDatabase is runListCLI with the -D flag removed.
+func (c *cliEnv) runListNoDatabase(t *testing.T, args ...string) (string, string, int) {
+	t.Helper()
+	restore := c.withDatabaseRemoved()
+	defer restore()
 	return c.runListCLI(t, args...)
 }
 
@@ -337,30 +344,6 @@ func TestListCLIUsageErrors(t *testing.T) {
 				t.Errorf("error text leaked to stdout:\n%s", stdout)
 			}
 		})
-	}
-}
-
-func TestListCLIMessagesRedirectsLogs(t *testing.T) {
-	env := newCLILive(t)
-	path := filepath.Join(env.dir, "list-messages.log")
-
-	out, errOut, code := env.runListNoDatabase(t, "databases", "--messages", path)
-	if code != 0 {
-		t.Fatalf("exit %d, stderr:\n%s", code, errOut)
-	}
-	if errOut != "" {
-		t.Errorf("--messages must leave stderr empty, got:\n%s", errOut)
-	}
-	if !strings.Contains(out, "information_schema") {
-		t.Errorf("stdout missing data:\n%s", out)
-	}
-
-	logText, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read log file: %v", err)
-	}
-	if !strings.Contains(string(logText), "imex starting") {
-		t.Errorf("log file missing the version banner:\n%s", logText)
 	}
 }
 

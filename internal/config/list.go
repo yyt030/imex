@@ -16,6 +16,9 @@ type ListConfig struct {
 	All     bool   // --all: include system schemas when --database is not given
 
 	NoColNames bool // do not print the header row
+
+	Output      string // --output file path, empty when the result has no file
+	NoOverwrite bool   // refuse to truncate an existing --output file
 }
 
 // NewListConfig returns a ListConfig with the shipped defaults.

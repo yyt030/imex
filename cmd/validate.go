@@ -315,6 +315,9 @@ var parallelExportIgnoredOptions = []string{"batch-size", "pipeline-buffer"}
 // validateExportConfig performs all validation for export.
 // Order: threads → batch-size → pipeline-buffer → parallel-path conflicts → rest.
 func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
+	if err := validateDistinctPaths("output", cfg.Output, false); err != nil {
+		return err
+	}
 	if err := validateThreads(cfg.Threads); err != nil {
 		return err
 	}
@@ -370,6 +373,9 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 // validateImportConfig performs all validation for import.
 // Order: threads → batch-size → pipeline-buffer → rest.
 func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
+	if err := validateDistinctPaths("input", cfg.Input, false); err != nil {
+		return err
+	}
 	if err := validateThreads(cfg.ImportThreads); err != nil {
 		return err
 	}

@@ -32,9 +32,9 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.StringVarP(&exportCfg.Database, "database", "D", "", "Database name (also IMEX_DATABASE)")
 
 	// Timeouts
-	f.DurationVar(&exportCfg.ConnectTimeout, "connect-timeout", 5*time.Second, "TCP connect timeout (maps to JDBC connectTimeout)")
-	f.DurationVar(&exportCfg.SocketReadTimeout, "socket-read-timeout", 5*time.Minute, "Per-read socket timeout (maps to JDBC socketTimeout)")
-	f.DurationVar(&exportCfg.SocketWriteTimeout, "socket-write-timeout", 5*time.Minute, "Per-write socket timeout (Go-only; no JDBC equivalent)")
+	f.DurationVar(&exportCfg.ConnectTimeout, "connect-timeout", 5*time.Second, "TCP connect timeout")
+	f.DurationVar(&exportCfg.SocketReadTimeout, "socket-read-timeout", 5*time.Minute, "Per-read socket timeout")
+	f.DurationVar(&exportCfg.SocketWriteTimeout, "socket-write-timeout", 5*time.Minute, "Per-write socket timeout")
 
 	// Progress cadence
 	f.DurationVar(&exportCfg.ProgressInterval, "progress-interval", config.DefaultProgressInterval,

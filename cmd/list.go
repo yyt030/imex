@@ -25,8 +25,11 @@ func newListCmd() *cobra.Command {
 		Short: "List databases and schema objects",
 		Long: `List databases, tables, views, columns, indexes, triggers, routines or events.
 
-The result is written to stdout and logs go to stderr, so stdout carries data only:
+The result goes to --output when it names a file, and to stdout when it does not
+and no --messages file was given. With --messages and no --output the log and
+the result share that file and nothing is printed to the screen:
   imex list tables -D mydb
+  imex list tables -D mydb -o /backup/tables.txt
 
 Without --database, object lists cover every non-system schema and include a
 database column; --all adds information_schema, mysql, performance_schema and
@@ -51,10 +54,10 @@ sys. columns and indexes need both --database and --table.`,
 			f.BoolVar(&cfg.All, "all", false, "Include system schemas when --database is not given")
 		}),
 		newListObjectCmd(list.ObjectColumns, "List columns of a table", func(cfg *config.ListConfig, f *pflag.FlagSet) {
-			f.StringVarP(&cfg.Table, "table", "t", "", "Table to inspect")
+			f.StringVarP(&cfg.Table, "table", "t", "", "Table to inspect (required)")
 		}),
 		newListObjectCmd(list.ObjectIndexes, "List indexes of a table", func(cfg *config.ListConfig, f *pflag.FlagSet) {
-			f.StringVarP(&cfg.Table, "table", "t", "", "Table to inspect")
+			f.StringVarP(&cfg.Table, "table", "t", "", "Table to inspect (required)")
 		}),
 		newListObjectCmd(list.ObjectTriggers, "List triggers", func(cfg *config.ListConfig, f *pflag.FlagSet) {
 			f.StringVarP(&cfg.Table, "table", "t", "", "Only list triggers of this table")
@@ -111,7 +114,9 @@ func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 
 	f.StringVar(&cfg.Pattern, "pattern", "", "LIKE pattern for object names (% and _ are wildcards)")
 	f.BoolVar(&cfg.NoColNames, "no-col-names", false, "Do not print the header row")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")
+	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout, or --messages)")
+	f.BoolVar(&cfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
+	f.StringVarP(&messagesPath, "messages", "m", "", "Log file; without --output the result is appended here; nothing on screen")
 	f.StringVar((*string)(&cfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
 }
 
@@ -142,6 +147,7 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 		"database", cfg.Database,
 		"table", cfg.Table,
 		"pattern", cfg.Pattern,
+		"output", cfg.Output,
 	)
 
 	dsn := common.BuildDSN(&cfg.Config)
@@ -157,11 +163,18 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 		return err
 	}
 
-	rows, err := list.Run(cmd.Context(), db, cfg, cmd.OutOrStdout())
+	sink := newResultSink(cfg.Output, cfg.NoOverwrite, cmd.OutOrStdout())
+	rows, err := list.Run(cmd.Context(), db, cfg, sink)
 	if err != nil {
 		return errors.Wrapf(err, "list %s failed", object)
 	}
+	// The completion record is written before the result is delivered so that, in
+	// the --messages-without---output channel, the file reads as the run's log
+	// first and its result last.
 	common.Logger.Info("list completed", "object", object, "rows", rows)
+	if err := sink.Flush(); err != nil {
+		return errors.Wrapf(err, "list %s failed", object)
+	}
 	return nil
 }
 
@@ -191,6 +204,9 @@ func validateListConfig(cfg *config.ListConfig) error {
 		return err
 	}
 	if err := validateLogLevel(string(cfg.LogLevel)); err != nil {
+		return err
+	}
+	if err := validateDistinctPaths("output", cfg.Output, true); err != nil {
 		return err
 	}
 	switch cfg.Object {

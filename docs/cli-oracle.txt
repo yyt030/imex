@@ -305,6 +305,48 @@
 # all pre-existing 4934dd2 import-snapshot lines (--default-charset, --session-var,
 # --echo-sql-values, --log-format, --no-sql-tag, --quiet); none is a connection option, and the
 # shipped binary's own help is <= 118 bytes on all twelve surfaces.
+# Re-baselined note 24 (2026-11-02, v0.17.0): the `show` command landed and
+# `list`/`show` gained the output-channel flags, so every help body below was
+# regenerated from the working tree and each one now diffs EMPTY against `imex
+# <cmd> --help` (or `-?` on the leaves). What moved: (a) new `## show` parent
+# body plus six kind leaves (`tab vws trg evt prc fcn`, each with its English
+# full name in the Aliases block) -- 20 sections in total; (b) the `## list`
+# parent Long was rewritten for the channel model and gained the `-o` example
+# line; (c) all eight `## list <object>` bodies gained `-o, --output` and `--no-
+# overwrite`, their `-m, --messages` line now reads "Log file; without --output
+# the result is appended here; nothing on screen", and `-t, --table` on
+# columns/indexes/triggers now says "(required)", which is what the validator
+# already enforced; (d) `## export` lost the three JDBC parentheticals on
+# `--connect-timeout`, `--socket-read-timeout` and `--socket-write-timeout` --
+# this tool is a Go program and `socket-write-timeout` never had a JDBC
+# equivalent at all; (e) `## root` gained the `show` line in Available Commands
+# and lost the `--quiet` line, so note 21's root-side delta is folded in; (f)
+# `## import` was regenerated for the first time since the 4934dd2 snapshot,
+# folding every import-side delta notes 6 through 14 and 21 counted (sixteen,
+# then 22 lines). The frozen 4934dd2 bodies are still recoverable with `git show
+# v0.16.0:docs/cli-oracle.txt`, so nothing is lost -- the file stops being a
+# frozen baseline and becomes a live capture, which is the state notes 14 and 15
+# had been drifting toward. `## version` stays the snapshot's `imex version`
+# OUTPUT (not a help body) and keeps the environmental drift note 5 described.
+#
+# Two things this note deliberately does NOT change: (1) `--default-charset` no
+# longer enumerates its accepted charsets ("also utf8, latin1, ascii, gbk,
+# gb18030") in either body. That shortening is intentional and already reviewed
+# (2026-10-29 help pass) -- the driver accepts any MySQL charset name, so the
+# old list was a promise the code never enforced. Do not treat it as a
+# regression and do not re-add the enumeration. (2) `-?` as the help shorthand
+# is registered on LEAVES only (export, import, the eight `list` objects, the
+# six `show` kinds), because `-h` is taken by `--host` there. Root and the
+# `list`/`show`/`version` parents keep Cobra's `-h, --help`, so `imex -?`, `imex
+# list -?`, `imex show -?` and `imex version -?` are unknown-shorthand usage
+# errors (exit 2). That asymmetry is a known wart pending a ruling, not a bug in
+# this round's bodies.
+#
+# `## encrypt` is still not captured here: it has no flags of its own beyond the
+# four globals and was left out of the surface list from the start. Whether it
+# joins the oracle -- and whether the 118-byte guard grows from these 20 help
+# surfaces to cover it -- is also pending a ruling.
+
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
 SQL, or Parquet format file.
@@ -350,7 +392,7 @@ Flags:
       --batch-size int                  Rows per hand-off batch; with --threads>1 it is a usage error (default 1000)
       --char-del string                 String delimiter (only with --format del) (default "\"")
       --col-del string                  Column delimiter (only with --format del) (default ",")
-      --connect-timeout duration        TCP connect timeout (maps to JDBC connectTimeout) (default 5s)
+      --connect-timeout duration        TCP connect timeout (default 5s)
       --create                          Output a CREATE TABLE statement (only with --format sql)
   -D, --database string                 Database name (also IMEX_DATABASE)
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
@@ -380,8 +422,8 @@ Flags:
       --session-var stringArray         Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES
       --shard-key string                Column used to shard a parallel export; defaults to the primary key
   -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
-      --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
-      --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)
+      --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --statement-size int              Max bytes per merged INSERT (only with --format sql) (default 8388608)
       --threads int                     Number of parallel export tasks (1 = no parallelism) (default 1)
       --timestamp-fmt string            Timestamp format (only with --format del) (default "yyyy-MM-dd HH:mm:ss")
@@ -392,7 +434,6 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-
 ## import
 Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
 MySQL or OceanBase database.
@@ -421,52 +462,56 @@ Aliases:
   import, imp
 
 Flags:
-      --batch-size int                  Rows per reader->writer hand-off batch (default 1000)
-      --char-del string                 String delimiter (default "\"")
-      --col-del string                  Column delimiter (default ",")
-  -c, --columns string                  Target column list (comma-separated) or mapping (file_col=table_col,...)
+      --batch-size int                  Rows per INSERT batch (default 1000)
+      --char-del string                 String delimiter (only with --format del) (default "\"")
+      --col-del string                  Column delimiter (only with --format del) (default ",")
+  -c, --columns string                  Target columns (one per input column) or file=table mapping (subset ok)
       --commit-count int                Commit every n rows (default 1000)
-      --connect-timeout duration        TCP connect timeout (maps to JDBC connectTimeout) (default 5s)
+      --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database name (also IMEX_DATABASE)
-      --date-fmt string                 Date format (default "yyyy-MM-dd")
-      --default-charset string          Connection & input-file charset (utf8mb4 default; also utf8, latin1, ascii, gbk, gb18030)
-      --escape string                   Escape character (default "\"")
+      --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
+      --default-charset string          Connection & input-file charset (utf8mb4 default)
+      --escape string                   Escape character (only with --format del) (default "\"")
   -f, --format string                   Input file format (del/sql/parquet) (default "del")
   -?, --help                            help for import
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
   -i, --input string                    Input file path (required)
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Message file path
-  -M, --mode string                     Import mode (insert/insert_update/replace/create) (default "insert")
-      --no-char-del                     Do not use string delimiter
-      --no-col-names                    First line is not column names
-      --no-escape                       Disable escaping
+  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+  -M, --mode string                     insert, insert_update, replace (clears the table), create (default "insert")
+      --no-char-del                     Do not use string delimiter (only with --format del)
+      --no-col-names                    First line is not column names (only with --format del)
+      --no-escape                       Disable escaping (only with --format del)
   -p, --password string                 Database password (also IMEX_PASSWORD)
-      --pipeline-buffer int             Hand-off queue depth, in batches (default 10)
+      --pipeline-buffer int             Hand-off queue depth in batches (0 = synchronous) (default 10)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+      --progress-interval duration      Periodic progress log interval (min 100ms) (default 5s)
       --row-count int                   Import at most n rows (0=unlimited)
-      --row-del string                  Row delimiter (default "\n")
-      --session-var stringArray         Set a MySQL/OceanBase session variable before import (repeatable), e.g. --session-var "sql_mode=STRICT_TRANS_TABLES" --session-var foreign_key_checks=0
-      --skip-count int                  Skip first n rows
+      --row-del string                  Row delimiter (only with --format del) (default "\n")
+      --session-var stringArray         Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES
+      --skip-count int                  Skip first n data rows (header is consumed separately)
   -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
-      --socket-read-timeout duration    Per-read socket timeout (maps to JDBC socketTimeout) (default 5m0s)
-      --socket-write-timeout duration   Per-write socket timeout (Go-only; no JDBC equivalent) (default 5m0s)
+      --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+      --statement-size int              Byte ceiling per generated INSERT (0 = server packet budget)
   -t, --table string                    Target table name
       --threads int                     Number of parallel import tasks (1 = no parallelism) (default 1)
-      --timestamp-fmt string            Timestamp format (default "yyyy-MM-dd HH:mm:ss")
+      --timestamp-fmt string            Timestamp format (only with --format del) (default "yyyy-MM-dd HH:mm:ss")
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     On a failed statement, echo actual row values in the SQL preview instead of redacted type/length tags (also enabled via IMEX_ECHO_SQL_VALUES=1). Warning: this writes real data to stderr, logs and --messages files.
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console (default: human-readable fixed-width) or text (slog key=value), also via IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ attribution comment to statements imex executes (also via IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress periodic progress logs; configuration, final summaries and ERROR records are still printed (also enabled via IMEX_QUIET=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
 ## list
 List databases, tables, views, columns, indexes, triggers, routines or events.
 
-The result is written to stdout and logs go to stderr, so stdout carries data only:
+The result goes to --output when it names a file, and to stdout when it does not
+and no --messages file was given. With --messages and no --output the log and
+the result share that file and nothing is printed to the screen:
   imex list tables -D mydb
+  imex list tables -D mydb -o /backup/tables.txt
 
 Without --database, object lists cover every non-system schema and include a
 database column; --all adds information_schema, mysql, performance_schema and
@@ -512,8 +557,10 @@ Flags:
   -?, --help                            help for list databases
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
       --no-col-names                    Do not print the header row
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -544,8 +591,10 @@ Flags:
   -?, --help                            help for list tables
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
       --no-col-names                    Do not print the header row
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -577,8 +626,10 @@ Flags:
   -?, --help                            help for list views
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
       --no-col-names                    Do not print the header row
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -608,15 +659,17 @@ Flags:
   -?, --help                            help for list columns
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
       --no-col-names                    Do not print the header row
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
   -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
-  -t, --table string                    Table to inspect
+  -t, --table string                    Table to inspect (required)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
@@ -640,15 +693,17 @@ Flags:
   -?, --help                            help for list indexes
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
       --no-col-names                    Do not print the header row
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
   -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
-  -t, --table string                    Table to inspect
+  -t, --table string                    Table to inspect (required)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
@@ -673,8 +728,10 @@ Flags:
   -?, --help                            help for list triggers
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
       --no-col-names                    Do not print the header row
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -706,8 +763,10 @@ Flags:
   -?, --help                            help for list routines
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
       --no-col-names                    Do not print the header row
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -739,10 +798,234 @@ Flags:
   -?, --help                            help for list events
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
       --no-col-names                    Do not print the header row
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
+      --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
+
+Global Flags:
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+## show
+Show the CREATE statement the server holds for one table, view, trigger,
+event, procedure or function.
+
+The definition goes to --output, or to stdout when neither --output nor
+--messages is given. With --messages and no --output the log and the definition
+share that file and nothing is printed to the screen.
+
+  imex show tab users -D mydb
+  imex show vws v_orders -D mydb -o /backup/v_orders.sql
+
+A name may carry its own schema qualifier (mydb.users); otherwise --database
+supplies it, so one of the two is required. Batches come from `imex list`.
+
+Usage:
+  imex show [flags]
+  imex show [command]
+
+Available Commands:
+  evt         Show the definition of one event
+  fcn         Show the definition of one function
+  prc         Show the definition of one procedure
+  tab         Show the definition of one table
+  trg         Show the definition of one trigger
+  vws         Show the definition of one view
+
+Flags:
+  -h, --help   help for show
+
+Global Flags:
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
+Use "imex show [command] --help" for more information about a command.
+## show tab
+Show the definition of one table
+
+Usage:
+  imex show tab [flags]
+
+Aliases:
+  tab, table
+
+Flags:
+      --connect-timeout duration        TCP connect timeout (default 5s)
+  -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
+      --default-charset string          Connection charset (default "utf8mb4")
+  -?, --help                            help for show tab
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-level string                Log level (debug/info/warn/error) (default "info")
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -p, --password string                 Database password (also IMEX_PASSWORD)
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
+      --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
+
+Global Flags:
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+## show vws
+Show the definition of one view
+
+Usage:
+  imex show vws [flags]
+
+Aliases:
+  vws, view
+
+Flags:
+      --connect-timeout duration        TCP connect timeout (default 5s)
+  -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
+      --default-charset string          Connection charset (default "utf8mb4")
+  -?, --help                            help for show vws
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-level string                Log level (debug/info/warn/error) (default "info")
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -p, --password string                 Database password (also IMEX_PASSWORD)
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
+      --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
+
+Global Flags:
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+## show trg
+Show the definition of one trigger
+
+Usage:
+  imex show trg [flags]
+
+Aliases:
+  trg, trigger
+
+Flags:
+      --connect-timeout duration        TCP connect timeout (default 5s)
+  -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
+      --default-charset string          Connection charset (default "utf8mb4")
+  -?, --help                            help for show trg
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-level string                Log level (debug/info/warn/error) (default "info")
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -p, --password string                 Database password (also IMEX_PASSWORD)
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
+      --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
+
+Global Flags:
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+## show evt
+Show the definition of one event
+
+Usage:
+  imex show evt [flags]
+
+Aliases:
+  evt, event
+
+Flags:
+      --connect-timeout duration        TCP connect timeout (default 5s)
+  -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
+      --default-charset string          Connection charset (default "utf8mb4")
+  -?, --help                            help for show evt
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-level string                Log level (debug/info/warn/error) (default "info")
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -p, --password string                 Database password (also IMEX_PASSWORD)
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
+      --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
+
+Global Flags:
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+## show prc
+Show the definition of one procedure
+
+Usage:
+  imex show prc [flags]
+
+Aliases:
+  prc, procedure
+
+Flags:
+      --connect-timeout duration        TCP connect timeout (default 5s)
+  -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
+      --default-charset string          Connection charset (default "utf8mb4")
+  -?, --help                            help for show prc
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-level string                Log level (debug/info/warn/error) (default "info")
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -p, --password string                 Database password (also IMEX_PASSWORD)
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
+      --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
+
+Global Flags:
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+## show fcn
+Show the definition of one function
+
+Usage:
+  imex show fcn [flags]
+
+Aliases:
+  fcn, function
+
+Flags:
+      --connect-timeout duration        TCP connect timeout (default 5s)
+  -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
+      --default-charset string          Connection charset (default "utf8mb4")
+  -?, --help                            help for show fcn
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-level string                Log level (debug/info/warn/error) (default "info")
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
   -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
@@ -778,6 +1061,7 @@ Available Commands:
   help        Help about any command
   import      Import data into MySQL/OceanBase
   list        List databases and schema objects
+  show        Show the definition of one object
   version     Print version information
 
 Flags:
@@ -786,7 +1070,6 @@ Flags:
   -h, --help                help for imex
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
-      --quiet               Suppress progress logs; summaries and ERROR records still print (also IMEX_QUIET=1)
 
 Use "imex [command] --help" for more information about a command.
 ## version
