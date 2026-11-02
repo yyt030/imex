@@ -7,9 +7,9 @@
 ## 一、当前坐标
 
 - **仓库**：模块 `github.com/imex`，远端 `https://github.com/yyt030/imex`，分支 `main`（沙箱内工作副本 `/data/imex`）。
-- **HEAD**：`c03f2c9` —「feat: 新增 show 对象定义导出与 list/show 输出通道模型，修 CLI 规约审计 Z 档，版本升至 0.17.0」，19 files changed / +2,842 / −128。
-- **未推送**：`main...origin/main [ahead 1]`，远端顶端还停在 `03b4828`（变更记录 116 的补注轮）。
-- **未打 tag**：`Makefile` 第 1 行已是 `VERSION ?= 0.17.0`，但仓库最新 tag 是 `v0.16.0`（→ `08ffa85`）。上一轮指令只到 `commit`，tag 与 push 都未点名，因此都没做。
+- **HEAD**：`29f8b25` —「docs: 新增 HANDOFF.md 交接说明，并入 v0.17.0 轮」；其下依次是 `67b06e5`（CONTEXT.md）与本轮功能提交 `c03f2c9`（19 files / +2,842 / −128）。
+- **已推送**：`main...origin/main` 同步，远端顶端 `29f8b25`（2026-11-02 首次 push 报 HTTP2 framing / GnuTLS -110，重试即成功）。
+- **已发布**：附注 tag `v0.17.0` 打在 `29f8b25`（tag 对象 `2106d934`，peeled 到 `29f8b25`）并已单独推送；此前最新 tag 是 `v0.16.0`（→ `08ffa85`）。
 - **工作树**：除未跟踪的 `scripts/export-all-tables.sh`（7,834 B，变更记录 114 裁定从仓库移除后本机残留的 scratch）外干净。`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
 - **本地开发库**：沙箱内 MariaDB 10.6.23，仅监听 `127.0.0.1:3306`，测试库 `imex_it`、夹具库 `imex_test` / `imex_ddl*` 等。
 
@@ -125,9 +125,9 @@ done
 
 **QA 现状（2026-11-02 在 `c03f2c9` 上复跑，本机 MariaDB 10.6.23）**：`gofmt -l` 0 行、`go vet` 净、9 包 `-race` 全 ok、集成 **206 通过（70 顶层 + 136 子用例）/ 0 失败 / 0 跳过**（16.331 s）、20 个帮助面 0 行超 118 字节、`statementCapSlack` = 3。
 
-## 六、若要把 0.17.0 发布出去
+## 六、0.17.0 的发布（2026-11-02 已完成）
 
-按顺序、每步都要用户点名：`git push origin main`（把 `c03f2c9` 推上去）→ `git tag -a v0.17.0 -m "<一句话摘要>"` → `git push origin v0.17.0`。打 tag 前复核四件事：提交已 push、`git status --porcelain` 只剩可接受的未跟踪项、上面那串 QA 全绿、`Makefile` 第 1 行确实是 `0.17.0`。产物（源码包 / amd64 二进制）只在用户明确要时才做。
+按用户「commit tag push」的指令依次执行完毕：`git push origin main`（`c03f2c9`→`67b06e5`→`29f8b25`）→ `git tag -a v0.17.0`（打在 `29f8b25`）→ `git push origin v0.17.0`。发布前复核过四件事：提交已 push、工作树只剩 `?? scripts/`、上面那串 QA 全绿、`Makefile` 第 1 行是 `0.17.0`。产物（源码包 / amd64 二进制）仍只在用户明确要时才做。
 
 ## 七、文档索引
 

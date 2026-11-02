@@ -1,6 +1,8 @@
 # HANDOFF — imex v0.17.0 发布收尾
 
 > 写于 2026-11-02。面向接手者：目标、已完成、当前卡点、决策与下一步。
+> **状态：已完成（2026-11-02）**——`main` 已推到 `29f8b25`，附注 tag `v0.17.0` 已打并推送；
+> 第三节的 push 失败与第五节的前两步保留为过程记录。
 > 详细状态见同目录 `CONTEXT.md`（141 行，不进 append-only 约束）。
 
 ## 一、当前任务目标
@@ -17,10 +19,10 @@
 | 版本号 | `Makefile` 第 1 行 `VERSION ?= 0.17.0`，与待打 tag 名一致 |
 | 工作树 | 仅 `?? scripts/`（114 轮裁定移除后的本机 scratch，7,834 B，未入提交） |
 | QA | `gofmt -l` 0 行、`go vet` 净、9 包 `-race` ok、真库集成 **206 通过（70 顶层 + 136 子用例）/ 0 失败 / 0 跳过**（13.178 s，MariaDB 10.6.23）、20 个帮助面 0 行超 118 字节、`statementCapSlack` = 3 |
-| 本地 tag | **尚未创建**；仓库最新 tag 仍是 `v0.16.0`（→ `08ffa85`），`HEAD` 无 tag |
-| 远端 | `main...origin/main [ahead 2]`，origin 顶端仍是 `03b4828` |
+| tag | `v0.17.0` 已打并**已推送**：附注标签，打在 `29f8b25`（tag 对象 `2106d934`，peeled 到 `29f8b25`） |
+| 远端 | `main...origin/main` 已同步，origin 顶端 `29f8b25` |
 
-## 三、当前卡点（push 失败，未解决）
+## 三、当时的卡点（已解决：重试后 push 成功）
 
 - `git push origin main` → `Error in the HTTP2 framing layer`。
 - `git -c http.version=HTTP/1.1 push` → `GnuTLS recv error (-110): The TLS connection was non-properly terminated`。
