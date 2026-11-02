@@ -1,9 +1,9 @@
 # HANDOFF — imex v0.17.0 发布收尾
 
 > 写于 2026-11-02。面向接手者：目标、已完成、当前卡点、决策与下一步。
-> **状态：已完成（2026-11-02）**——`main` 已推到 `29f8b25`，附注 tag `v0.17.0` 已打并推送；
+> **状态：已完成（2026-11-02）**——`main` 已推到 `29f8b25`，附注 tag `v0.17.0` 已打并推送；其后 `main` 再到 `7e61e72`（变更记录 117 的发布补注），tag 按约定未动；
 > 第三节的 push 失败与第五节的前两步保留为过程记录。
-> 详细状态见同目录 `CONTEXT.md`（141 行，不进 append-only 约束）。
+> 详细状态见同目录 `CONTEXT.md`（151 行，2026-11-02 文档轮后由 141 行增至此数，不进 append-only 约束）。
 
 ## 一、当前任务目标
 
@@ -20,7 +20,7 @@
 | 工作树 | 仅 `?? scripts/`（114 轮裁定移除后的本机 scratch，7,834 B，未入提交） |
 | QA | `gofmt -l` 0 行、`go vet` 净、9 包 `-race` ok、真库集成 **206 通过（70 顶层 + 136 子用例）/ 0 失败 / 0 跳过**（13.178 s，MariaDB 10.6.23）、20 个帮助面 0 行超 118 字节、`statementCapSlack` = 3 |
 | tag | `v0.17.0` 已打并**已推送**：附注标签，打在 `29f8b25`（tag 对象 `2106d934`，peeled 到 `29f8b25`） |
-| 远端 | `main...origin/main` 已同步，origin 顶端 `29f8b25` |
+| 远端 | `main...origin/main` 已同步，origin 顶端 `29f8b25`。**注（2026-11-02 同日更新）**：第五节第 5 步的变更记录补注已提交并推送，origin 顶端现为 `7e61e72`；tag `v0.17.0` 仍指 `29f8b25`，按约定未动 |
 
 ## 三、当时的卡点（已解决：重试后 push 成功）
 
@@ -33,7 +33,7 @@
 
 ## 四、关键决策（本轮及长期）
 
-1. **tag 打在 `67b06e5`（HEAD）**：v0.17.0 是同一轮的提交，CONTEXT.md 作为收尾文档一并纳入 tag；`c03f2c9` 不单独打 tag。
+1. **tag 打在 `67b06e5`（HEAD）**：v0.17.0 是同一轮的提交，CONTEXT.md 作为收尾文档一并纳入 tag；`c03f2c9` 不单独打 tag。**注（2026-11-02 结果）**：实际落在 `29f8b25`——HANDOFF.md 自身也纳入同一轮，tag 随最终 HEAD 打，与本条「并入 v0.17.0 轮、不单独进位」的意图一致；第四节这条与第五节第 4 步写的 `67b06e5` 是决策当时（HEAD 还是 `67b06e5`）的表述，校验应以远端为准。
 2. **tag 形式**：`git tag -a v0.17.0 -m "<一句话摘要>"`；名字 = `Makefile` 第 1 行；附注标签，不用 lightweight。
 3. **不进位**：CONTEXT.md 是纯文档，按 AGENTS.md 第 7 条「纯文档/纯测试轮不单独打 tag」，并入 v0.17.0，版本号仍 0.17.0。
 4. **顺序**：先 push main（让 tag 前置的「提交已 push」成立）→ 再 tag → 再单独 `git push origin v0.17.0`。用户已一次性授权这三步。
@@ -71,4 +71,4 @@ grep -c statementCapSlack test/integration/option_matrix_test.go   # 期望 3
 
 ## 八、仍需用户裁定（勿擅自处理）
 
-枚举记法统一；`-?` 是否扩到父级/root；`## encrypt` 是否入 oracle 及守卫扩面；import 的 `DELIMITER` 与非建表 DDL 回放（单独一轮）；父级误导性的 `unknown shorthand flag`；`scripts/` 是否入 `.gitignore`；`export` 对标识符的朴素加引号。另有本轮现查的遗留：`docs/cli-oracle.txt` 头注引用的基线提交 `4934dd2` 在本地与远端都解析不到（oracle 11 处、requirements 8 处、README 2 处），是否改为可解析引用待定。
+枚举记法统一；`-?` 是否扩到父级/root；`## encrypt` 是否入 oracle 及守卫扩面；import 的 `DELIMITER` 与非建表 DDL 回放（单独一轮）；父级误导性的 `unknown shorthand flag`；`scripts/` 是否入 `.gitignore`；`export` 对标识符的朴素加引号。另有本轮现查的遗留：`docs/cli-oracle.txt` 头注引用的基线提交 `4934dd2` 在本地与远端都解析不到（oracle 11 处、requirements 8 处、README 2 处），是否改为可解析引用待定。**处理结果（2026-11-02 文档轮，变更记录 118）**：已按「只加可解析指向、不回溯替换」处理——oracle 头注第 1 行加指向、文末新增 note 25，21 处历史引用一处未删，版本仍 `0.17.0`、未打新 tag；上列其余待裁定项本轮一件未动。另记两条环境变化：新沙箱**没有 MariaDB**（真库 206 用例无法复跑），`/data/AGENTS.md` 不在仓库内也不在新沙箱内（本轮按 CONTEXT/HANDOFF 转述执行）。

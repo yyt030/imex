@@ -7,15 +7,15 @@
 ## 一、当前坐标
 
 - **仓库**：模块 `github.com/imex`，远端 `https://github.com/yyt030/imex`，分支 `main`（沙箱内工作副本 `/data/imex`）。
-- **HEAD**：`29f8b25` —「docs: 新增 HANDOFF.md 交接说明，并入 v0.17.0 轮」；其下依次是 `67b06e5`（CONTEXT.md）与本轮功能提交 `c03f2c9`（19 files / +2,842 / −128）。
-- **已推送**：`main...origin/main` 同步，远端顶端 `29f8b25`（2026-11-02 首次 push 报 HTTP2 framing / GnuTLS -110，重试即成功）。
-- **已发布**：附注 tag `v0.17.0` 打在 `29f8b25`（tag 对象 `2106d934`，peeled 到 `29f8b25`）并已单独推送；此前最新 tag 是 `v0.16.0`（→ `08ffa85`）。
-- **工作树**：除未跟踪的 `scripts/export-all-tables.sh`（7,834 B，变更记录 114 裁定从仓库移除后本机残留的 scratch）外干净。`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
-- **本地开发库**：沙箱内 MariaDB 10.6.23，仅监听 `127.0.0.1:3306`，测试库 `imex_it`、夹具库 `imex_test` / `imex_ddl*` 等。
+- **HEAD**：`7e61e72` —「docs: 变更记录 117 补注 v0.17.0 的提交、tag 与推送结果」；其下依次是 `29f8b25`（HANDOFF.md，tag `v0.17.0` 所在）、`67b06e5`（CONTEXT.md）与功能提交 `c03f2c9`（19 files / +2,842 / −128）。
+- **已推送**：`main...origin/main` 同步，远端顶端 `7e61e72`（2026-11-02 首次 push 报 HTTP2 framing / GnuTLS -110，重试即成功；`7e61e72` 是 tag 之后按 HANDOFF 第五节第 5 步补推的文档提交，tag 未动）。
+- **已发布**：附注 tag `v0.17.0` 打在 `29f8b25`（tag 对象 `2106d934`，peeled 到 `29f8b25`）并已单独推送；此前最新 tag 是 `v0.16.0`（→ `08ffa85`）。远端共 40 条 ref，heads 只有 `main`。
+- **工作树**：干净（2026-11-02 换新沙箱后按 `https://github.com/yyt030/imex` 重新 clone，完整历史、非浅克隆）。上一沙箱本机残留的未跟踪 `scripts/export-all-tables.sh`（7,834 B）不随 clone 走，仓库里本就没有它；`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
+- **本地开发库**：**当前沙箱没有 MariaDB**（`mariadbd`、`mysqld` 均不存在），需要真库的集成 QA 在此环境跑不了。上一沙箱是沙箱内 MariaDB 10.6.23，仅监听 `127.0.0.1:3306`，测试库 `imex_it`、夹具库 `imex_test` / `imex_ddl*` 等。
 
 ## 二、已完成事项
 
-### 2.1 v0.17.0 轮（HEAD `c03f2c9`，已提交、未发布）
+### 2.1 v0.17.0 轮（代码在 `c03f2c9`，已发布：tag `v0.17.0` 落在 `29f8b25`）
 
 实现 `docs/requirements.md` 3.6 的设计定稿，并修掉 116 之后 CLI 规约审计里的 Z 档缺陷。以下数字除标注外均取自变更记录 117 的当轮实测。
 
@@ -55,6 +55,12 @@
 
 两处需要留意的历史事实（现查所得，别按 README 段落名去反推 tag）：**没有 `v0.11.0` 这个 tag**——README 的「修复记录（v0.11.0）」段是随 `76a20fb`（升到 0.12.0 那一轮）一起补上的文档分段，仓库里也没有任何一次提交把 `Makefile` 写成 `VERSION ?= 0.11.0`；`v0.6.0` 是对更早那次 X 档（1.0.0）的纠正，说明 0.x 期不兼容变更的口径当时已改为记在 Y 上（AGENTS.md 第 9 条仍把这点列为待定项）。
 
+### 2.3 v0.17.0 之后的文档轮（本轮，2026-11-02，未进位、未打 tag）
+
+变更记录 **118** 行。只做一件：把 4.4 那条「基线提交号 `4934dd2` 解析不到」的文档缺陷按已给的方向处理掉——`docs/cli-oracle.txt` 第 1 行的基线说明补一句可解析指向，文末加 **Provenance note 25**。历史文本一处未删、未替换：oracle notes 1–24 的 9 处、`## version` 段那条 `Git commit: 4934dd2` 输出快照、README 功能记录 2 处、本表历史行 8 处全部原样保留（沿用变更记录 63 行的裁定）。oracle 由 1,079 → **1,106 行**，仍 20 段，20 个 help 体未变。版本仍 `0.17.0`（`Makefile` 第 1 行未动），按三节第 2 条纯文档轮不单独打 tag，`v0.17.0` 不动。
+
+**本沙箱 QA 实况**：`gofmt -l .` 空、`go vet` 净、9 包 `-race` 全 ok、`make build` 通过、20 个帮助面 118 字节守卫 0 行超限、`statementCapSlack` = 3；**只有真库 206 用例未复跑**（环境无 MariaDB，见一节）。
+
 ## 三、关键决策（长期有效，改动需用户点名）
 
 1. **对外契约固定为五面**：① CLI 选项集合与帮助文本（`docs/cli-oracle.txt` 是冻结面，重新基线即契约变更）；② 产物文件格式（DEL/SQL 布局、Parquet、`ENC:` 密文布局）；③ 退出码与错误/告警文案（0 成功、1 运行时、2 用法）；④ `IMEX_*` 环境变量集合；⑤ 发给服务端的语句与事务、锁边界（用户可从 `general_log` 观察）。任一面变化至少进第二位 Y，不兼容进第一位 X。
@@ -93,9 +99,11 @@
 - **`imex_test` 里的对象**：19 张表（`sh_t` 是 show 夹具，其余为历轮集成/排查残留，含 `big3m_copy` 995,948 行 / 66,699,264 B）、视图 `list_view`/`sh_v`、触发器 `list_trg`/`sh_trg`、事件 `list_evt`/`sh_e`、例程 `list_func`/`list_proc`/`sh_f`/`sh_p`。
 - **本机**：`/tmp/wt-0120`、`/tmp/wt-0121`、`/tmp/wt-bench`、`/tmp/wt-pprof` 四个工作树，以及 `scripts/export-all-tables.sh` scratch。
 
-### 4.4 本轮现查发现的一处文档缺陷：仓库引用的基线提交号解析不到
+### 4.4 一处文档缺陷：仓库引用的基线提交号解析不到（**已处理**，见 2.3 与变更记录 118）
 
-`docs/cli-oracle.txt` 的头注把基线写成「extracted from shipped binary commit **4934dd2**」，全文共 **11** 处引用这串（其中 `## version` 段里那处 `Git commit: 4934dd2` 是当年 `imex version` 的输出快照，按 note 5 属于该保留的内容），`README.md` 另有 2 处、`docs/requirements.md` 8 处。但这串**在本地与远端都解析不到**：`git cat-file -t 4934dd2` → `fatal: Not a valid object name`，`git log --all` 里没有以 `4934` 开头的提交，仓库可见历史只有 69 个提交。`v0.16.0` 及更早的 oracle 就一直这么写着，属长期遗留而非本轮引入。可改的方向是把「基线提交号」换成可解析的引用（旧 13 段体确实能用 `git show v0.16.0:docs/cli-oracle.txt` 取回），而 `## version` 里那处是历史输出快照、动了就等于改契约面。**是否改、怎么改等用户点头**；纯文档轮按纪律不单独打 tag，改的话并入下一轮。
+`docs/cli-oracle.txt` 的头注把基线写成「extracted from shipped binary commit **4934dd2**」，全文共 **11** 处引用这串（其中 `## version` 段里那处 `Git commit: 4934dd2` 是当年 `imex version` 的输出快照，按 note 5 属于该保留的内容），`README.md` 另有 2 处、`docs/requirements.md` 8 处。但这串**在本地与远端都解析不到**：`git cat-file -t 4934dd2` → `fatal: Not a valid object name`，`git log --all` 里没有以 `4934` 开头的提交，仓库可见历史只有 72 个提交（2026-11-02 在新沙箱重新 clone 后复测，前缀为 `4934dd2` 的对象数为 **0**，远端 heads 只有 `main`）。`v0.16.0` 及更早的 oracle 就一直这么写着，属长期遗留而非本轮引入。
+
+**处理结果（2026-11-02）**：按「只加可解析指向、不回溯替换」做完——头注第 1 行补了「该 id 在本仓库不可解析，见 note 25；13 段体可由 `git show v0.16.0:docs/cli-oracle.txt` 取回」，文末新增 **Provenance note 25** 把实测数字与 63 行的裁定写进 oracle 自己。上面列的 21 处历史引用一处没删，`## version` 快照未动，版本仍 `0.17.0`、未打新 tag。
 
 ## 五、怎么自证（本轮全部实跑过）
 
@@ -125,6 +133,8 @@ done
 
 **QA 现状（2026-11-02 在 `c03f2c9` 上复跑，本机 MariaDB 10.6.23）**：`gofmt -l` 0 行、`go vet` 净、9 包 `-race` 全 ok、集成 **206 通过（70 顶层 + 136 子用例）/ 0 失败 / 0 跳过**（16.331 s）、20 个帮助面 0 行超 118 字节、`statementCapSlack` = 3。
 
+**沙箱换了之后（2026-11-02 变更记录 118 轮实测）**：上面那串除了集成那一行都能跑：`gofmt -l .` 空、`CGO_ENABLED=1 go vet ./...` 净、`CGO_ENABLED=1 go test -race -count=1 ./...` 9 包全 ok（`test/integration` 在无 DSN 时 1.027 s 通过 = 真库用例全跳过）、`make build` 通过（`bin/imex` 22,368,418 B，ldflags 打进 `GitCommit=7e61e72`）、20 面 118 字节守卫 0 行超限、`statementCapSlack` = 3。帮助守卫与构建都不依赖数据库，照常复跑。**这个沙箱里没装 MariaDB**，`/usr/sbin/mariadbd` 与 `mysqld` 都不存在，所以起库那条命令在此不可用，206 用例与 20 个帮助面的守卫要等环境补回来才能复跑；`go` 本体是 go1.22.5，靠 `GOTOOLCHAIN=auto` 拉 `go1.26.10` 才能按 `go.mod` 编译（首次 `go build` 会下载依赖与工具链）。
+
 ## 六、0.17.0 的发布（2026-11-02 已完成）
 
 按用户「commit tag push」的指令依次执行完毕：`git push origin main`（`c03f2c9`→`67b06e5`→`29f8b25`）→ `git tag -a v0.17.0`（打在 `29f8b25`）→ `git push origin v0.17.0`。发布前复核过四件事：提交已 push、工作树只剩 `?? scripts/`、上面那串 QA 全绿、`Makefile` 第 1 行是 `0.17.0`。产物（源码包 / amd64 二进制）仍只在用户明确要时才做。
@@ -135,7 +145,7 @@ done
 |---|---|
 | 命令怎么用、选项含义 | `README.md`（`### list`、`### show`，以及 list 那节里 list/show 共用的「输出通道」表） |
 | 设计来龙去脉、实测取证、分级理由 | `docs/requirements.md` 二节（2.3 日志 / 2.5 list / 2.6 show）、3.4.1 SQL 回显、3.6 通道与 show 定稿 |
-| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 117） |
-| 帮助文本的冻结基线 | `docs/cli-oracle.txt`（20 段，头注 note 1–24 记录了每次重基线与漂移处理） |
+| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 118） |
+| 帮助文本的冻结基线 | `docs/cli-oracle.txt`（20 段 / 1,106 行，头注 note 1–25 记录了每次重基线、漂移处理与基线提交号 `4934dd2` 的取回路径） |
 | 测试矩阵与资产清单 | `docs/requirements.md` 十一节（11.1 资产表、11.2 未自动化场景） |
 | 打包/tag/文档纪律 | `/data/AGENTS.md`（工作区约定，不在仓库内） |

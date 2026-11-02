@@ -1,4 +1,6 @@
-# CLI surface extracted from shipped binary commit 4934dd2
+# CLI surface extracted from shipped binary commit 4934dd2 -- that id does not
+# resolve in this repository (note 25); the 13-section body it named is
+# recoverable as `git show v0.16.0:docs/cli-oracle.txt`
 # Rename note (2026-10-26): the project was renamed gomydump -> imex (ImEx =
 # Import + Export). Every name inside the four bodies below was rewritten with
 # it — the command word (`imex export [flags]`, `imex [command]`), the env
@@ -346,6 +348,31 @@
 # four globals and was left out of the surface list from the start. Whether it
 # joins the oracle -- and whether the 118-byte guard grows from these 20 help
 # surfaces to cover it -- is also pending a ruling.
+# Provenance note 25 (2026-11-02): the baseline commit id this file has carried
+# since the first capture -- `4934dd2`, named in the header line and in notes 1
+# through 24 -- does not resolve in this repository. Measured on a full
+# (non-shallow) clone of `main` with 72 visible commits: `git cat-file -t
+# 4934dd2` returns `fatal: Not a valid object name`, `git rev-list --all
+# --objects` lists ZERO objects with that prefix, and `git ls-remote origin`
+# advertises one branch (`refs/heads/main`) plus the tags, so no ref ever
+# pointed there. The id came in with the very first capture and was never
+# backed by a commit present in the history.
+#
+# What it stood for is still recoverable, which is why nothing had to be
+# rewritten: `git show v0.16.0:docs/cli-oracle.txt` yields the frozen 13-section
+# / 796-line body (both counts re-verified 2026-11-02) -- the same retrieval
+# path notes 23 and 24 already point at. This file is now 20 sections /
+# 1,106 lines of live capture, and no help body was touched by this note.
+#
+# Policy, the one requirements.md row 63 already set for unresolvable ids: no
+# retroactive substitution. The string stays where it was written -- nine times
+# in the dated notes above, once in the header line (which now carries a
+# pointer, not a replacement), and once inside the `## version` body as the
+# literal `Git commit: 4934dd2` output captured under note 5. That last one is a
+# contract surface and must not be edited. README's 功能记录 (2 mentions) and
+# requirements.md (8 -- seven inside 变更记录 rows, one in 3.6's landing-status
+# note) keep theirs for the same reason: swapping a recorded sample for an id
+# that was never printed would be fabricating evidence.
 
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
