@@ -976,6 +976,8 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **二进制列**：DEL/SQL 在 `--hex-blob` 生效时写 `0x…`，空值写 `0x`；Parquet 存原始 BYTE_ARRAY，不做 UTF-8 标注。
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
+> 以下各节按版本记录每轮改动的摘要。同一批变更的完整设计理由与实测取证在 `docs/requirements.md` 十四节的编号变更记录，两处按轮次对齐，**编号变更记录为权威源**；本节只写“改了什么”，取值以当轮实测为准。
+
 ## 修复记录（v0.6.0）
 
 对照需求文档的系统自测发现以下缺陷，均已修复并通过端到端回归（HEX 字节指纹 + 单位/整表往返校验）：

@@ -6,8 +6,8 @@
 
 ## 一、当前坐标
 
-- **仓库**：模块 `github.com/imex`，远端 `https://github.com/yyt030/imex`，分支 `main`（沙箱内工作副本 `/data/imex`）。
-- **HEAD**：`7e61e72` —「docs: 变更记录 117 补注 v0.17.0 的提交、tag 与推送结果」；其下依次是 `29f8b25`（HANDOFF.md，tag `v0.17.0` 所在）、`67b06e5`（CONTEXT.md）与功能提交 `c03f2c9`（19 files / +2,842 / −128）。
+- **仓库**：模块 `github.com/imex`，远端 `https://github.com/yyt030/imex`，分支 `main`（工作副本 `<workspace>/imex`）。
+- **HEAD**：`7e61e72` —「docs: 变更记录 117 补注 v0.17.0 的提交、tag 与推送结果」；其下依次是 `29f8b25`（HANDOFF.md，tag `v0.17.0` 所在）、`67b06e5`（CONTEXT.md）与功能提交 `c03f2c9`（19 files / +2,842 / −128）。**注（2026-11-02 脱敏轮，变更记录 119）**：`HANDOFF.md` 已从仓库移除——它的八节内容被本文件第三、五节与变更记录 117 的「注（发布收尾）」逐条覆盖，118 轮对它做的 10 行改动（`4934dd2` 的处理过程）也已由 118 正文与本文件 2.3、4.4 承载，无独有信息；同一轮把本文件第五节 QA 命令里的真实测试库凭据换成占位串。
 - **已推送**：`main...origin/main` 同步，远端顶端 `7e61e72`（2026-11-02 首次 push 报 HTTP2 framing / GnuTLS -110，重试即成功；`7e61e72` 是 tag 之后按 HANDOFF 第五节第 5 步补推的文档提交，tag 未动）。
 - **已发布**：附注 tag `v0.17.0` 打在 `29f8b25`（tag 对象 `2106d934`，peeled 到 `29f8b25`）并已单独推送；此前最新 tag 是 `v0.16.0`（→ `08ffa85`）。远端共 40 条 ref，heads 只有 `main`。
 - **工作树**：干净（2026-11-02 换新沙箱后按 `https://github.com/yyt030/imex` 重新 clone，完整历史、非浅克隆）。上一沙箱本机残留的未跟踪 `scripts/export-all-tables.sh`（7,834 B）不随 clone 走，仓库里本就没有它；`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
@@ -73,7 +73,7 @@
 8. **`-?` 的注册面**：只给 16 个叶子（那里 `-h` 让给 `--host`）；root 与 `list`/`show`/`version`/`encrypt`/`help` 保持 cobra 的 `-h, --help`，所以 `imex -?` 是 unknown-shorthand 用法错误（退出 2）。
 9. **命名**：`show` 的 kind 用三个字母简称，英文整词作别名（用户 2026-11-02 裁定）。
 10. **数字必须实测**：文档里的字节数、行数、PASS 数只有在实跑过的服务器上量出来才写。本轮就因夹具内容变化重测并纠正了 5 处上一轮遗留的漂移（`-m` 文件 2,395 B、show 文件 606 B、缓冲三档 433/2,698/12,848 B、同路径 312 B、语句 24–42 B）。
-11. **打包纪律**（`/data/AGENTS.md`）：提交后不自动打包；每天第一次回复自动出源码工程包（未提交改动加 `-dirty`）；产物只 amd64；`/data/work` 只保留最近 3 批。
+11. **打包纪律**（`<workspace>/AGENTS.md`）：提交后不自动打包；每天第一次回复自动出源码工程包（未提交改动加 `-dirty`）；产物只 amd64；`<workspace>/work` 只保留最近 3 批。
 
 ## 四、待办与待裁定
 
@@ -97,7 +97,7 @@
 
 - **开发库上的夹具**：`imex list databases` 现有 19 个库，其中 `imex_it`（集成测试床）与 `imex_test`（list/show 夹具）要留；其余 `imex_ddl`、`imex_ddl4`、`imex_edge`、`imex_edge2`、`imex_env_it`、`imex_hdr`、`imex_map`、`imex_map2`、`imex_other`、`imex_probe_xs`、`imex_sqlecho`、`pi_probe` 是历轮排查留下的。
 - **`imex_test` 里的对象**：19 张表（`sh_t` 是 show 夹具，其余为历轮集成/排查残留，含 `big3m_copy` 995,948 行 / 66,699,264 B）、视图 `list_view`/`sh_v`、触发器 `list_trg`/`sh_trg`、事件 `list_evt`/`sh_e`、例程 `list_func`/`list_proc`/`sh_f`/`sh_p`。
-- **本机**：`/tmp/wt-0120`、`/tmp/wt-0121`、`/tmp/wt-bench`、`/tmp/wt-pprof` 四个工作树，以及 `scripts/export-all-tables.sh` scratch。
+- **本机**：`<tmp>/wt-0120`、`<tmp>/wt-0121`、`<tmp>/wt-bench`、`<tmp>/wt-pprof` 四个工作树，以及 `scripts/export-all-tables.sh` scratch。
 
 ### 4.4 一处文档缺陷：仓库引用的基线提交号解析不到（**已处理**，见 2.3 与变更记录 118）
 
@@ -108,15 +108,17 @@
 ## 五、怎么自证（本轮全部实跑过）
 
 ```bash
-cd /data/imex
+cd <workspace>/imex
 make build                                                   # bin/imex
 gofmt -l .                                                   # 期望空
 CGO_ENABLED=1 go vet ./...                                   # 期望无输出
 CGO_ENABLED=1 go test -race -count=1 ./...                   # 期望 9 个 ok
-IMEX_TEST_DSN='gd:gdpass@tcp(127.0.0.1:3306)/imex_it' \
+IMEX_TEST_DSN='<user>:<password>@tcp(127.0.0.1:3306)/imex_it' \
   CGO_ENABLED=1 go test -race -count=1 -v ./test/integration # 期望 0 FAIL / 0 SKIP
 grep -c statementCapSlack test/integration/option_matrix_test.go   # 期望 3
 ```
+
+`IMEX_TEST_DSN` 里的 `<user>:<password>` 是占位串，真实账号口令只在运行环境里给、不写进仓库（口径同变更记录 59，取值以裸形态为准复核，见变更记录 119 ②bis）。
 
 帮助长度守卫（20 个面，输出必须为空）：
 
@@ -129,7 +131,7 @@ for c in "--help" "export --help" "import --help" "list --help" "show --help" "v
 done
 ```
 
-两个坑：`test/integration` 的 `TestMain` **只在 `IMEX_TEST_DSN` 存在时**才构建 CLI 二进制，直接驱动二进制的用例必须按 DSN 判空 `t.Skip`（现为 `show_test.go` 两条 help-only 与 `option_matrix_test.go` 一条），否则 `go test ./...` 会报 `exec: no command`；沙箱重启后 3306 不在了，起法：`nohup setsid /usr/sbin/mariadbd --defaults-file=/tmp/mysqld/my.cnf >/tmp/mysqld/runNN.log 2>&1 </dev/null &`，再用 `ss -ltn | grep ':3306 '` 确认。
+两个坑：`test/integration` 的 `TestMain` **只在 `IMEX_TEST_DSN` 存在时**才构建 CLI 二进制，直接驱动二进制的用例必须按 DSN 判空 `t.Skip`（现为 `show_test.go` 两条 help-only 与 `option_matrix_test.go` 一条），否则 `go test ./...` 会报 `exec: no command`；沙箱重启后 3306 不在了，起法：`nohup setsid /usr/sbin/mariadbd --defaults-file=<tmp>/mysqld/my.cnf ><tmp>/mysqld/runNN.log 2>&1 </dev/null &`，再用 `ss -ltn | grep ':3306 '` 确认。
 
 **QA 现状（2026-11-02 在 `c03f2c9` 上复跑，本机 MariaDB 10.6.23）**：`gofmt -l` 0 行、`go vet` 净、9 包 `-race` 全 ok、集成 **206 通过（70 顶层 + 136 子用例）/ 0 失败 / 0 跳过**（16.331 s）、20 个帮助面 0 行超 118 字节、`statementCapSlack` = 3。
 
@@ -145,7 +147,7 @@ done
 |---|---|
 | 命令怎么用、选项含义 | `README.md`（`### list`、`### show`，以及 list 那节里 list/show 共用的「输出通道」表） |
 | 设计来龙去脉、实测取证、分级理由 | `docs/requirements.md` 二节（2.3 日志 / 2.5 list / 2.6 show）、3.4.1 SQL 回显、3.6 通道与 show 定稿 |
-| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 118） |
+| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 119） |
 | 帮助文本的冻结基线 | `docs/cli-oracle.txt`（20 段 / 1,106 行，头注 note 1–25 记录了每次重基线、漂移处理与基线提交号 `4934dd2` 的取回路径） |
 | 测试矩阵与资产清单 | `docs/requirements.md` 十一节（11.1 资产表、11.2 未自动化场景） |
-| 打包/tag/文档纪律 | `/data/AGENTS.md`（工作区约定，不在仓库内） |
+| 打包/tag/文档纪律 | `<workspace>/AGENTS.md`（工作区约定，不在仓库内） |
