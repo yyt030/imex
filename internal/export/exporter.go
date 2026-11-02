@@ -81,9 +81,11 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	}
 
 	// Enable consistent snapshot for transactional consistency
+	common.LogInteractionSQL("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
 	if _, err := db.Exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
 		common.Logger.Warn("failed to set isolation level", "error", err)
 	}
+	common.LogInteractionSQL("START TRANSACTION WITH CONSISTENT SNAPSHOT")
 	if _, err := db.Exec("START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
 		common.Logger.Warn("failed to start consistent snapshot", "error", err)
 	}
@@ -754,15 +756,15 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 	}
 
 	// Create separate database connection for this shard
-	db, err := e.openShardConn()
+	db, err := e.openShardConn(workerID, shardIdx)
 	if err != nil {
 		return 0, errors.Wrap(err, "failed to create shard connection")
 	}
 
 	// Execute shard query with attribution tag
 	taggedShardQuery := common.TagSQL(shardQuery)
-	if common.DebugEnabled() {
-		common.Logger.Debug("db interaction", "worker", workerID, "shard", shardIdx, "sql", common.SQLPreview(shardQuery, nil))
+	if common.InfoEnabled() {
+		common.Logger.Info("db interaction", "worker", workerID, "shard", shardIdx, "sql", common.SQLInteractionPreview(shardQuery, nil))
 	}
 	rows, err := db.QueryContext(ctx, taggedShardQuery)
 	if err != nil {
@@ -901,16 +903,19 @@ func (e *Exporter) pipelineOptionsIgnoredByParallel() bool {
 		e.config.PipelineBuffer != config.DefaultPipelineBuffer
 }
 
-// openShardConn dials the connection one parallel shard reads through.
-func (e *Exporter) openShardConn() (*sql.DB, error) {
+// openShardConn dials the connection one parallel shard reads through. workerID
+// and shardIdx dial nothing: they attribute the two consistent-snapshot
+// statements this connection runs immediately after it opens, so a reader can
+// tell which shard a snapshot warning refers to when shards interleave.
+func (e *Exporter) openShardConn(workerID, shardIdx int) (*sql.DB, error) {
 	if e.openShard != nil {
 		return e.openShard()
 	}
-	return e.createShardConnection()
+	return e.createShardConnection(workerID, shardIdx)
 }
 
 // createShardConnection creates a new database connection for a shard
-func (e *Exporter) createShardConnection() (*sql.DB, error) {
+func (e *Exporter) createShardConnection(workerID, shardIdx int) (*sql.DB, error) {
 	// Build DSN using the shared Config
 	dsn := common.BuildDSN(&e.config.Config)
 
@@ -930,11 +935,17 @@ func (e *Exporter) createShardConnection() (*sql.DB, error) {
 	}
 
 	// Set isolation level for consistent snapshot
+	if common.InfoEnabled() {
+		common.Logger.Info("db interaction", "worker", workerID, "shard", shardIdx, "sql", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+	}
 	if _, err := db.Exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		common.Logger.Warn("failed to set isolation level for shard", "error", err)
+		common.Logger.Warn("failed to set isolation level for shard", "worker", workerID, "shard", shardIdx, "error", err)
+	}
+	if common.InfoEnabled() {
+		common.Logger.Info("db interaction", "worker", workerID, "shard", shardIdx, "sql", "START TRANSACTION WITH CONSISTENT SNAPSHOT")
 	}
 	if _, err := db.Exec("START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
-		common.Logger.Warn("failed to start consistent snapshot for shard", "error", err)
+		common.Logger.Warn("failed to start consistent snapshot for shard", "worker", workerID, "shard", shardIdx, "error", err)
 	}
 
 	return db, nil

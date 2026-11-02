@@ -712,14 +712,15 @@ func textKeyRows(t *testing.T, env *cliEnv, table string) []string {
 	return out
 }
 
-// TestOptionMatrixDebugEchoesInteractionSQL pins the three operator-facing log
+// TestOptionMatrixEchoesInteractionSQL pins the three operator-facing log
 // changes: (1) the final total time always reads in plain seconds with three
-// decimals, (2) the statements the tool exchanges with the server are printed,
-// but only under --log-level debug and never as raw values, and (3) every
-// parallel worker's log line carries a worker id so a failing shard is
-// attributable. A default (info) run must stay silent on the SQL and must not
-// mention a single batch INSERT.
-func TestOptionMatrixDebugEchoesInteractionSQL(t *testing.T) {
+// decimals, (2) the statements the tool exchanges with the server are printed at
+// the default level, never as raw values, and cover the list query and the
+// consistent-snapshot statements as well, and (3) every parallel worker's log
+// line carries a worker id so a failing shard is attributable. A batch INSERT is
+// data rather than conversation and must stay out even here; raising the level to
+// warn is the only way to silence the trace.
+func TestOptionMatrixEchoesInteractionSQL(t *testing.T) {
 	env := newCLILive(t)
 	src := env.liveTable(t, "dbgsql_src")
 	env.exec(t, "CREATE TABLE `"+src+"` (id BIGINT PRIMARY KEY, v VARCHAR(32)) DEFAULT CHARSET=utf8mb4")
@@ -734,38 +735,59 @@ func TestOptionMatrixDebugEchoesInteractionSQL(t *testing.T) {
 	}
 	env.exec(t, "INSERT INTO `"+src+"` (id, v) VALUES "+values.String())
 
-	// Default verbosity: the SQL conversation stays hidden. This is what keeps a
-	// normal run as quiet as it was before the debug echo existed.
+	// The info level — what the CLI defaults to, spelled out here because the
+	// shared base flags pin --log-level error to keep the other cases quiet — now
+	// carries the trace: an operator reading a failed run has to see what was sent
+	// without re-running it under --log-level debug.
 	infoOut, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
-		"-o", filepath.Join(env.dir, "dbgsql_info.sql"), "--threads", "4", "--log-level", "info", "--create")
+		"-o", filepath.Join(env.dir, "dbgsql_info.sql"), "--threads", "4", "--create",
+		"--log-level", "info")
 	if code != 0 {
 		t.Fatalf("info-level parallel export: exit %d\n%s", code, infoOut)
 	}
-	if strings.Contains(infoOut, "db interaction") {
-		t.Errorf("info-level run leaked interaction SQL:\n%s", infoOut)
+	for _, want := range []string{"db interaction", "SHOW CREATE TABLE", "information_schema",
+		"SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", "START TRANSACTION WITH CONSISTENT SNAPSHOT"} {
+		if !strings.Contains(strings.ToLower(infoOut), strings.ToLower(want)) {
+			t.Errorf("info-level run missing %q in the SQL echo\n%s", want, infoOut)
+		}
+	}
+	// The batch INSERT is data, not conversation: it must not be echoed.
+	if regexp.MustCompile(`db interaction.*INSERT INTO`).MatchString(infoOut) {
+		t.Errorf("a bulk INSERT was echoed as an interaction statement:\n%s", infoOut)
+	}
+	// Bound values stay type tags: this is what makes the trace safe to carry at
+	// the level that is on by default, and safe to write into a --messages file.
+	if strings.Contains(infoOut, "'row-1'") {
+		t.Errorf("a real row value appeared in the interaction echo:\n%s", infoOut)
 	}
 
-	dbg := filepath.Join(env.dir, "dbgsql_debug.sql")
+	// --log-level warn is the off switch, and the only one.
+	warnOut, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
+		"-o", filepath.Join(env.dir, "dbgsql_warn.sql"), "--threads", "4", "--create",
+		"--log-level", "warn")
+	if code != 0 {
+		t.Fatalf("warn-level parallel export: exit %d\n%s", code, warnOut)
+	}
+	if strings.Contains(warnOut, "db interaction") {
+		t.Errorf("warn-level run leaked interaction SQL:\n%s", warnOut)
+	}
+
 	out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
-		"-o", dbg, "--threads", "4", "--log-level", "debug", "--create")
+		"-o", filepath.Join(env.dir, "dbgsql_debug.sql"), "--threads", "4", "--log-level", "debug", "--create")
 	if code != 0 {
 		t.Fatalf("debug parallel export: exit %d\n%s", code, out)
 	}
-
-	// (2) interaction SQL present, and it is the real shape the server saw.
-	for _, want := range []string{"db interaction", "SHOW CREATE TABLE", "information_schema"} {
-		if !strings.Contains(strings.ToLower(out), strings.ToLower(want)) {
-			t.Errorf("debug run missing %q in the SQL echo\n%s", want, out)
-		}
-	}
-	// The batch INSERT is data, not conversation: it must not be echoed even here.
-	if strings.Contains(out, "db interaction") && regexp.MustCompile(`db interaction.*INSERT INTO`).MatchString(out) {
+	if regexp.MustCompile(`db interaction.*INSERT INTO`).MatchString(out) {
 		t.Errorf("a bulk INSERT was echoed as an interaction statement:\n%s", out)
 	}
 
-	// (3) each completed shard is attributable to a worker.
+	// (3) each completed shard is attributable to a worker, and so is the snapshot
+	// its connection opened.
 	if !strings.Contains(out, "worker=") {
 		t.Errorf("parallel export log carries no worker id:\n%s", out)
+	}
+	if !regexp.MustCompile(`db interaction worker=[0-9]+ shard=[0-9]+ sql="START TRANSACTION WITH CONSISTENT SNAPSHOT"`).MatchString(out) {
+		t.Errorf("a shard snapshot statement was echoed without worker/shard attribution:\n%s", out)
 	}
 	if strings.Count(out, "shard export completed") < 2 {
 		t.Errorf("expected more than one shard to complete\n%s", out)
@@ -774,6 +796,19 @@ func TestOptionMatrixDebugEchoesInteractionSQL(t *testing.T) {
 	// (1) the completion total is fixed-unit seconds with three decimals.
 	if !regexp.MustCompile(`duration=[0-9]+\.[0-9]{3}s`).MatchString(out) {
 		t.Errorf("completion duration not rendered as N.NNNs:\n%s", out)
+	}
+
+	// list runs its metadata query through the same recorder, and its rows still
+	// go to stdout alone — the trace must not land in the output an operator pipes.
+	stdout, stderr, code := env.runListCLI(t, "columns", "-t", src, "--log-level", "info")
+	if code != 0 {
+		t.Fatalf("list columns: exit %d\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "db interaction") {
+		t.Errorf("list echoed no metadata query at info level:\n%s", stderr)
+	}
+	if strings.Contains(stdout, "db interaction") {
+		t.Errorf("the SQL trace leaked into list stdout:\n%s", stdout)
 	}
 }
 

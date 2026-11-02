@@ -7,6 +7,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
 
@@ -21,6 +22,12 @@ func Run(ctx context.Context, db *sql.DB, cfg *config.ListConfig, out io.Writer)
 	if err != nil {
 		return 0, err
 	}
+
+	// The metadata query is recorded like every other statement the tool sends, so
+	// a run that returns the wrong columns can be read against the server log
+	// without raising --log-level first. Its bound values go through SQLPreview and
+	// stay redacted to type/length tags, the same rule every other echo follows.
+	common.LogInteractionSQL(query, args...)
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {

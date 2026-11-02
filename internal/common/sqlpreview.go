@@ -9,6 +9,22 @@ import (
 // messages, so a huge multi-row INSERT cannot flood the terminal or log.
 const MaxSQLErrorPreview = 2048
 
+// MaxSQLInteractionPreview caps the statement text a default-level
+// `db interaction` record carries. It is deliberately smaller than the error
+// preview: an error echoes one statement per run and the reader needs all of it,
+// while the trace echoes one record per statement and a parallel export embeds
+// the caller's entire query in every shard SELECT. Measured on a 3,522-byte
+// `SELECT ... WHERE id IN (1..899)` with --threads 32 (64 shard ranges) against
+// a 36,550-byte product, the uncapped trace wrote 165,731 bytes of log, its 200
+// interaction records alone being 153,585 bytes with the longest at 2,138 bytes.
+// Under this cap the same command writes 67,497–67,777 bytes across repeat runs
+// (the shard boundary literals shift the length): the same 200 records are
+// 55,348–55,539 bytes and the longest is 603–604 bytes (512 of statement plus
+// the truncation marker and the args tag comment), so no single record can
+// carry away the log; the remainder is pre-existing fixed lines such as the
+// 3,991-byte `export config` snapshot.
+const MaxSQLInteractionPreview = 512
+
 // EchoSQLValues, when true, makes failing-SQL diagnostics inline the actual
 // row values instead of redacted type/length tags. It is off by default
 // because real data (passwords, personal or business content) would then be
@@ -41,24 +57,38 @@ const sqlPreviewArgCap = 32
 // Use SQLPreviewWithValues to get an inlined value view — that path leaks
 // real data and must remain opt-in.
 func SQLPreview(query string, args []interface{}) string {
-	truncated := truncateSQL(query)
+	return sqlPreview(query, args, MaxSQLErrorPreview)
+}
+
+// SQLInteractionPreview renders a statement for the `db interaction` trace: same
+// redaction rule as SQLPreview (identifiers verbatim, bound values as type/length
+// tags), same trailing `/* args: ... */` comment, but clipped to
+// MaxSQLInteractionPreview instead of the error cap.
+func SQLInteractionPreview(query string, args []interface{}) string {
+	return sqlPreview(query, args, MaxSQLInteractionPreview)
+}
+
+// sqlPreview is the single renderer behind both preview sizes, so the redaction
+// rule cannot drift between the trace and the failing-SQL echo.
+func sqlPreview(query string, args []interface{}, limit int) string {
+	truncated := truncateSQLTo(query, limit)
 	if len(args) == 0 {
 		return truncated
 	}
 	parts := make([]string, 0, sqlPreviewArgCap+1)
-	limit := len(args)
-	if limit > sqlPreviewArgCap {
-		limit = sqlPreviewArgCap
+	limitArgs := len(args)
+	if limitArgs > sqlPreviewArgCap {
+		limitArgs = sqlPreviewArgCap
 	}
-	for i := 0; i < limit; i++ {
+	for i := 0; i < limitArgs; i++ {
 		parts = append(parts, argTypeTag(args[i]))
 	}
 	comment := " /* args: " + strings.Join(parts, ", ")
-	if len(args) > limit {
-		comment += fmt.Sprintf(", +%d more", len(args)-limit)
+	if len(args) > limitArgs {
+		comment += fmt.Sprintf(", +%d more", len(args)-limitArgs)
 	}
 	comment += " */"
-	return truncateSQL(truncated + comment)
+	return truncateSQLTo(truncated+comment, limit)
 }
 
 // SQLPreviewWithValues substitutes as many `?` placeholders as it can with
@@ -109,10 +139,17 @@ func argTypeTag(v interface{}) string {
 // never leaves a dangling half-open literal that would confuse a reader
 // parsing the SQL.
 func truncateSQL(s string) string {
-	if len(s) <= MaxSQLErrorPreview {
+	return truncateSQLTo(s, MaxSQLErrorPreview)
+}
+
+// truncateSQLTo applies the same clipping rule at a caller-chosen byte limit.
+// Both preview sizes go through here so they cut on the same boundary and append
+// the same marker.
+func truncateSQLTo(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
-	cut := s[:MaxSQLErrorPreview]
+	cut := s[:limit]
 	if last := strings.LastIndexByte(cut, ' '); last > 0 {
 		cut = cut[:last]
 	}
