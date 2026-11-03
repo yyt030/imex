@@ -147,25 +147,36 @@ func TestExportConfigRecordReportsHexBlobAsApplied(t *testing.T) {
 
 // TestEffectiveHexBlob pins the resolution the writer, the shard, and the
 // configuration record now share.
+//
+// The engine rows are the ones the answer moved out of: which engine must dump
+// binary columns as 0x hex is now the backend's fact (HexBlobMandatory), and the
+// last row keeps the case-sensitivity gap visible — `--engine PG` parses as
+// PostgreSQL at the connection but resolves through the MySQL backend here, the
+// same gap internal/list documents at TestBuildQueryEngineKeyIsMatchedExactly.
 func TestEffectiveHexBlob(t *testing.T) {
 	cases := []struct {
+		engine             string
 		hexBlob, noHexBlob bool
 		charset            string
 		want               bool
 	}{
-		{false, false, "utf8mb4", false},
-		{false, false, "utf8", false},
-		{false, false, "gbk", true},
-		{false, false, "latin1", true},
-		{true, false, "utf8mb4", true},
-		{false, true, "gbk", false},
+		{"", false, false, "utf8mb4", false},
+		{"", false, false, "utf8", false},
+		{"", false, false, "gbk", true},
+		{"", false, false, "latin1", true},
+		{"", true, false, "utf8mb4", true},
+		{"", false, true, "gbk", false},
+		{"pg", false, false, "utf8mb4", true},
+		{"pg", false, false, "gbk", true},
+		{"pg", false, true, "utf8mb4", false},
+		{"PG", false, false, "utf8mb4", false},
 	}
 	for _, tc := range cases {
 		cfg := config.NewExportConfig()
-		cfg.HexBlob, cfg.NoHexBlob, cfg.DefaultCharset = tc.hexBlob, tc.noHexBlob, tc.charset
+		cfg.Engine, cfg.HexBlob, cfg.NoHexBlob, cfg.DefaultCharset = tc.engine, tc.hexBlob, tc.noHexBlob, tc.charset
 		if got := effectiveHexBlob(cfg); got != tc.want {
-			t.Errorf("hexBlob=%v noHexBlob=%v charset=%q: effectiveHexBlob=%v, want %v",
-				tc.hexBlob, tc.noHexBlob, tc.charset, got, tc.want)
+			t.Errorf("engine=%q hexBlob=%v noHexBlob=%v charset=%q: effectiveHexBlob=%v, want %v",
+				tc.engine, tc.hexBlob, tc.noHexBlob, tc.charset, got, tc.want)
 		}
 	}
 }

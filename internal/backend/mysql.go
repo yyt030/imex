@@ -227,22 +227,28 @@ ORDER BY (INDEX_NAME = 'PRIMARY') DESC, INDEX_NAME, SEQ_IN_INDEX`
 }
 
 func (mysqlBackend) ColumnKinds(colTypes []*sql.ColumnType) []common.ColumnKind {
-	return common.ApplyColumnKinds(colTypes)
+	return applyColumnKinds(colTypes)
 }
 
 func (mysqlBackend) BinaryFlags(colTypes []*sql.ColumnType) []bool {
-	return common.BinaryColumnFlags(colTypes)
+	return binaryColumnFlags(colTypes)
 }
 
 func (mysqlBackend) MetadataKind(dataType string) common.ColumnKind {
-	return common.ClassifyColumnKind(dataType)
+	return classifyColumnKind(dataType)
 }
 
 func (mysqlBackend) MetadataBinary(dataType string) bool {
-	return common.IsBinaryTypeName(dataType)
+	return isBinaryTypeName(dataType)
 }
 
 func (mysqlBackend) DefaultPort() int { return 3306 }
+
+// HexBlobMandatory is false: MySQL's binary columns are only unsafe in a charset
+// that cannot carry the bytes, which is the rule config.HexBlobForCharset applies
+// to --default-charset. A byte-safe charset lets --hex-blob off, and the dump
+// carries the raw bytes.
+func (mysqlBackend) HexBlobMandatory() bool { return false }
 
 // CellFixups returns a nil rewriter for every column: the MySQL driver's text
 // protocol already hands over the bytes the server stores.

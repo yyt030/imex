@@ -1214,6 +1214,13 @@ imex/
 │   ├── validate_fuzz_test.go  # 校验函数 fuzz 测试
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
+│   ├── backend/
+│   │   ├── backend.go         # 方言接口（28 个方法）、`--engine` 取值解析与 `backends` 注册表
+│   │   ├── types.go           # 类型词 → `common.ColumnKind` 的共享词表与二进制列判定（不含引擎名）
+│   │   ├── mysql.go           # MySQL/MariaDB/OceanBase 方言
+│   │   ├── postgres.go        # PostgreSQL 方言（`$n`、`client_encoding` 表、类型与二进制词表、单元格文本规则）
+│   │   ├── backend_test.go    # 两方言逐字节对照与注册表测试
+│   │   └── types_test.go      # 类型词表分类断言
 │   ├── config/
 │   │   ├── config.go            # 配置定义与默认值（连接/超时/字符集/DelModifier/导出导入选项）
 │   │   ├── list.go              # list 配置与输出格式枚举
@@ -1221,7 +1228,7 @@ imex/
 │   │   └── formatscope.go       # 格式适用范围登记表（校验拒绝文案、帮助文本标记、配置回显字段三处共用）
 │   ├── common/
 │   │   ├── util.go              # DSN 构建（超时/字符集/会话变量注入）与工具函数
-│   │   ├── colkind.go           # 列类型分类（DEL 文本修饰与回转换、二进制列判定）
+│   │   ├── colkind.go           # `ColumnKind` 输出词汇（writer/reader 共用，词表在 internal/backend/types.go）
 │   │   ├── sessionvars.go       # 会话变量解析与 DSN 注入（--session-var）
 │   │   ├── sqlpreview.go        # 失败 SQL 脱敏回显（--echo-sql-values）
 │   │   ├── sqltag.go            # 运行时 SQL 归因注释 /* imex:<commit> */（--no-sql-tag）
@@ -1255,7 +1262,9 @@ imex/
 │   │   └── parquet_reader.go    # Parquet 格式读取器
 │   ├── list/
 │       ├── list.go              # 执行查询、逐行读取并交给渲染器
-│       ├── queries.go           # information_schema 查询构建（对象、范围、pattern、type）
+│       ├── queries.go           # 对象名与别名顺序、`BuildQuery()` 的引擎分派表
+│       ├── queries_mysql.go     # information_schema 查询构建（对象、范围、pattern、type）
+│       ├── queries_pg.go        # `--engine pg` 的同构语句（pg_catalog / information_schema，`$n` 顺序编号）
 │       ├── aliases.go           # 对象简写注册表（dbs、tab、trg…）
 │       ├── render.go            # table 对齐输出
 │       ├── queries_test.go      # 查询构建测试

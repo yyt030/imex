@@ -382,34 +382,6 @@ func TestDelWriter_MultiByteDelimiters(t *testing.T) {
 	}
 }
 
-func TestClassifyColumnKind(t *testing.T) {
-	cases := map[string]common.ColumnKind{
-		"DECIMAL":          common.KindNumber,
-		"int":              common.KindNumber,
-		"BIGINT":           common.KindNumber,
-		"UNSIGNED BIGINT":  common.KindNumber,
-		"UNSIGNED INT":     common.KindNumber,
-		"UNSIGNED DECIMAL": common.KindNumber,
-		"DATE":             common.KindDate,
-		"TIME":             common.KindTime,
-		"DATETIME":         common.KindTimestamp,
-		"TIMESTAMP":        common.KindTimestamp,
-		"YEAR":             common.KindYear,
-		"VARCHAR":          common.KindUnknown,
-		"BLOB":             common.KindUnknown,
-		"TINYTEXT":         common.KindUnknown,
-		"ENUM":             common.KindUnknown,
-	}
-	for name, want := range cases {
-		if got := common.ClassifyColumnKind(name); got != want {
-			t.Errorf("ClassifyColumnKind(%q) = %v, want %v", name, got, want)
-		}
-	}
-	if !common.IsBinaryTypeName("LONGBLOB") || !common.IsBinaryTypeName("VARBINARY") || common.IsBinaryTypeName("TEXT") {
-		t.Error("IsBinaryTypeName misclassification")
-	}
-}
-
 func TestDelWriter_RawRowWithKinds(t *testing.T) {
 	tests := []struct {
 		name     string

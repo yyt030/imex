@@ -8,17 +8,20 @@ import (
 
 // effectiveHexBlob resolves the binary-column encoding for a run: --hex-blob
 // forces it on, --no-hex-blob forces it off, and neither flag means automatic,
-// which enables hex whenever the charset is not byte-safe.
+// which asks the engine whether hex is mandatory and otherwise lets the charset
+// decide.
 //
 // The single-threaded path, a parallel shard, and the configuration record all
 // need the same answer, so it lives in one place here.
 //
-// --engine pg is always on. A PostgreSQL server rejects a NUL in any text value
-// (measured: `ERROR: invalid byte sequence for encoding "UTF8": 0x00`, SQLSTATE
-// 22021, on the first row of a bytea column dumped raw under utf8mb4), so the
-// charset rule that exists to protect MySQL's byte-safe charsets cannot apply
-// here: bytea is binary whatever the client encoding is. --no-hex-blob is refused
-// for that engine in cmd/engine.go rather than silently overridden.
+// Which engines must always go out as 0x hex is the backend's fact to own (see
+// HexBlobMandatory), not a name this package compares: --engine pg is always on,
+// because a PostgreSQL server rejects a NUL in any text value (measured:
+// `ERROR: invalid byte sequence for encoding "UTF8": 0x00`, SQLSTATE 22021, on
+// the first row of a bytea column dumped raw under utf8mb4) and the charset rule
+// that exists to protect MySQL's byte-safe charsets cannot apply to bytea.
+// --no-hex-blob is refused for that engine in cmd/engine.go rather than silently
+// overridden.
 func effectiveHexBlob(cfg *config.ExportConfig) bool {
 	if cfg.HexBlob {
 		return true
@@ -26,7 +29,7 @@ func effectiveHexBlob(cfg *config.ExportConfig) bool {
 	if cfg.NoHexBlob {
 		return false
 	}
-	if cfg.Engine == string(backend.EnginePG) {
+	if backend.Lookup(cfg.Engine).HexBlobMandatory() {
 		return true
 	}
 	return config.HexBlobForCharset(cfg.DefaultCharset)

@@ -607,3 +607,30 @@ func TestMetadataClassification(t *testing.T) {
 		t.Fatal("uuid/json/text are printable and must not take the hex path")
 	}
 }
+
+// TestHexBlobMandatory pins the fact that moved out of internal/export: the
+// engine, not a charset rule, decides whether a dump must carry binary columns as
+// 0x hex. MySQL leaves the decision to the charset; PostgreSQL does not have one.
+func TestHexBlobMandatory(t *testing.T) {
+	if Must(EngineMySQL).HexBlobMandatory() {
+		t.Fatal("mysql must not force hex: --default-charset decides there")
+	}
+	if !Must(EnginePG).HexBlobMandatory() {
+		t.Fatal("pg must force hex: a NUL in a text value is SQLSTATE 22021 whatever the client encoding")
+	}
+}
+
+// TestLookupAppliesTheDefaultEngine pins the non-failing resolver the format
+// decisions use: an exact engine spelling wins, and anything else — above all the
+// empty string a hand-built config carries — is MySQL, so no library caller that
+// never set Engine can start hitting PostgreSQL's dialect by accident.
+func TestLookupAppliesTheDefaultEngine(t *testing.T) {
+	if got := Lookup(string(EnginePG)).Engine(); got != EnginePG {
+		t.Fatalf("Lookup(%q).Engine() = %q, want pg", string(EnginePG), got)
+	}
+	for _, raw := range []string{"", "mysql", "PG", "pg ", "oracle", "  "} {
+		if got := Lookup(raw).Engine(); got != EngineMySQL {
+			t.Errorf("Lookup(%q).Engine() = %q, want mysql", raw, got)
+		}
+	}
+}

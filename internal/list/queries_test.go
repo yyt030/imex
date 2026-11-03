@@ -274,3 +274,25 @@ func TestBuildQueryDispatchesOnEngine(t *testing.T) {
 		t.Errorf("--engine pg bound %d args to an unscoped list tables: %v", len(args), args)
 	}
 }
+
+// TestBuildQueryEngineKeyIsMatchedExactly pins the rule the dispatch has always
+// applied: the catalog builder is chosen by an exact match on the raw engine
+// string, so any other spelling builds MySQL statements. cmd parses --engine
+// case-insensitively, which means `list tables --engine PG` today connects
+// through the PostgreSQL driver and asks information_schema for the rows. The
+// refactor kept the comparison rather than normalising it, because normalising
+// changes the statement a server sees (contract face ⑤) — this test is the
+// evidence that the gap exists, and closing it is a separate ruling.
+func TestBuildQueryEngineKeyIsMatchedExactly(t *testing.T) {
+	for _, engine := range []string{"PG", "Pg", "pg ", "postgres", "postgresql", "mysql", ""} {
+		cfg := listCfg(ObjectTables)
+		cfg.Engine = engine
+		query, _, _, err := BuildQuery(cfg)
+		if err != nil {
+			t.Fatalf("engine %q: %v", engine, err)
+		}
+		if !strings.Contains(query, "FROM information_schema.TABLES") {
+			t.Errorf("engine %q did not build the MySQL statement: %s", engine, query)
+		}
+	}
+}

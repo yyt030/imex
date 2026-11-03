@@ -45,6 +45,14 @@ const pgPortDefault = 5432
 
 func (postgresBackend) DefaultPort() int { return pgPortDefault }
 
+// HexBlobMandatory is true whatever --default-charset says: a PostgreSQL server
+// rejects a NUL in any text value (measured: `ERROR: invalid byte sequence for
+// encoding "UTF8": 0x00`, SQLSTATE 22021, on the first row of a bytea column
+// dumped raw under utf8mb4), and bytea is binary in every client encoding. The
+// charset rule that protects MySQL therefore cannot apply here; cmd refuses
+// --no-hex-blob on this engine rather than overriding the operator silently.
+func (postgresBackend) HexBlobMandatory() bool { return true }
+
 // pgClientEncoding maps the --default-charset values cmd/validate.go accepts onto
 // PostgreSQL encoding names. A charset with no PostgreSQL counterpart is refused
 // here, before the connection is dialled, rather than as a SET that would fail on
@@ -498,7 +506,7 @@ func (postgresBackend) MetadataBinary(dataType string) bool {
 }
 
 // pgTypesToMySQLVocabulary maps a PostgreSQL type name onto the MySQL word that
-// common.ClassifyColumnKind already understands, so the DEL/Parquet formatting
+// classifyColumnKind already understands, so the DEL/Parquet formatting
 // rules keep working from one vocabulary. Two spellings are accepted for each
 // type because the driver's DatabaseTypeName ("INT4", "BYTEA") and
 // information_schema's data_type ("integer", "bytea") differ; both reach this
@@ -529,7 +537,7 @@ func ClassifyPostgresType(name string) common.ColumnKind {
 	if !ok || mysqlName == "" {
 		return common.KindUnknown
 	}
-	return common.ClassifyColumnKind(mysqlName)
+	return classifyColumnKind(mysqlName)
 }
 
 // pgBinaryTypes are the PostgreSQL types whose value is not printable text, so

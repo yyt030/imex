@@ -239,6 +239,16 @@ type Backend interface {
 	MetadataKind(dataType string) common.ColumnKind
 	MetadataBinary(dataType string) bool
 
+	// HexBlobMandatory reports whether the engine has to dump binary columns as
+	// 0x hex whatever --default-charset says, because the server rejects a NUL
+	// inside any text value. MySQL answers false: there the byte-safety of the
+	// charset decides, which is the rule config.HexBlobForCharset implements.
+	// PostgreSQL answers true (measured: `invalid byte sequence for encoding
+	// "UTF8": 0x00`, SQLSTATE 22021, on the first raw bytea row of a utf8mb4
+	// dump), and cmd refuses --no-hex-blob on that engine instead of silently
+	// overriding what the operator asked for.
+	HexBlobMandatory() bool
+
 	// DefaultPort is the port the engine listens on when neither --port nor
 	// IMEX_PORT named one.
 	DefaultPort() int
@@ -251,17 +261,37 @@ type Backend interface {
 	CellFixups(colTypes []*sql.ColumnType) []func([]byte) []byte
 }
 
+// backends maps each accepted --engine value to its implementation. Both values
+// are stateless, so they are stored as the singletons every accessor hands out.
+// This is the one place an engine name becomes code: a new engine adds a
+// constant above, a row here, and its own file.
+var backends = map[Engine]Backend{
+	EngineMySQL: mysqlBackend{},
+	EnginePG:    postgresBackend{},
+}
+
 // Get returns the backend for one engine. The returned value is a stateless
 // singleton, so callers may keep it on a struct without worrying about lifetime.
 func Get(e Engine) (Backend, error) {
-	switch e {
-	case EngineMySQL:
-		return mysqlBackend{}, nil
-	case EnginePG:
-		return postgresBackend{}, nil
-	default:
-		return nil, errors.Errorf("unsupported engine %q: must be one of %s", string(e), strings.Join(Engines(), "/"))
+	if b, ok := backends[e]; ok {
+		return b, nil
 	}
+	return nil, errors.Errorf("unsupported engine %q: must be one of %s", string(e), strings.Join(Engines(), "/"))
+}
+
+// Lookup resolves the raw engine string a config carries, for the decisions that
+// need a dialect but are not allowed to fail on a value the CLI has already
+// rejected. It applies the rule the tool has always applied at those call sites:
+// an exact match on a registered engine's CLI spelling wins, and anything else —
+// the empty string a zero-valued config holds above all — is MySQL. It does not
+// case-fold, so `--engine PG` looks up the PostgreSQL *connection* (cmd.Parse
+// lowercases) but MySQL's answers here; internal/list documents the same gap and
+// TestBuildQueryEngineKeyIsMatchedExactly pins it.
+func Lookup(raw string) Backend {
+	if b, ok := backends[Engine(raw)]; ok {
+		return b
+	}
+	return backends[EngineMySQL]
 }
 
 // Must returns the backend for one engine and panics on an unknown value. Every
