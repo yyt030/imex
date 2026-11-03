@@ -7,10 +7,10 @@
 ## 一、当前坐标
 
 - **仓库**：模块 `github.com/imex`，远端 `https://github.com/yyt030/imex`，分支 `main`（工作副本 `<workspace>/imex`）。
-- **HEAD**：`5c219df`（变更记录 **125** 轮：`--engine mysql|pg` 与 PostgreSQL 支持；35 个文件、4,114 增 323 删，其中 9 个新建文件）——本文件随后还叠了状态补记提交，按 standing 指令一并直推，因此本行的语义是「本轮的代码提交」而非「字面 HEAD」；`ls-remote --heads origin` 与本地 `git rev-parse HEAD` 实测一致即为收口。**其上新一轮是变更记录 126**（测试-only：给 `internal/list/render_test.go` 补 CR、LF 两条转义用例并了结 123 ⑤ 的裁定），同样直推 `main`、不进位、不打 tag。tag `v0.17.1` **不在这一个提交上**——它仍打在 `fc1844a`（120 轮）；其下依次是 `c6ef115`（CONTEXT 补两条真库环境约束）、`78e4f93`（补记 124 的真库复跑取证）、`5103318`（变更记录 124：移除 `--socket`，连接只剩 TCP）、`ccf2929`（变更记录 123）、`e1fa753`（转义轮，122 轮）、`ec88e9f`（变更记录 9 行结构修复，121 轮）、`fc1844a`（`Makefile` 进位 0.17.1 + 本文件状态更新，tag `v0.17.1`）、`6587ad1`（脱敏轮，变更记录 119）、`96f1f30`（cli-oracle note 25，118 轮）、`7e61e72`（变更记录 117 补注）、`29f8b25`（原 HANDOFF.md 所在，tag `v0.17.0`）。**注（2026-11-02 脱敏轮，变更记录 119）**：`HANDOFF.md` 已从仓库移除——它的八节内容被本文件第三、五节与变更记录 117 的「注（发布收尾）」逐条覆盖，118 轮对它做的 10 行改动（`4934dd2` 的处理过程）也已由 118 正文与本文件 2.3、4.4 承载，无独有信息；同一轮把本文件第五节 QA 命令里的真实测试库凭据换成占位串。
-- **已推送**：本轮所有提交（代码提交 `5c219df` 与其下的本文件状态补记）均已直推 `main`，最后一次补记推完再测 `ls-remote --heads origin` 与 `git rev-parse HEAD` 一致；`v0.17.1`（→ `fc1844a`）之后积着的 121/122/123 三个纯文档提交、124 的选项移除提交与 `c6ef115`/`78e4f93`/`5c219df` 已全部落远端；纯文档那三个按三节第 2 条**不进位、不打 tag**，本轮是**代码 + CLI 面**的新引擎，按 113/124 的先例同样未获进位与 tag 指令——`Makefile` 第 1 行仍是 **0.17.1**，`v0.17.1` 就是当前最新 tag；`v0.17.0`（→ `29f8b25`）与 `v0.16.0`（→ `08ffa85`）不动、不移、不重打。推 `main` 在这套环境里要靠 `git -c http.version=HTTP/1.1` 绕开 HTTP2 framing / GnuTLS -110，clone 同理。**本轮对这条纪律作一处更正**：连用 `HTTP/1.1` 两次都仍报 `GnuTLS recv error (-110)`，第三次带 `-c http.version=HTTP/1.0`（git 会 warning `unknown value`、回落默认值）才推上去，而同一次会话里 `ls-remote` 用 `HTTP/1.1` 是通的、下一轮补记用 `HTTP/1.1` 也一次通过——所以 `-110` 更像 push 路径上的偶发断连，而不是 HTTP2 framing 的必然结果；实操口径保持「先 `HTTP/1.1`，失败就原样重试两三次」，别把一次 `-110` 当成网络策略已变。
+- **HEAD**：本轮（变更记录 **127**：`export -f sql` 改为仅数据、DDL 全归 `show tab`、`--create` 与 `--no-data` 直接删）交两个提交——代码 + 测试 + 三份文档一笔，本文件的状态补记一笔，都按 standing 指令直推 `main`。本行刻意不写这两个的提交号（写法依据是 `157f2b9`）：**判收口的口径是 `ls-remote --heads origin` 与本地 `git rev-parse HEAD` 实测一致**，而不是比对某个自己刚写下的号。本轮两个提交之下，链往回数依次是：`0095741`（126 轮，测试-only：给 `internal/list/render_test.go` 补 CR、LF 两条转义用例）、`157f2b9` 与 `263effd`（CONTEXT 两笔状态补记）、`5c219df`（125 轮：`--engine mysql|pg` 与 PostgreSQL 支持，35 个文件、4,114 增 323 删，其中 9 个新建文件）、`c6ef115`（CONTEXT 补两条真库环境约束）、`78e4f93`（补记 124 的真库复跑取证）、`5103318`（变更记录 124：移除 `--socket`，连接只剩 TCP）、`ccf2929`（变更记录 123）、`e1fa753`（转义轮，122 轮）、`ec88e9f`（变更记录 9 行结构修复，121 轮）、`fc1844a`（`Makefile` 进位 0.17.1 + 本文件状态更新，tag `v0.17.1`）、`6587ad1`（脱敏轮，变更记录 119）、`96f1f30`（cli-oracle note 25，118 轮）、`7e61e72`（变更记录 117 补注）、`29f8b25`（原 HANDOFF.md 所在，tag `v0.17.0`）。**注（2026-11-02 脱敏轮，变更记录 119）**：`HANDOFF.md` 已从仓库移除——它的八节内容被本文件第三、五节与变更记录 117 的「注（发布收尾）」逐条覆盖，118 轮对它做的 10 行改动（`4934dd2` 的处理过程）也已由 118 正文与本文件 2.3、4.4 承载，无独有信息；同一轮把本文件第五节 QA 命令里的真实测试库凭据换成占位串。
+- **已推送**：`v0.17.1`（→ `fc1844a`）之后积着的 121/122/123 三个纯文档提交、124 的选项移除提交与 `c6ef115`/`78e4f93`/`5c219df`/`263effd`/`157f2b9`/`0095741` 已全部落远端，本轮（127）的两个提交按同一口径直推 `main`，最后一次推完再测 `ls-remote --heads origin` 与 `git rev-parse HEAD` 一致即算收口。纯文档轮与这类代码轮同样**不进位、不打 tag**——`Makefile` 第 1 行仍是 **0.17.1**，`v0.17.1` 就是当前最新 tag；`v0.17.0`（→ `29f8b25`）与 `v0.16.0`（→ `08ffa85`）不动、不移、不重打。推 `main` 在这套环境里要靠 `git -c http.version=HTTP/1.1` 绕开 HTTP2 framing / GnuTLS -110，clone 同理。**125 轮对这条纪律作过一处更正并沿用至今**：连用 `HTTP/1.1` 两次都仍报 `GnuTLS recv error (-110)`，第三次带 `-c http.version=HTTP/1.0`（git 会 warning `unknown value`、回落默认值）才推上去，而同一次会话里 `ls-remote` 用 `HTTP/1.1` 是通的、下一轮补记用 `HTTP/1.1` 也一次通过——所以 `-110` 更像 push 路径上的偶发断连，而不是 HTTP2 framing 的必然结果；实操口径保持「先 `HTTP/1.1`，失败就原样重试两三次」，别把一次 `-110` 当成网络策略已变。
 - **已发布**：最新 tag 由 `v0.17.0` 进位到 **`v0.17.1`**（纯文档轮的收口 tag，先例是 `v0.5.1` 与 `v0.5.2`；被覆盖的纪律见三节第 2 条与变更记录 120 ①）。远端 heads 只有 `main`。
-- **工作树**：`5c219df` 提交后 `git status --short` 为空（实测），且已随推送与远端一致。上一条遗留已随本轮了结：`go get gitee.com/chunanyong/dm`（达梦评估轮）带进来的三条 indirect **不在工作树里了**（`grep -c chunanyong go.mod go.sum` 均 **0**，HEAD 的 `go.mod` 也从来没有它们）——`go mod tidy` 因无人 import 而摘除，达梦支持仍未落地，将来随真实引用一起进。本轮 `go.mod` 改的是 pgx：新增直接依赖 `github.com/jackc/pgx/v5 v5.12.0`、`pflag` 升为直接引用、五条新 indirect。2026-11-02 换新沙箱后按 `https://github.com/yyt030/imex` 重新 clone，完整历史、非浅克隆；`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
+- **工作树**：`0095741`（126 轮）提交后 `git status --short` 实测为空，本轮的两个提交推完后同样以「为空 + 与远端一致」为收口判据。本轮**零依赖改动**——`go.mod` 与 `go.sum` 一字未动，删掉的只是自己的代码。上一条遗留已随本轮了结：`go get gitee.com/chunanyong/dm`（达梦评估轮）带进来的三条 indirect **不在工作树里了**（`grep -c chunanyong go.mod go.sum` 均 **0**，HEAD 的 `go.mod` 也从来没有它们）——`go mod tidy` 因无人 import 而摘除，达梦支持仍未落地，将来随真实引用一起进。本轮 `go.mod` 改的是 pgx：新增直接依赖 `github.com/jackc/pgx/v5 v5.12.0`、`pflag` 升为直接引用、五条新 indirect。2026-11-02 换新沙箱后按 `https://github.com/yyt030/imex` 重新 clone，完整历史、非浅克隆；`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
 - **本地开发库**：**本沙箱有两个真库床（2026-11-03）**——① MariaDB **10.6.23**（`1:10.6.23-0ubuntu0.22.04.1`）：`apt-get install -y --no-install-recommends mariadb-server mariadb-client`，装前用 `/usr/sbin/policy-rc.d`（`exit 101`）挡住自动启服务，datadir 沿用 `/var/lib/mysql`，配置自建于 `/tmp/mysqld/my.cnf`（`user=mysql`、`socket=/tmp/mysqld/mysql.sock`、`bind-address=127.0.0.1`、`port=3306`、`skip-name-resolve`、`general_log_file` 只设路径不设 `general_log`，实测 `@@general_log=0`；`innodb_buffer_pool_size` 留 **256M**）。库：`imex_it`（集成测试床）与 `imex_test`；账号 `gd`@`127.0.0.1`，口令 20 字符随机、只存 `/tmp/mysqld/imex_test_pw`。② PostgreSQL **14.24**：`postgres://pgprobe:<20 字符随机>@127.0.0.1:5432/pgprobe?sslmode=disable`，口令只存运行环境；该角色**不能** `CREATE DATABASE`、在 `public` 上有 CREATE，所以 pg 床建在 `pgprobe` 库内：`internal/list/queries_pg_test.go` 的 `TestPGLiveServer` 在同库开两个 schema（`public` 与 `imex_list_it`）断言「带 `-D` 只回 `current_schema()` 的对象」「不带 `-D` 时两个非系统 schema 都出现」，而**换 schema 本身（改角色 `search_path`）没有用例**——工具不给 schema 选项，这条只能靠环境构造（已写进 requirements 11.2）。两库口令都不写进仓库（口径同变更记录 59 / 119）。上一沙箱的 `imex_ddl*` 等夹具库没有随迁移带来，也不需要——集成用例自建表。
 
 ## 二、已完成事项
@@ -107,6 +107,14 @@
 
 **环境事件**：本轮第一次真库复跑拿到 64 FAIL，签名全是 `connect: connection refused`——`uptime -s` 查到 **08:00:24**，即沙箱虚拟机重启把 MariaDB 与 PostgreSQL 一起带走（`/tmp/mysqld/mysqld.pid` 还是 05:08 的死文件）。按第五节原命令重启两个库（PG 走 redo 后 ready），夹具数据无损，复跑即 219/0/0。**教训：真库大面积 connection refused 先排环境，别改断言。**
 
+### 2.9 SQL 导出改为仅数据（2026-11-03，变更记录 127，未进位、未打 tag）
+
+用户指令「export -f sql 修改成只导出数据。具体的ddl操作全部移到show tab中。」，追问后裁定「--create 与 --no-data 是直接删掉」。`-f sql` 的产物从此恒为 `SET NAMES` 一行加 INSERT，`CREATE TABLE`、`DROP TABLE` 与两类节注释一律不再出现；全仓库只有 `internal/show` 读 `SHOW CREATE TABLE`。两个选项**无别名、无弃用兼容层**，给了就是 `unknown flag` 且退出 **2**（口径同 124 删 `--socket`、101 删 `--quiet`、102 删 `list -f/--format`、62/100 删 `--single-row-insert`/`--no-create`）。规模：非测试 Go **11** 文件 **46 增 158 删**（204 个改动行），测试 **10** 文件 **261 增 250 删**（511 行），`make build` 产物 **26,890,402 → 26,882,210 B**。主体在 `internal/export/sql_writer.go`（结构体失去三个 DDL 字段、构造函数七参降五参、`WriteHeader` 只剩字符集行）与 `exporter.go`（删预取块与 `getCreateTableStatement`）。
+
+**取证四条**：① 默认路径逐字节不变——基线二进制（`git worktree` 检出 HEAD 后同一条 `make build`）与本轮跑同一条 `-f sql` 导出，都是 **271 B**、md5 **9952746dccb3e3b82b68d6a7d4d5f74d**，`--threads 4` 同一 md5，说明删掉的只是 opt-in；② 差额可算——基线 `--create` 产物 **544 B**，本轮等价物是 `show tab` 的 **223 B** 加数据 **271 B** = **494 B**，差的 **50 B** 恰是两条节注释（30 + 19）与一个空行（1）；③ 面⑤ 只少一条语句——`general_log`（TABLE 输出、滤掉开关语句）抓到 **9** 行对 **8** 行，逐行对齐后差异恰为那条 `SHOW CREATE TABLE`；④ 闭环仍在——`cat` 两份成一个文件喂 `import -f sql --mode create -t cmp127_copy`，退出 0、`COUNT(*)=3`、两侧 `CHECKSUM TABLE` 同为 **1846113088**。`import --mode create` 刻意保留，改的只是「结构从哪来」；它那条找不到建表语句的报错随之改写（面③），仍退出 **1**、仍在发出首批 INSERT 之前失败、不会退化服务端 `1146`。配置回显字段数实测：导出 del **25**、parquet **16** 不变，sql **20 → 18**；导入三格式 **29 / 20 / 20** 逐格式不变。`imex export --help` **86 → 82** 行。资产：`_test.go` 仍 **65**、`^func Test` **412 → 409**（减量全在 `internal/export` **101 → 98**，且全在 `sql_writer_test.go` **26 → 23**：删五例、增两例）、Fuzz **6**、Benchmark **12**；真库合跑 **217** 条 `--- PASS`（**76** 顶层 + **131** 一级 + **10** 二级）/ 0 SKIP / 0 FAIL（32.517 s），对照同床 HEAD 的 **219**（76 + 133 + 10），差值就是被合成一条的那两个子用例。oracle 走 **Re-baselined note 28**：**1,150 → 1,146** 行（走掉 `## export` 的两条选项行与示例四行改两行）加 note 自身 **27** 行，现 **1,173** 行、20 段、`sections=20 identical=20 drift=0`。
+
+**本轮两条自纠**：① note 28 初稿写「本条加 25 行」并在代码段里多打了转义反引号，按实测 1,146 + 27 = 1,173 改掉；② **批量补丁脚本里的空替换等于误删**——给 requirements.md 打补丁的 python 里一条 `rep('把"schema 二次拼接"这条缺陷钉死；','')` 把 11.1 中 `test/integration/export_cli_test.go` 行的那句话连带删掉（同形的 `internal/export` 行那句没受影响），改写该行时按原文恢复。教训：脚本里的删除项要逐条过目，别把「顺带清理」写进同一个替换列表。
+
 ## 三、关键决策（长期有效，改动需用户点名）
 
 1. **对外契约固定为五面**：① CLI 选项集合与帮助文本（`docs/cli-oracle.txt` 是冻结面，重新基线即契约变更）；② 产物文件格式（DEL/SQL 布局、Parquet、`ENC:` 密文布局）；③ 退出码与错误/告警文案（0 成功、1 运行时、2 用法）；④ `IMEX_*` 环境变量集合；⑤ 发给服务端的语句与事务、锁边界（用户可从 `general_log` 观察）。任一面变化至少进第二位 Y，不兼容进第一位 X。
@@ -125,7 +133,7 @@
 
 ### 4.1 等用户裁定，未动
 
-逐条来自变更记录 117 ⑯，未点名一律不动：
+主体来自变更记录 117 ⑯，后来现查补的条目在行内注明出处；未点名一律不动：
 
 - 枚举记法统一。
 - `-?` 是否扩到 root 与 `list`/`show`/`version`/`encrypt`/`help`。
@@ -133,7 +141,8 @@
 - import 的 `DELIMITER` 支持 / 非 `CREATE TABLE` DDL 的回放通道（单独一轮）。
 - 父级那句误导性的 `unknown shorthand flag`（kind 或对象拼错时拿不到 `Did you mean`）。
 - 是否把 `scripts/` 写进 `.gitignore`。
-- `export` 在 `SHOW CREATE TABLE` 里对标识符的朴素加引号。
+- **README 与 Makefile 里那串示例 DSN 要不要一并换成纯占位串**（2026-11-03 变更记录 127 ⑫ 现查）：`README.md` 第 63 行与 `Makefile` 第 79、82 行写着 `IMEX_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/imex_it'`，共 **3** 处，本轮沙箱的 root 口令恰好也是 `secret`。两个真随机口令在仓库内命中 **0**，这串是历轮占位写法（`git log -S` 追到 `a52fa6b`），只在 `127.0.0.1` 与临时沙箱内有意义；未点名不动。
+- `export` 在 `SHOW CREATE TABLE` 里对标识符的朴素加引号。**（2026-11-03 变更记录 127 之后此条已无处可改）**：导出侧不再发那条语句，`getCreateTableStatement` 连同它的朴素加引号一起删掉（`grep -rn getCreateTableStatement` 现命中 **0**），剩下的同类代码只有两处且都已是成对转义——`internal/backend/mysql.go:35` 的 `QuoteIdent`（`list` 与 import 走它）与 `internal/show/show.go:166` 的 `quoteIdent`，二者都把名字里的反引号翻倍，不存在「提前切断引号span」的注入面。原条目按历史不改写，此处只记状态：**因被点名对象消失而了结，不是通过实现改动**。
 
 ### 4.2 与 mydumper/mysqldump 的已知功能差距
 
@@ -141,9 +150,9 @@
 
 ### 4.3 沙箱清理（2026-11-03 现查）
 
-- **MySQL 开发库**：`information_schema.schemata` 现有 **6** 个（`imex_it`、`imex_test` 加 `information_schema`/`mysql`/`performance_schema`/`sys`）。2026-11-02 那版记的 19 个库、以及 `imex_test` 里 19 张表 + 2 视图 + 2 触发器 + 2 事件 + 4 例程，是历轮排查在**旧沙箱**里留下的；沙箱重建后它们不在了，`imex_test` 现在是空库（`information_schema.tables` 查不到任何行）。`imex_it` 现有 18 张表，`big_table` 实数 `count(*) = 200000`（`table_rows` 只是估算，别照抄），`imex_perf_dst` 198,194 行估算——两个都是集成床夹具，留着。
-- **PostgreSQL 开发库**：库 `pgprobe`（`pg_database_size` = 9,155 kB），两个非系统 schema。`public`：`imex_doc_demo` 2 行、`rt` 5 行、`rt_probe` 0 行；`imex_list_it`：`t1` 5 行、`t2`/`rt`/`"MixedCase"` 各 0 行——`imex_list_it` 是 `TestPGLiveServer` 为跨 schema 覆盖建的夹具，跑完不删。角色 `pgprobe` **没有 CREATEDB**（`ERROR: permission denied to create database`），所以 pg 侧所有夹具只能铺在 schema 层，`CREATE` 权限只有 `public` 一处。
-- **本机**：2026-11-02 列的 `<tmp>/wt-0120`、`<tmp>/wt-0121`、`<tmp>/wt-bench`、`<tmp>/wt-pprof` 四个工作树和 `scripts/export-all-tables.sh` 随旧沙箱一起没了（`scripts/` 目录也不存在）。本轮自己建的取证工作树 `/tmp/imex-base` 已确认干净后 `git worktree remove --force` 清掉，`git worktree list` 现只剩 `/data/imex`。`<tmp>` 下还留着取证产物：`/tmp/imex-doc`（工作树明文构建 38,373,289 B）、`/tmp/imex-baseline`（HEAD `make build` 22,368,418 B）、`/tmp/oracle.py`（oracle 比对脚本，用法 `oracle.py <binary> [--write]`，漏传参数会 `IndexError`）、`/tmp/rec125.txt` 与 `/tmp/rec126.txt`（两条变更记录的行文本）、`/tmp/live126.txt`（本轮双引擎真库输出）、`/tmp/render.go.bak`（126 轮变异复跑前存下原文件用的备份，两次变异后已 `cp` 还原并复跑通过，`git diff` 只剩测试文件）。**两个库都不是 systemd 起的**（`policy-rc.d` 挡着），所以 08:00:24 那次整机重启之后必须手工按本节命令重起，`/tmp/mysqld/mysqld.pid` 会留下死文件、不影响重起。
+- **MySQL 开发库**：`information_schema.schemata` 现有 **6** 个（`imex_it`、`imex_test` 加 `information_schema`/`mysql`/`performance_schema`/`sys`）。2026-11-02 那版记的 19 个库、以及 `imex_test` 里 19 张表 + 2 视图 + 2 触发器 + 2 事件 + 4 例程，是历轮排查在**旧沙箱**里留下的；沙箱重建后它们不在了，`imex_test` 现在是空库（`information_schema.tables` 查不到任何行）。`imex_it` 现 **20** 张表（上轮记 18，多出的 `cmp127` 与 `cmp127_copy` 各 3 行，是 127 轮 DDL 闭环取证手造的，留着不碍事——集成用例自建表且带随机后缀，不会撞名），`big_table` 实数 `count(*) = 200000`（`table_rows` 此刻对 `big_table` 与 `imex_perf_dst` 都报 198,194 的估算值，别照抄），`imex_perf_dst` 是集成床夹具，留着。
+- **PostgreSQL 开发库**：库 `pgprobe`，两个非系统 schema 共 **9** 个对象：`public` 的 `imex_doc_demo` 2 行、`rt` 5 行、`rt_probe` 0 行与视图 `v_probe`；`imex_list_it` 的 `t1` 5 行、`t2`/`rt`/`"MixedCase"` 各 0 行与视图 `v1`——`imex_list_it` 是 `TestPGLiveServer` 为跨 schema 覆盖建的夹具，两个视图由 `internal/list/queries_pg_test.go:492` 与 `:508` 的 `CREATE OR REPLACE VIEW` 留下，跑完都不删。库大小现 **9,243 kB**（上轮记 9,155 kB）。角色 `pgprobe` **没有 CREATEDB**（`ERROR: permission denied to create database`），所以 pg 侧所有夹具只能铺在 schema 层，`CREATE` 权限只有 `public` 一处。
+- **本机**：2026-11-02 列的 `<tmp>/wt-0120`、`<tmp>/wt-0121`、`<tmp>/wt-bench`、`<tmp>/wt-pprof` 四个工作树和 `scripts/export-all-tables.sh` 随旧沙箱一起没了（`scripts/` 目录也不存在）。两个取证工作树都已在各自收口前 `git worktree remove` 清掉（125 轮的 `/tmp/imex-base`、127 轮的 `/tmp/base127`——后者检出 HEAD `0095741`，用来造基线二进制并在同一对库上跑对照真库），`git worktree list` 只剩 `/data/imex`。`<tmp>` 下留着的取证产物：`/tmp/imex-doc`（工作树明文构建 38,373,289 B）、`/tmp/imex-baseline`（125 轮 HEAD `make build` 22,368,418 B）、`/tmp/imex_base`（**本轮基线**，`0095741` 的 `make build`，**26,890,402 B**，与被删选项同一次构建）、`/tmp/oracle.py`（oracle 比对脚本，用法 `oracle.py <binary> [--write]`，漏传参数会 `IndexError`）、`/tmp/rec125.txt` 与 `/tmp/rec126.txt`（两条变更记录的行文本）、`/tmp/live126.txt`、`/tmp/live127.txt`（本轮双引擎真库输出，**217** 条 `--- PASS`）、`/tmp/live_base127.txt`（同一对库上 HEAD 的对照跑，**219** 条——两次差值就是变更记录 127 ⑥ 说的那两条被合成一条）、`/tmp/cmp127.sh`（基线对拍脚本：同一条 `-f sql` 导出比 md5、量三种产物字节、再取 `show tab` 定义）、`/tmp/gl127_base_create.log` 与 `/tmp/gl127_new_data.log`（`general_log` **文件**形态的两次抓取，13 行对 12 行；正式取证改用 TABLE 输出并滤掉开关语句，按 **9 行对 8 行**计，见 127 ⑤）、`/tmp/cfg_*.txt` 与 `/tmp/bcfg_*.txt`（新旧二进制的配置回显样本，字段数比对的来源）、`/tmp/render.go.bak`（126 轮变异复跑前存下的原文件备份）。**两个库都不是 systemd 起的**（`policy-rc.d` 挡着），整机重启之后必须手工按本节命令重起：126 轮遇到 **08:00:24**，本轮再遇一次 **11:07:56**（`uptime -s` 现查），两次签名都是 `connection refused` 与大面积 FAIL；`/tmp/mysqld/mysqld.pid` 会留死文件、不影响重起。`/tmp` 现 **197** 项 / **751 MB**，绝大多数是历轮取证产物，不在任何保留脚本的额度内。
 
 ### 4.4 一处文档缺陷：仓库引用的基线提交号解析不到（**已处理**，见 2.3 与变更记录 118）
 
@@ -161,7 +170,7 @@ CGO_ENABLED=1 go vet ./...                                   # 期望无输出
 CGO_ENABLED=1 go test -race -count=1 ./...                   # 期望 10 个 ok
 IMEX_TEST_DSN='<user>:<password>@tcp(127.0.0.1:3306)/imex_it' \
 IMEX_TEST_PG_DSN='postgres://<user>:<password>@127.0.0.1:5432/<db>?sslmode=disable' \
-  CGO_ENABLED=1 go test -race -count=1 -v ./test/integration # 期望 0 FAIL / 0 SKIP（219 条 --- PASS = MySQL 206 + PG 13）
+  CGO_ENABLED=1 go test -race -count=1 -v ./test/integration # 期望 0 FAIL / 0 SKIP（217 条 --- PASS = MySQL 204 + PG 13，其中 76 顶层 + 131 一级 + 10 二级）
 grep -c statementCapSlack test/integration/option_matrix_test.go   # 期望 3
 ```
 
@@ -191,6 +200,8 @@ done
 
 **QA 复跑（2026-11-03，变更记录 126 轮，测试-only）**：同一串再跑一遍仍全绿，只有一处耗时变化——`gofmt -l` 0 行、`go vet` 净、10 包 `-race -count=1` 全 ok（`internal/common` 56.290 s、`cmd` 14.237 s、`internal/list` 1.025 s）、双 DSN 真库 **219 条 `--- PASS`（76 顶层 + 143 子用例）/ 0 FAIL / 0 SKIP**（40.282 s）、20 面 118 字节守卫 0 行超限、`statementCapSlack` = 3、oracle `sections=20 identical=20 drift=0`、`make build` 仍是 **26,890,402 B**（本轮没动生产代码，尺寸不变即证据）。**新增一条环境坑**：沙箱虚拟机可能整机重启（本轮实测 `uptime -s` = 08:00:24，重启后 3306 与 5432 双双 `connection refused`，第一次真库复跑因此报 **64 FAIL**）——两个库都不在了，先按上面两条重建法起服务再判用例成败，别把环境没落直接读成回归。
 
+**QA 复跑（2026-11-03，变更记录 127 轮，两引擎同床）**：`gofmt -l .` **0 行**、`CGO_ENABLED=1 go vet ./...` 无输出、`CGO_ENABLED=1 go test -race -count=1 ./...` **十包全 ok**、真库合跑 **217** 条 `--- PASS`（76 顶层 + 131 一级 + 10 二级 = MySQL 204 + PG 13）/ **0** SKIP / **0** FAIL（**32.517 s**，收尾复跑同样 **217** 条 / **33.483 s**）、20 个帮助面 **0** 行超 118 字节、`statementCapSlack` = **3**、oracle `sections=20 identical=20 drift=0`（现 **1,173** 行）；`make build` 产物 **26,882,210 B**、`./bin/imex version` 仍报 **0.17.1**。与上一轮的 219 条差 **2** 条不是丢用例而是合并：`TestLive_ExportSchemaQualifiedQuery` 原来的两个子用例（数据、`--create`）在 DDL 移除后只剩一条数据侧断言——同一对库上把 HEAD（`0095741`）用 `git worktree` 检出单独跑一遍实测 **219** 条 / 33.460 s 为证，逐条比对 `--- PASS` 名单即可看到差异只在那两条。**本轮又遇到一次整机重启**（`uptime -s` = **11:07:56**），签名与 126 轮那次一模一样，按上面两条重建法起库后复跑即全绿——`connection refused` 先排环境这条已经二次验证。
+
 ## 六、0.17.0 的发布（2026-11-02 已完成）
 
 按用户「commit tag push」的指令依次执行完毕：`git push origin main`（`c03f2c9`→`67b06e5`→`29f8b25`）→ `git tag -a v0.17.0`（打在 `29f8b25`）→ `git push origin v0.17.0`。发布前复核过四件事：提交已 push、工作树只剩 `?? scripts/`、上面那串 QA 全绿、`Makefile` 第 1 行是 `0.17.0`。产物（源码包 / amd64 二进制）仍只在用户明确要时才做。
@@ -200,8 +211,8 @@ done
 | 要看什么 | 去哪 |
 |---|---|
 | 命令怎么用、选项含义 | `README.md`（`### list`、`### show`，list 那节里 list/show 共用的「输出通道」表，以及「**PostgreSQL 引擎（`--engine pg`）**」一节） |
-| 设计来龙去脉、实测取证、分级理由 | `docs/requirements.md` 二节（2.1.11 引擎与 PG 范围 / 2.3 日志 / 2.5 list / 2.6 show）、3.4.1 SQL 回显、3.6 通道与 show 定稿、七节 7.1 方言层 |
-| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 **126**） |
-| 帮助文本的冻结基线 | `docs/cli-oracle.txt`（**20 段 / 1,150 行**，头注 note 1–27 记录了每次重基线、漂移处理与基线提交号 `4934dd2` 的取回路径） |
+| 设计来龙去脉、实测取证、分级理由 | `docs/requirements.md` 二节（2.1.5 与 2.1.6 的 SQL 导出仅数据 / 2.1.7 `show tab` 取结构 / 2.1.11 引擎与 PG 范围 / 2.3 日志 / 2.5 list / 2.6 show）、3.4.1 SQL 回显、3.6 通道与 show 定稿、七节 7.1 方言层 |
+| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 **127**：SQL 导出仅数据、DDL 全归 `show tab`、删 `--create` 与 `--no-data`） |
+| 帮助文本的冻结基线 | `docs/cli-oracle.txt`（**20 段 / 1,173 行**，头注 note 1–28 记录了每次重基线、漂移处理与基线提交号 `4934dd2` 的取回路径；note 28 是本轮 `## export` 的第四次重基线） |
 | 测试矩阵与资产清单 | `docs/requirements.md` 十一节（11.1 资产表、11.2 未自动化场景） |
 | 打包/tag/文档纪律 | `<workspace>/AGENTS.md`（工作区约定，不在仓库内） |
