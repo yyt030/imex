@@ -150,7 +150,11 @@ func TestBuildBatchInsertSQLTagged(t *testing.T) {
 		cfg.Table = "t"
 		cfg.Mode = mode
 		imp := &Importer{cfg: cfg}
-		return imp.buildBatchInsertSQL([]string{"a", " b "}, 3)
+		sql, err := imp.buildBatchInsertSQL([]string{"a", " b "}, 3)
+		if err != nil {
+			t.Fatalf("buildBatchInsertSQL(%s): %v", mode, err)
+		}
+		return sql
 	}
 
 	// A dev build injects no commit, so SQLTag() is empty: this is the untagged
@@ -199,7 +203,11 @@ func BenchmarkBuildBatchInsertSQL(b *testing.B) {
 
 	size := 0
 	for i := 0; i < b.N; i++ {
-		size = len(imp.buildBatchInsertSQL(cols, 1000))
+		sql, err := imp.buildBatchInsertSQL(cols, 1000)
+		if err != nil {
+			b.Fatalf("buildBatchInsertSQL: %v", err)
+		}
+		size = len(sql)
 	}
 	b.SetBytes(int64(size))
 }

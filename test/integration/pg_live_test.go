@@ -1,0 +1,479 @@
+package integration
+
+// Live PostgreSQL end-to-end cases, driven through the real binary the same way
+// option_matrix_test.go drives MySQL. Skipped unless IMEX_TEST_PG_DSN is set:
+//
+//	IMEX_TEST_PG_DSN='postgres://pgprobe:pass@127.0.0.1:5432/pgprobe?sslmode=disable' \
+//	  go test ./test/integration -run PGLive -v
+//
+// The DSN database must already exist, and the role's search_path must put it in a
+// schema it can create tables in: with --engine pg, -D is the connection's
+// database and the schema comes from the server (current_schema()), which is the
+// two-level-namespace rule internal/backend/postgres.go documents.
+//
+// What these cases are for is the part a unit test cannot reach: the values a
+// real PostgreSQL server hands back over the wire, and whether the file imex
+// writes from them reads back as the same rows. The MySQL suite's rows are the
+// template, with the MySQL types replaced by the PostgreSQL ones they map to.
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"math"
+	"net"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/imex/internal/backend"
+	"github.com/imex/internal/config"
+)
+
+type pgEnv struct {
+	db   *sql.DB
+	dir  string
+	base []string // connection flags shared by every invocation
+}
+
+func newPGLive(t *testing.T) *pgEnv {
+	t.Helper()
+
+	dsn := os.Getenv("IMEX_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("set IMEX_TEST_PG_DSN to run live PostgreSQL integration tests")
+	}
+	if cliBinary == "" {
+		t.Fatal("TestMain did not build the CLI binary; it only does so when a live DSN is set")
+	}
+
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse IMEX_TEST_PG_DSN: %v", err)
+	}
+	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+		t.Fatalf("IMEX_TEST_PG_DSN must be a postgres:// URL, got scheme %q", u.Scheme)
+	}
+	pass, ok := u.User.Password()
+	if !ok || pass == "" {
+		t.Fatal("IMEX_TEST_PG_DSN must carry a password: these cases pass it on the command line")
+	}
+	host, portText, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split DSN host %q: %v", u.Host, err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("DSSN port %q: %v", portText, err)
+	}
+
+	// The connection goes through the same backend the command builds, so these
+	// cases cover the URL imex writes for itself, not a hand-written one.
+	cfg := &config.Config{
+		Engine:             string(backend.EnginePG),
+		Host:               host,
+		Port:               port,
+		User:               u.User.Username(),
+		Password:           pass,
+		Database:           strings.TrimPrefix(u.Path, "/"),
+		LogLevel:           config.LogLevelError,
+		DefaultCharset:     config.DefaultCharset,
+		ConnectTimeout:     config.DefaultConnectTimeout,
+		SocketReadTimeout:  config.DefaultSocketTimeout,
+		SocketWriteTimeout: config.DefaultSocketTimeout,
+		ProgressInterval:   config.DefaultProgressInterval,
+	}
+	if cfg.Database == "" {
+		t.Fatal("IMEX_TEST_PG_DSN must name a database")
+	}
+	db, err := backend.Must(backend.EnginePG).Open(cfg)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("ping %s: %v", u.Host, err)
+	}
+
+	base := []string{
+		"--engine", "pg",
+		"-h", host, "-P", portText,
+		"-u", cfg.User, "-p", cfg.Password, "-D", cfg.Database,
+		"--log-level", "error",
+	}
+	return &pgEnv{db: db, dir: t.TempDir(), base: base}
+}
+
+// pgTable returns a run-unique table name in the connection's current schema and
+// registers its removal.
+func (e *pgEnv) pgTable(t *testing.T, prefix string) string {
+	t.Helper()
+	name := fmt.Sprintf("imex_pg_%s_%d", prefix, time.Now().UnixNano())
+	t.Cleanup(func() {
+		_, _ = e.db.Exec("DROP TABLE IF EXISTS " + name + " CASCADE")
+	})
+	return name
+}
+
+func (e *pgEnv) exec(t *testing.T, query string, args ...interface{}) {
+	t.Helper()
+	if _, err := e.db.Exec(query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
+	}
+}
+
+// runCLI executes the binary and returns its combined output plus the exit code.
+func (e *pgEnv) runCLI(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(cliBinary, args...)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if err != nil {
+		ee, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("run %v: %v", args, err)
+		}
+		code = ee.ExitCode()
+	}
+	return strings.TrimRight(string(out), "\r\n"), code
+}
+
+// export runs a successful export of one table and returns the file's path.
+func (e *pgEnv) export(t *testing.T, table, format, name string, extra ...string) string {
+	t.Helper()
+	path := filepath.Join(e.dir, safeFileName(name))
+	args := append([]string{"export"}, e.base...)
+	args = append(args, "-q", "SELECT * FROM "+table, "-f", format, "-o", path)
+	args = append(args, extra...)
+	out, code := e.runCLI(t, args...)
+	if code != 0 {
+		t.Fatalf("export %s as %s: exit %d\n%s", table, format, code, out)
+	}
+	return path
+}
+
+// importFile runs a successful import. --mode insert is the only mode this engine
+// serves, and it is the shipped default, so it never needs spelling out.
+func (e *pgEnv) importFile(t *testing.T, table, format, path string, extra ...string) {
+	t.Helper()
+	args := append([]string{"import"}, e.base...)
+	args = append(args, "-i", path, "-t", table, "-f", format)
+	args = append(args, extra...)
+	out, code := e.runCLI(t, args...)
+	if code != 0 {
+		t.Fatalf("import %s into %s: exit %d\n%s", path, table, code, out)
+	}
+}
+
+// pgSourceDDL is the PostgreSQL counterpart of the MySQL fixture: the same tricky
+// values, in the types a PostgreSQL table actually offers. numeric(10,2) is
+// deliberately narrower than MySQL's decimal(20,4) so an out-of-range value is
+// impossible rather than silently clipped.
+const pgSourceDDL = `CREATE TABLE %s (
+	id integer NOT NULL,
+	name text,
+	num numeric(10,2),
+	note text,
+	ts timestamptz,
+	ts2 timestamp,
+	d date,
+	flt real,
+	dbl double precision,
+	flag boolean,
+	blob bytea
+)`
+
+type pgRow struct {
+	id   int
+	name any
+	num  any
+	note any
+	ts   any
+	ts2  any
+	d    any
+	flt  any
+	dbl  any
+	flag any
+	blob any
+}
+
+// pgRows mirrors liveEnv.fillSource's ten rows. The bytea values are the point of
+// two of them: 0x00 is what a PostgreSQL server refuses inside any text value
+// (SQLSTATE 22021), which is why this engine always writes binary out as 0x hex.
+func (e *pgEnv) fillSource(t *testing.T, table string) {
+	t.Helper()
+
+	e.exec(t, fmt.Sprintf(pgSourceDDL, table))
+	rows := []pgRow{
+		{1, "plain", "1.50", "simple", "2026-01-02 03:04:05+00", "2026-01-02 03:04:05", "2026-01-02", 1.5, 1.5, true, []byte{0x00, 0x01, 'a'}},
+		{2, `O'Brien`, "-0.01", "apostrophe", "2025-12-31 23:59:59+00", "2025-12-31 23:59:59", "2025-12-31", -0.5, -0.5, false, []byte("bin")},
+		{3, `say "hi"`, "123456.78", "double quote", "2024-02-29 00:00:00+00", "2024-02-29 00:00:00", "2024-02-29", 3.14, 3.14, true, []byte("q")},
+		{4, "line1\nline2", "0.00", "embedded\nnewline", nil, nil, nil, nil, nil, nil, nil},
+		{5, "tab\tsep", "999999.99", "\tcolumn-like", "1970-01-01 00:00:01+00", "1970-01-01 00:00:01", "1970-01-01", 0, 0, true, []byte("x")},
+		{6, "café 中文 😀", "-999999.99", "multi-byte 中文", "2038-01-19 03:14:07+00", "2038-01-19 03:14:07", "2038-01-19", -1.5, -1.5, false, []byte{0x80, 0x81, 0xff}},
+		{7, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil},
+		{8, strings.Repeat("wide", 20), "42.42", strings.Repeat("n", 500), "2026-06-15 12:00:00+00", "2026-06-15 12:00:00", "2026-06-15", 2, 1e20, true, []byte(strings.Repeat("p", 20))},
+		{9, "trailing space ", "3.14", "ends with space ", "2026-06-15 12:00:01+00", "2026-06-15 12:00:01", "2026-06-15", 0.5, 0.5, false, []byte(" ")},
+		{10, `back\slash`, "2.72", `path C:\temp`, "2026-06-15 12:00:02+00", "2026-06-15 12:00:02", "2026-06-15", 1, -1e20, true, []byte(`\`)},
+		// The three values MySQL has no column for and PostgreSQL does: an empty
+		// string against NULL, and both float infinities.
+		{11, "", "0.00", "empty string", "infinity", "infinity", "infinity", math.Inf(1), math.Inf(1), true, nil},
+		{12, "-", "-0.00", "minus only", "-infinity", "-infinity", "-infinity", math.Inf(-1), math.Inf(-1), false, []byte{0x00}},
+	}
+	for _, r := range rows {
+		e.exec(t, "INSERT INTO "+table+" VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+			r.id, r.name, r.num, r.note, r.ts, r.ts2, r.d, r.flt, r.dbl, r.flag, r.blob)
+	}
+	// Row 4's newline and row 5's tab come from Go string escapes, which are exact;
+	// the numeric and date spellings above are what the server stores, so a
+	// comparison of two dumps is a comparison of the tool's text, not of the input.
+	e.exec(t, "ANALYZE "+table)
+}
+
+// TestPGLive_DelRoundTrip is the increment's headline claim: a DEL dump of a real
+// PostgreSQL table, imported back into a clone of it, must reproduce every value.
+// The check is that a second dump of the imported table is byte-identical to the
+// first, so the assertion is on the file the tool writes, not on a reader the
+// tool also owns.
+func TestPGLive_DelRoundTrip(t *testing.T) {
+	env := newPGLive(t)
+	src := env.pgTable(t, "del_src")
+	dst := env.pgTable(t, "del_dst")
+	env.fillSource(t, src)
+	env.exec(t, fmt.Sprintf("CREATE TABLE %s (LIKE %s)", dst, src))
+
+	first := env.export(t, src, "del", "del_first.del")
+	env.importFile(t, dst, "del", first)
+	second := env.export(t, dst, "del", "del_second.del")
+
+	if a, b := readFile(t, first), readFile(t, second); a != b {
+		t.Errorf("re-export of the imported table differs (%d vs %d bytes)", len(a), len(b))
+		if diff := firstLineDiff(a, b); diff != "" {
+			t.Errorf("first differing pair:\n%s", diff)
+		}
+	}
+	if got, want := env.rowCount(t, dst), env.rowCount(t, src); got != want {
+		t.Errorf("imported rows = %d, want %d", got, want)
+	}
+}
+
+// TestPGLive_ParquetRoundTrip runs the same claim through the columnar format,
+// where binary columns are BYTE_ARRAY and the logical UTF-8 annotation is the only
+// place the character set is recorded.
+func TestPGLive_ParquetRoundTrip(t *testing.T) {
+	env := newPGLive(t)
+	src := env.pgTable(t, "pq_src")
+	dst := env.pgTable(t, "pq_dst")
+	env.fillSource(t, src)
+	env.exec(t, fmt.Sprintf("CREATE TABLE %s (LIKE %s)", dst, src))
+
+	first := env.export(t, src, "parquet", "first.parquet")
+	env.importFile(t, dst, "parquet", first)
+
+	if got, want := env.rowCount(t, dst), env.rowCount(t, src); got != want {
+		t.Fatalf("imported rows = %d, want %d", got, want)
+	}
+	// Parquet text cannot be diffed byte for byte (the header carries a created-by
+	// string and row-group offsets), so the comparison is a DEL dump of each table.
+	a := env.export(t, src, "del", "pq_src.del")
+	b := env.export(t, dst, "del", "pq_dst.del")
+	if readFile(t, a) != readFile(t, b) {
+		t.Errorf("values differ after the parquet hop:\n%s", firstLineDiff(readFile(t, a), readFile(t, b)))
+	}
+}
+
+// TestPGLive_BinaryIsHexAndSurvives pins the two rules the pg path cannot relax:
+// bytea goes out as 0x hex, and it comes back as the same bytes. A raw NUL in the
+// text protocol is a server error (SQLSTATE 22021), so there is no engine setting
+// that may turn this off.
+func TestPGLive_BinaryIsHexAndSurvives(t *testing.T) {
+	env := newPGLive(t)
+	src := env.pgTable(t, "hex_src")
+	dst := env.pgTable(t, "hex_dst")
+	env.exec(t, fmt.Sprintf(pgSourceDDL, src))
+	env.exec(t, "CREATE TABLE "+dst+" (LIKE "+src+")")
+
+	for _, tc := range []struct {
+		id   int
+		blob []byte
+		hex  string
+	}{
+		{1, []byte{0x00, 0x01, 0xff}, "0x0001ff"},
+		{2, []byte{0x00}, "0x00"},
+		{3, []byte("abc"), "0x616263"},
+	} {
+		env.exec(t, "INSERT INTO "+src+" (id, blob) VALUES ($1, $2)", tc.id, tc.blob)
+	}
+
+	file := env.export(t, src, "del", "hex.del")
+	text := readFile(t, file)
+	for _, tc := range []struct {
+		hex string
+		id  int
+	}{{"0x0001ff", 1}, {"0x00", 2}, {"0x616263", 3}} {
+		if !strings.Contains(text, tc.hex) {
+			t.Errorf("bytea row %d did not come out as %s\n%s", tc.id, tc.hex, text)
+		}
+	}
+
+	env.importFile(t, dst, "del", file)
+	var got []byte
+	if err := env.db.QueryRow("SELECT blob FROM " + dst + " WHERE id = 1").Scan(&got); err != nil {
+		t.Fatalf("read back row 1: %v", err)
+	}
+	if len(got) != 3 || got[0] != 0x00 || got[1] != 0x01 || got[2] != 0xff {
+		t.Errorf("row 1 bytea = %x, want 0001ff", got)
+	}
+	if err := env.db.QueryRow("SELECT blob FROM " + dst + " WHERE id = 2").Scan(&got); err != nil {
+		t.Fatalf("read back row 2: %v", err)
+	}
+	if len(got) != 1 || got[0] != 0x00 {
+		t.Errorf("row 2 bytea = %x, want a single 00 byte", got)
+	}
+}
+
+// TestPGLive_GeneratedColumnIsExcluded proves the INSERT is built from the real
+// column list: a generated column cannot be assigned, and the server must be the
+// one that computes it on the way back in.
+func TestPGLive_GeneratedColumnIsExcluded(t *testing.T) {
+	env := newPGLive(t)
+	src := env.pgTable(t, "gen_src")
+	dst := env.pgTable(t, "gen_dst")
+	env.exec(t, fmt.Sprintf(`CREATE TABLE %s (
+		id integer,
+		name text,
+		upper_name text GENERATED ALWAYS AS (upper(name)) STORED,
+		num numeric(10,2)
+	)`, src))
+	env.exec(t, fmt.Sprintf(`CREATE TABLE %s (
+		id integer,
+		name text,
+		upper_name text GENERATED ALWAYS AS (upper(name)) STORED,
+		num numeric(10,2)
+	)`, dst))
+	env.exec(t, "INSERT INTO "+src+" (id, name, num) VALUES (1, 'mixed Case', 1.25), (2, NULL, NULL)")
+
+	file := env.export(t, src, "del", "gen.del")
+	env.importFile(t, dst, "del", file)
+
+	var upper sql.NullString
+	if err := env.db.QueryRow("SELECT upper_name FROM " + dst + " WHERE id = 1").Scan(&upper); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if upper.String != "MIXED CASE" {
+		t.Errorf("generated column = %q, want the server's own MIXED CASE", upper.String)
+	}
+}
+
+// TestPGLive_ListObjects runs every object `list` supports on this engine against
+// the live server. The metadata rows are read through sql.NullString, so this also
+// proves the numeric and catalogue columns PostgreSQL hands back survive the scan.
+func TestPGLive_ListObjects(t *testing.T) {
+	env := newPGLive(t)
+	src := env.pgTable(t, "list_src")
+	env.exec(t, fmt.Sprintf(pgSourceDDL, src))
+	env.exec(t, "INSERT INTO "+src+" (id, name) VALUES (1, 'row')")
+	env.exec(t, "CREATE INDEX "+src+"_name ON "+src+" (name)")
+
+	cases := []struct {
+		object string
+		args   []string
+		want   []string
+	}{
+		{"databases", nil, []string{env.databaseName(t)}},
+		{"tables", nil, []string{src}},
+		{"columns", []string{"--table", src}, []string{"blob", "bytea"}},
+		{"indexes", []string{"--table", src}, []string{src + "_name", "btree"}},
+	}
+	for _, c := range cases {
+		t.Run(c.object, func(t *testing.T) {
+			args := append([]string{"list", c.object}, env.base...)
+			args = append(args, c.args...)
+			out, code := env.runCLI(t, args...)
+			if code != 0 {
+				t.Fatalf("list %s: exit %d\n%s", c.object, code, out)
+			}
+			for _, want := range c.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("list %s output is missing %q:\n%s", c.object, want, out)
+				}
+			}
+		})
+	}
+
+	// views, triggers and routines have nothing to report on a fresh table, and an
+	// empty result is still a successful run with a header.
+	for _, object := range []string{"views", "triggers", "routines"} {
+		t.Run(object, func(t *testing.T) {
+			args := append([]string{"list", object}, env.base...)
+			out, code := env.runCLI(t, args...)
+			if code != 0 {
+				t.Fatalf("list %s: exit %d\n%s", object, code, out)
+			}
+		})
+	}
+}
+
+// TestPGLive_EventAndShowRefusalsReachExit2 repeats the two refusals that need a
+// resolved engine and a real flag set, so the exit code is read from the process
+// rather than from the error value a validator returns.
+func TestPGLive_EventAndShowRefusalsReachExit2(t *testing.T) {
+	env := newPGLive(t)
+
+	out, code := env.runCLI(t, append([]string{"list", "events"}, env.base...)...)
+	if code != 2 || !strings.Contains(out, "list events is not supported with --engine pg") {
+		t.Errorf("list events: exit %d, output %q", code, out)
+	}
+
+	src := env.pgTable(t, "show_src")
+	env.exec(t, fmt.Sprintf(pgSourceDDL, src))
+	out, code = env.runCLI(t, append([]string{"show", "tab", src}, env.base...)...)
+	if code != 2 || !strings.Contains(out, "show tab is not supported with --engine pg") {
+		t.Errorf("show tab: exit %d, output %q", code, out)
+	}
+}
+
+func (e *pgEnv) rowCount(t *testing.T, table string) int {
+	t.Helper()
+	var n int
+	if err := e.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return n
+}
+
+func (e *pgEnv) databaseName(t *testing.T) string {
+	t.Helper()
+	var name string
+	if err := e.db.QueryRow("SELECT current_database()").Scan(&name); err != nil {
+		t.Fatalf("current_database: %v", err)
+	}
+	if name == "" {
+		t.Fatal("connection has no current database")
+	}
+	return name
+}
+
+// firstLineDiff reports the first line where two dumps disagree, with the matching
+// line from the other side, so a failure reads as a value rather than a byte count.
+func firstLineDiff(a, b string) string {
+	la := strings.Split(a, "\n")
+	lb := strings.Split(b, "\n")
+	for i := 0; i < len(la) && i < len(lb); i++ {
+		if la[i] != lb[i] {
+			return fmt.Sprintf("line %d:\n  -%s\n  +%s", i+1, la[i], lb[i])
+		}
+	}
+	if len(la) != len(lb) {
+		return fmt.Sprintf("line counts differ: %d vs %d", len(la), len(lb))
+	}
+	return ""
+}

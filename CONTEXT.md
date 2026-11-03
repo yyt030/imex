@@ -7,11 +7,11 @@
 ## 一、当前坐标
 
 - **仓库**：模块 `github.com/imex`，远端 `https://github.com/yyt030/imex`，分支 `main`（工作副本 `<workspace>/imex`）。
-- **HEAD**：本轮提交（变更记录 124 轮：移除 `--socket` / `-S` / `IMEX_SOCKET`，连接只剩 TCP），tag `v0.17.1` **不在这一个提交上**——它仍打在 `fc1844a`（120 轮）；其下依次是 `ccf2929`（变更记录 123）、`e1fa753`（转义轮，122 轮）、`ec88e9f`（变更记录 9 行结构修复，121 轮）、`fc1844a`（`Makefile` 进位 0.17.1 + 本文件状态更新，tag `v0.17.1`）、`6587ad1`（脱敏轮，变更记录 119）、`96f1f30`（cli-oracle note 25，118 轮）、`7e61e72`（变更记录 117 补注）、`29f8b25`（原 HANDOFF.md 所在，tag `v0.17.0`）。**注（2026-11-02 脱敏轮，变更记录 119）**：`HANDOFF.md` 已从仓库移除——它的八节内容被本文件第三、五节与变更记录 117 的「注（发布收尾）」逐条覆盖，118 轮对它做的 10 行改动（`4934dd2` 的处理过程）也已由 118 正文与本文件 2.3、4.4 承载，无独有信息；同一轮把本文件第五节 QA 命令里的真实测试库凭据换成占位串。
-- **已推送**：`v0.17.1`（→ `fc1844a`）之后 `main` 上又积了 121、122、123 三个纯文档提交与本轮的选项移除提交，纯文档那三个按三节第 2 条**不进位、不打 tag**；本轮是**代码 + CLI 面**的移除，按变更记录 113 的先例仍未获进位/tag 指令，`Makefile` 第 1 行仍是 **0.17.1**，`v0.17.1` 就是当前最新 tag；`v0.17.0`（→ `29f8b25`）与 `v0.16.0`（→ `08ffa85`）不动、不移、不重打。推 `main` 在这套环境里要靠 `git -c http.version=HTTP/1.1` 绕开 HTTP2 framing / GnuTLS -110，clone 同理。
+- **HEAD**：本轮提交（变更记录 **125** 轮：`--engine mysql|pg` 与 PostgreSQL 支持），tag `v0.17.1` **不在这一个提交上**——它仍打在 `fc1844a`（120 轮）；其下依次是 `c6ef115`（CONTEXT 补两条真库环境约束）、`78e4f93`（补记 124 的真库复跑取证）、`5103318`（变更记录 124：移除 `--socket`，连接只剩 TCP）、`ccf2929`（变更记录 123）、`e1fa753`（转义轮，122 轮）、`ec88e9f`（变更记录 9 行结构修复，121 轮）、`fc1844a`（`Makefile` 进位 0.17.1 + 本文件状态更新，tag `v0.17.1`）、`6587ad1`（脱敏轮，变更记录 119）、`96f1f30`（cli-oracle note 25，118 轮）、`7e61e72`（变更记录 117 补注）、`29f8b25`（原 HANDOFF.md 所在，tag `v0.17.0`）。**注（2026-11-02 脱敏轮，变更记录 119）**：`HANDOFF.md` 已从仓库移除——它的八节内容被本文件第三、五节与变更记录 117 的「注（发布收尾）」逐条覆盖，118 轮对它做的 10 行改动（`4934dd2` 的处理过程）也已由 118 正文与本文件 2.3、4.4 承载，无独有信息；同一轮把本文件第五节 QA 命令里的真实测试库凭据换成占位串。
+- **已推送**：`v0.17.1`（→ `fc1844a`）之后 `main` 上积着 121/122/123 三个纯文档提交、124 的选项移除提交与 `c6ef115`/`78e4f93` 两个文档提交，本轮 125 一起按 standing 指令直推 `main`；纯文档那三个按三节第 2 条**不进位、不打 tag**，本轮是**代码 + CLI 面**的新引擎，按 113/124 的先例同样未获进位与 tag 指令——`Makefile` 第 1 行仍是 **0.17.1**，`v0.17.1` 就是当前最新 tag；`v0.17.0`（→ `29f8b25`）与 `v0.16.0`（→ `08ffa85`）不动、不移、不重打。推 `main` 在这套环境里要靠 `git -c http.version=HTTP/1.1` 绕开 HTTP2 framing / GnuTLS -110，clone 同理。
 - **已发布**：最新 tag 由 `v0.17.0` 进位到 **`v0.17.1`**（纯文档轮的收口 tag，先例是 `v0.5.1` 与 `v0.5.2`；被覆盖的纪律见三节第 2 条与变更记录 120 ①）。远端 heads 只有 `main`。
-- **工作树**：本轮提交后只剩 `go.mod`/`go.sum` 两条未提交改动——`go get gitee.com/chunanyong/dm`（达梦评估轮）带进 `go.mod` 的三条 `// indirect`（`gitee.com/chunanyong/dm v1.8.23`、`github.com/golang/snappy v1.0.0`、`golang.org/x/text v0.36.0`）与 `go.sum` 的 7 行。仓库里还没有任何代码 import 该驱动，`go mod tidy` 会把这三条整体摘掉，所以**先不提**，等达梦 R0 代码落地时随真实引用一起进。2026-11-02 换新沙箱后按 `https://github.com/yyt030/imex` 重新 clone，完整历史、非浅克隆；`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
-- **本地开发库**：**本沙箱已重建真库（2026-11-03）**——`apt-get install -y --no-install-recommends mariadb-server` 装到与历轮同版本的 **MariaDB 10.6.23**（`1:10.6.23-0ubuntu0.22.04.1`），装前用 `/usr/sbin/policy-rc.d`（`exit 101`）挡住自动启服务，datadir 沿用包初始化的 `/var/lib/mysql`，配置自建于 `/tmp/mysqld/my.cnf`（`user=mysql`、`socket=/tmp/mysqld/mysql.sock`、`bind-address=127.0.0.1`、`port=3306`、`skip-name-resolve`、`general_log_file` 只设路径不设 `general_log`，实测 `@@general_log=0`）。起法仍是第五节那条 `nohup setsid /usr/sbin/mariadbd --defaults-file=…` 命令。库：`imex_it`（集成测试床）与 `imex_test`；账号 `gd`@`127.0.0.1`，口令 20 字符随机、只存在 `/tmp/mysqld/imex_test_pw`，**不写进仓库**（口径同变更记录 59 / 119）。上一沙箱的 `imex_ddl*` 等夹具库没有随迁移带来，也不需要——集成用例自建表。
+- **工作树**：本轮提交后应当干净。上一条遗留已随本轮了结：`go get gitee.com/chunanyong/dm`（达梦评估轮）带进来的三条 indirect **不在工作树里了**（`grep -c chunanyong go.mod go.sum` 均 **0**，HEAD 的 `go.mod` 也从来没有它们）——`go mod tidy` 因无人 import 而摘除，达梦支持仍未落地，将来随真实引用一起进。本轮 `go.mod` 改的是 pgx：新增直接依赖 `github.com/jackc/pgx/v5 v5.12.0`、`pflag` 升为直接引用、五条新 indirect。2026-11-02 换新沙箱后按 `https://github.com/yyt030/imex` 重新 clone，完整历史、非浅克隆；`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
+- **本地开发库**：**本沙箱有两个真库床（2026-11-03）**——① MariaDB **10.6.23**（`1:10.6.23-0ubuntu0.22.04.1`）：`apt-get install -y --no-install-recommends mariadb-server mariadb-client`，装前用 `/usr/sbin/policy-rc.d`（`exit 101`）挡住自动启服务，datadir 沿用 `/var/lib/mysql`，配置自建于 `/tmp/mysqld/my.cnf`（`user=mysql`、`socket=/tmp/mysqld/mysql.sock`、`bind-address=127.0.0.1`、`port=3306`、`skip-name-resolve`、`general_log_file` 只设路径不设 `general_log`，实测 `@@general_log=0`；`innodb_buffer_pool_size` 留 **256M**）。库：`imex_it`（集成测试床）与 `imex_test`；账号 `gd`@`127.0.0.1`，口令 20 字符随机、只存 `/tmp/mysqld/imex_test_pw`。② PostgreSQL **14.24**：`postgres://pgprobe:<20 字符随机>@127.0.0.1:5432/pgprobe?sslmode=disable`，口令只存运行环境；该角色**不能** `CREATE DATABASE`、在 `public` 上有 CREATE，所以 pg 床建在 `pgprobe` 库内：`internal/list/queries_pg_test.go` 的 `TestPGLiveServer` 在同库开两个 schema（`public` 与 `imex_list_it`）断言「带 `-D` 只回 `current_schema()` 的对象」「不带 `-D` 时两个非系统 schema 都出现」，而**换 schema 本身（改角色 `search_path`）没有用例**——工具不给 schema 选项，这条只能靠环境构造（已写进 requirements 11.2）。两库口令都不写进仓库（口径同变更记录 59 / 119）。上一沙箱的 `imex_ddl*` 等夹具库没有随迁移带来，也不需要——集成用例自建表。
 
 ## 二、已完成事项
 
@@ -83,6 +83,22 @@
 
 **顺带发现、本轮未动**：变更记录的子表里有 **3** 处空行插在**同一个子表的两个数据行之间**（现 `docs/requirements.md` 第 **1816** 行分隔 32 与 33、第 **1883** 行分隔 77 与 78、第 **1908** 行分隔 101 与 102），Markdown 渲染时会把一张表断成两张。判据按「空行的上一行与下一行都以竖线开头」实测，非本轮引入，也不是 121/122/123 修的竖线数与格数问题，等裁定。
 
+### 2.7 PostgreSQL 引擎（2026-11-03，变更记录 125，未进位、未打 tag）
+
+用户指令「实现支持pg数据库。」。新增 `--engine mysql|pg`（默认 `mysql`，**没有 `IMEX_ENGINE`**——面④ 一字不变），把散在 22 个文件里的 83 处 MySQL 专有 SQL 收进方言层 `internal/backend`（`Backend` 接口 **24** 个方法 + `mysql.go`/`postgres.go` 两实现），`list` 另分 `queries.go`/`queries_pg.go` 两支。规模：新增非测试 **1,623** 行、新增测试 **1,827** 行（四文件），20 个既有 Go 文件 432 增 283 删；`make build` 产物 **22,368,418 → 26,890,402 B**。
+
+**pg 侧放行**：`export -f del`/`-f parquet`（单线程）、`import -f del`/`-f parquet`（`--mode insert`）、`list` 七个对象。**八类拒绝**（全部退出 2、发生在建连之前）：`show` 六 kind、`list evt`、两侧 `-f sql`、两侧 `--threads>1`、`--session-var`、`--no-hex-blob`、`--mode replace|create|insert_update`、`client_encoding` 表外的 `--default-charset`。两级命名空间规则：`-D` 归连接，对象范围取 `current_schema()`，系统 schema 默认排除、`--all` 取消。
+
+**MySQL 不变的取证**（本轮最硬的一条）：HEAD 用 `git worktree` + 同一条 `make build` 造基线二进制，同床 43 个命令形态、每趟 **404** 条 `general_log` 语句，顺序敏感逐条比对 → **41** 全同 + **2**（两条 `--threads 4`）按连接分组后全同 + **0** 差异；200,000 行表 DEL 与 Parquet 产物 md5 全同；三项耗时不劣化。**方法学教训两条**：`general_log_file` 的目录必须 `mysql` 用户可写（否则 1231、比对跑在空集上却报「全部 IDENTICAL」），以及基线二进制的 provenance 要现查（`/tmp/imex-before` 是 `ccf2929`、还带 `--socket`）。
+
+**pg 真库取证**：PostgreSQL 14.24 / `pgprobe` / `public` schema；11 列 × 12 行 fixture 含 NULL、空串、`-`、引号、TAB/LF、尾随空格、反斜杠、CJK+emoji、`infinity`/`-infinity`、`±Inf`/`NaN`、带裸 `0x00` 的 `bytea`；实测裸 NUL 走文本协议报 `SQLSTATE 22021`（这就是恒开 hex 的理由），认证失败 `SQLSTATE 28P01` 不重试退 1。快照步骤两边不同（MySQL 两步 vs `BEGIN ISOLATION LEVEL REPEATABLE READ` 一步），`max_connections` 读法不同，无连接时的批次预算 pg 取 `1<<30`。
+
+**QA 实况**：`gofmt -l .` **0 行**、`go vet` 无输出、`go test -race -count=1 ./...` **十包全 ok**、两引擎真库合跑 **219** `--- PASS`（76 顶层 + 143 子用例；MySQL 206、PG 13）/ **0** FAIL / **0** SKIP（38.047 s）、20 面 118 字节守卫 0 行超限、`statementCapSlack` = 3、oracle `sections=20 identical=20 drift=0`。资产：`_test.go` **65**、`^func Test` **410**、Fuzz **6**、Benchmark **12**。oracle 走 **Re-baselined note 27**：1,105 → **1,150** 行、16 个面各进一行 `--engine`、0 行离开。
+
+**本轮自纠的三条断言**（都是刚写下的错话，改回后已复核）：① 2.5 初稿说 pg 的 `LIKE` 模式串走 `LOWER()`——实际 `queries_pg.go` 里没有 `LOWER`，折叠只在导入侧列名匹配；② `cmd/engine.go`/`postgres.go` 注释说默认端口「会被记录」「`list config` 里看得到」——实测两处都不成立；③ 2.1.11 规模段的 1,620/537/196 与「23 文件 502 增 286 删」是改注释前的数，重取为 1,623/538/198 与 20 文件 432 增 283 删。**顺带修掉两处 README 旧错**：缺口令文案是四条命令一致（不是三条）、连接选项是五个（不是六个）。
+
+**遗留**：pg 的 `-f sql`/并行/`show` 是明确拒绝而非半成品；11.2 那行点名的三个 pg 缺口不补（`Open()` URL 四参数无用例、pg parquet 只有小表窄类型、只在 14.24 验过）；达梦驱动依赖已被 `go mod tidy` 摘掉，实现轮再随真实引用进来；`docs/requirements.md` 3.7 仍未合进达梦方案与本轮 PG 结论。
+
 ## 三、关键决策（长期有效，改动需用户点名）
 
 1. **对外契约固定为五面**：① CLI 选项集合与帮助文本（`docs/cli-oracle.txt` 是冻结面，重新基线即契约变更）；② 产物文件格式（DEL/SQL 布局、Parquet、`ENC:` 密文布局）；③ 退出码与错误/告警文案（0 成功、1 运行时、2 用法）；④ `IMEX_*` 环境变量集合；⑤ 发给服务端的语句与事务、锁边界（用户可从 `general_log` 观察）。任一面变化至少进第二位 Y，不兼容进第一位 X。
@@ -116,11 +132,11 @@
 
 整库一致快照的批量导出/导入、`--drop-existing`/`--add-drop-table`、gzip + 体积切片、`--updated-since`、`--ask-password`、长查询护栏。当前多表场景由调用方自己循环，**每张表各开一次快照，表与时点不一致**（变更记录 112 ⑦ 有语句流取证）。
 
-### 4.3 沙箱清理（2026-11-02 现查）
+### 4.3 沙箱清理（2026-11-03 现查）
 
-- **开发库上的夹具**：`imex list databases` 现有 19 个库，其中 `imex_it`（集成测试床）与 `imex_test`（list/show 夹具）要留；其余 `imex_ddl`、`imex_ddl4`、`imex_edge`、`imex_edge2`、`imex_env_it`、`imex_hdr`、`imex_map`、`imex_map2`、`imex_other`、`imex_probe_xs`、`imex_sqlecho`、`pi_probe` 是历轮排查留下的。
-- **`imex_test` 里的对象**：19 张表（`sh_t` 是 show 夹具，其余为历轮集成/排查残留，含 `big3m_copy` 995,948 行 / 66,699,264 B）、视图 `list_view`/`sh_v`、触发器 `list_trg`/`sh_trg`、事件 `list_evt`/`sh_e`、例程 `list_func`/`list_proc`/`sh_f`/`sh_p`。
-- **本机**：`<tmp>/wt-0120`、`<tmp>/wt-0121`、`<tmp>/wt-bench`、`<tmp>/wt-pprof` 四个工作树，以及 `scripts/export-all-tables.sh` scratch。
+- **MySQL 开发库**：`information_schema.schemata` 现有 **6** 个（`imex_it`、`imex_test` 加 `information_schema`/`mysql`/`performance_schema`/`sys`）。2026-11-02 那版记的 19 个库、以及 `imex_test` 里 19 张表 + 2 视图 + 2 触发器 + 2 事件 + 4 例程，是历轮排查在**旧沙箱**里留下的；沙箱重建后它们不在了，`imex_test` 现在是空库（`information_schema.tables` 查不到任何行）。`imex_it` 现有 18 张表，`big_table` 实数 `count(*) = 200000`（`table_rows` 只是估算，别照抄），`imex_perf_dst` 198,194 行估算——两个都是集成床夹具，留着。
+- **PostgreSQL 开发库**：库 `pgprobe`（`pg_database_size` = 9,155 kB），两个非系统 schema。`public`：`imex_doc_demo` 2 行、`rt` 5 行、`rt_probe` 0 行；`imex_list_it`：`t1` 5 行、`t2`/`rt`/`"MixedCase"` 各 0 行——`imex_list_it` 是 `TestPGLiveServer` 为跨 schema 覆盖建的夹具，跑完不删。角色 `pgprobe` **没有 CREATEDB**（`ERROR: permission denied to create database`），所以 pg 侧所有夹具只能铺在 schema 层，`CREATE` 权限只有 `public` 一处。
+- **本机**：2026-11-02 列的 `<tmp>/wt-0120`、`<tmp>/wt-0121`、`<tmp>/wt-bench`、`<tmp>/wt-pprof` 四个工作树和 `scripts/export-all-tables.sh` 随旧沙箱一起没了（`scripts/` 目录也不存在）。本轮自己建的取证工作树 `/tmp/imex-base` 已确认干净后 `git worktree remove --force` 清掉，`git worktree list` 现只剩 `/data/imex c6ef115 [main]`。`<tmp>` 下还留着本轮取证产物：`/tmp/imex-doc`（工作树明文构建 38,373,289 B）、`/tmp/imex-baseline`（HEAD `make build` 22,368,418 B）、`/tmp/oracle.py`（oracle 比对脚本，用法 `oracle.py <binary> [--write]`，漏传参数会 `IndexError`）、`/tmp/rec125.txt`（变更记录 125 的行文本）。
 
 ### 4.4 一处文档缺陷：仓库引用的基线提交号解析不到（**已处理**，见 2.3 与变更记录 118）
 
@@ -135,9 +151,10 @@ cd <workspace>/imex
 make build                                                   # bin/imex
 gofmt -l .                                                   # 期望空
 CGO_ENABLED=1 go vet ./...                                   # 期望无输出
-CGO_ENABLED=1 go test -race -count=1 ./...                   # 期望 9 个 ok
+CGO_ENABLED=1 go test -race -count=1 ./...                   # 期望 10 个 ok
 IMEX_TEST_DSN='<user>:<password>@tcp(127.0.0.1:3306)/imex_it' \
-  CGO_ENABLED=1 go test -race -count=1 -v ./test/integration # 期望 0 FAIL / 0 SKIP
+IMEX_TEST_PG_DSN='postgres://<user>:<password>@127.0.0.1:5432/<db>?sslmode=disable' \
+  CGO_ENABLED=1 go test -race -count=1 -v ./test/integration # 期望 0 FAIL / 0 SKIP（219 条 --- PASS = MySQL 206 + PG 13）
 grep -c statementCapSlack test/integration/option_matrix_test.go   # 期望 3
 ```
 
@@ -154,12 +171,16 @@ for c in "--help" "export --help" "import --help" "list --help" "show --help" "v
 done
 ```
 
-两个坑：`test/integration` 的 `TestMain` **只在 `IMEX_TEST_DSN` 存在时**才构建 CLI 二进制，直接驱动二进制的用例必须按 DSN 判空 `t.Skip`（现为 `show_test.go` 两条 help-only 与 `option_matrix_test.go` 一条），否则 `go test ./...` 会报 `exec: no command`；沙箱重启后 3306 不在了，起法：`nohup setsid /usr/sbin/mariadbd --defaults-file=<tmp>/mysqld/my.cnf ><tmp>/mysqld/runNN.log 2>&1 </dev/null &`，再用 `ss -ltn | grep ':3306 '` 确认。**新沙箱（连 mariadbd 都没有时）的完整重建法**（2026-11-03 实测走通，含真库 206 用例）：`printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d` 先挡住自动起服务，再 `DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends mariadb-server mariadb-client`（jammy 的候选版本恰好还是 `1:10.6.23`，与历轮取证同版本，结论可直接对比）；datadir 由包初始化好，不必 `mariadb-install-db`；自建 `<tmp>/mysqld/my.cnf` 时必须给 `user=mysql`、并把 `<tmp>/mysqld` 目录 `chown mysql:mysql`（`general_log_file` 那类由服务端自建的落盘文件才写得出来），配置里 `bind-address=127.0.0.1` + `skip-name-resolve`，于是授权要按 `gd`@`127.0.0.1` 写而不是主机名；起来之后 `mariadb -S <tmp>/mysqld/mysql.sock -u root` 建 `imex_it`/`imex_test` 与 `gd`@`127.0.0.1`（`GRANT ALL ON *.* … WITH GRANT OPTION`，因为 `live_mysql_test.go` 有一条 `CREATE DATABASE` 路径，权限不够它会 `t.Skipf` 而不是失败）。
+两个坑：`test/integration` 的 `TestMain` 在 **`IMEX_TEST_DSN` 或 `IMEX_TEST_PG_DSN` 任一存在时**才构建 CLI 二进制（125 轮从「只认 MySQL」改宽，否则 pg-only 环境拿不到二进制），直接驱动二进制的用例必须按 DSN 判空 `t.Skip`（现为 `show_test.go` 两条 help-only 与 `option_matrix_test.go` 一条），否则 `go test ./...` 会报 `exec: no command`；`IMEX_TEST_PG_DSN` 还必须是 `postgres://` URL、带口令、指定库，三项缺一即 `t.Fatalf`（这些用例要把口令放上命令行）。沙箱重启后 3306 不在了，起法：`nohup setsid /usr/sbin/mariadbd --defaults-file=<tmp>/mysqld/my.cnf ><tmp>/mysqld/runNN.log 2>&1 </dev/null &`，再用 `ss -ltn | grep ':3306 '` 确认。**新沙箱（连 mariadbd 都没有时）的完整重建法**（2026-11-03 实测走通，含真库 206 用例）：`printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d` 先挡住自动起服务，再 `DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends mariadb-server mariadb-client`（jammy 的候选版本恰好还是 `1:10.6.23`，与历轮取证同版本，结论可直接对比）；datadir 由包初始化好，不必 `mariadb-install-db`；自建 `<tmp>/mysqld/my.cnf` 时必须给 `user=mysql`、并把 `<tmp>/mysqld` 目录 `chown mysql:mysql`（`general_log_file` 那类由服务端自建的落盘文件才写得出来），配置里 `bind-address=127.0.0.1` + `skip-name-resolve`，于是授权要按 `gd`@`127.0.0.1` 写而不是主机名；起来之后 `mariadb -S <tmp>/mysqld/mysql.sock -u root` 建 `imex_it`/`imex_test` 与 `gd`@`127.0.0.1`（`GRANT ALL ON *.* … WITH GRANT OPTION`，因为 `live_mysql_test.go` 有一条 `CREATE DATABASE` 路径，权限不够它会 `t.Skipf` 而不是失败）。
      两条环境约束是 2026-11-03 现查的：① **`max_connections` 必须留在默认 151**——把它抬到 400 之后 `TestBoundaryWorkersOverConnectionLimitAreReported` 会 `t.Skipf("server accepts %d connections, the over-limit case cannot be produced")`（它要 `--threads 200` 打不过上限才成立），QA 的「**0 SKIP**」口径当场破掉；改回默认后同一跑恢复 **206 RUN / 206 PASS（70 顶层 + 136 子用例）/ 0 SKIP / 0 FAIL（38.502 s）**。② `innodb_buffer_pool_size` 从 512M 降到 **256M**：512M 时 mariadbd 在同沙箱又起一个 PostgreSQL 与若干 Go 链接任务的时段里被**无声 SIGKILL**（`run01.log` 空、error log 停在 04:04:21 的两条 `Access denied`——那是集成套件故意测 1045 路径的正常记录，不是故障原因），重启后按新值跑到 38.5 s 全绿且不再掉线。
+
+**PostgreSQL 床的重建法（2026-11-03 实测走通，含真库 13 条 pg 用例）**：`DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postgresql-14`（jammy 候选即 `14.24`），同样先靠 `/usr/sbin/policy-rc.d` 挡自动启动；起法（本轮实际在跑的那条，`ps -eo args` 现查）`nohup setsid su postgres -c '/usr/lib/postgresql/14/bin/postgres -D /var/lib/postgresql/14/main -c config_file=/etc/postgresql/14/main/postgresql.conf' >< /tmp/pg/run.log 2>&1 </dev/null &`，`ss -ltn` 复核只监听 `127.0.0.1:5432`。建床：`su postgres -c 'psql -c "CREATE ROLE pgprobe LOGIN PASSWORD '"'"'<随机口令>'"'"'" CREATEDB"'` 之后 `CREATE DATABASE pgprobe OWNER pgprobe`——**注意沙箱里这条 `CREATEDB` 会因权限被拒**，125 轮的实际形态是角色不能建库、只能在 `public` 上 CREATE，所以 pg 床只有 `pgprobe` 这一个库；`queries_pg_test.go` 用同库里的第二个 schema（`imex_list_it`）钉住「带 `-D` 只回 `current_schema()`」「不带 `-D` 两个非系统 schema 都在结果里」，但「换个 schema 去连」这条没有任何用例——工具不给 schema 选项（已写进 requirements 11.2）。口令只进运行环境与 `/tmp`，不进仓库。
 
 **QA 现状（2026-11-02 在 `c03f2c9` 上复跑，本机 MariaDB 10.6.23）**：`gofmt -l` 0 行、`go vet` 净、9 包 `-race` 全 ok、集成 **206 通过（70 顶层 + 136 子用例）/ 0 失败 / 0 跳过**（16.331 s）、20 个帮助面 0 行超 118 字节、`statementCapSlack` = 3。
 
 **沙箱换了之后（2026-11-02 变更记录 118 轮实测）**：上面那串除了集成那一行都能跑：`gofmt -l .` 空、`CGO_ENABLED=1 go vet ./...` 净、`CGO_ENABLED=1 go test -race -count=1 ./...` 9 包全 ok（`test/integration` 在无 DSN 时 1.027 s 通过 = 真库用例全跳过）、`make build` 通过（`bin/imex` 22,368,418 B，ldflags 打进 `GitCommit=7e61e72`）、20 面 118 字节守卫 0 行超限、`statementCapSlack` = 3。帮助守卫与构建都不依赖数据库，照常复跑。**这个沙箱里没装 MariaDB**，`/usr/sbin/mariadbd` 与 `mysqld` 都不存在，所以起库那条命令在此不可用，206 用例与 20 个帮助面的守卫要等环境补回来才能复跑；`go` 本体是 go1.22.5，靠 `GOTOOLCHAIN=auto` 拉 `go1.26.10` 才能按 `go.mod` 编译（首次 `go build` 会下载依赖与工具链）。
+
+**QA 现状（2026-11-03，变更记录 125 轮，两引擎同床）**：`gofmt -l` 0 行、`go vet` 净、**10 包** `-race -count=1` 全 ok（新增的 `internal/backend` 是第 10 个；最慢 `internal/common` 56.429 s）、双 DSN 集成 **219 条 `--- PASS`（76 顶层 + 143 子用例）/ 0 失败 / 0 跳过**（38.047 s，其中 MySQL 206、PG 13）、20 个帮助面 0 行超 118 字节、`statementCapSlack` = 3、oracle 复跑 `sections=20 identical=20 drift=0`（1,150 行）。`make build` 产物 `bin/imex` 26,890,402 B（同轮 HEAD 构建 22,368,418 B，两者同为 `-s -w -trimpath`，可直接比）。`version` 仍 `0.17.1`，未打新 tag。
 
 ## 六、0.17.0 的发布（2026-11-02 已完成）
 
@@ -169,9 +190,9 @@ done
 
 | 要看什么 | 去哪 |
 |---|---|
-| 命令怎么用、选项含义 | `README.md`（`### list`、`### show`，以及 list 那节里 list/show 共用的「输出通道」表） |
-| 设计来龙去脉、实测取证、分级理由 | `docs/requirements.md` 二节（2.3 日志 / 2.5 list / 2.6 show）、3.4.1 SQL 回显、3.6 通道与 show 定稿 |
-| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 124） |
-| 帮助文本的冻结基线 | `docs/cli-oracle.txt`（20 段 / 1,105 行，头注 note 1–26 记录了每次重基线、漂移处理与基线提交号 `4934dd2` 的取回路径） |
+| 命令怎么用、选项含义 | `README.md`（`### list`、`### show`，list 那节里 list/show 共用的「输出通道」表，以及「**PostgreSQL 引擎（`--engine pg`）**」一节） |
+| 设计来龙去脉、实测取证、分级理由 | `docs/requirements.md` 二节（2.1.11 引擎与 PG 范围 / 2.3 日志 / 2.5 list / 2.6 show）、3.4.1 SQL 回显、3.6 通道与 show 定稿、七节 7.1 方言层 |
+| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 **125**） |
+| 帮助文本的冻结基线 | `docs/cli-oracle.txt`（**20 段 / 1,150 行**，头注 note 1–27 记录了每次重基线、漂移处理与基线提交号 `4934dd2` 的取回路径） |
 | 测试矩阵与资产清单 | `docs/requirements.md` 十一节（11.1 资产表、11.2 未自动化场景） |
 | 打包/tag/文档纪律 | `<workspace>/AGENTS.md`（工作区约定，不在仓库内） |

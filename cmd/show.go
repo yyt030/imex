@@ -1,13 +1,10 @@
 package cmd
 
 import (
-	"database/sql"
 	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-
-	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
@@ -72,6 +69,7 @@ func registerShowFlags(cmd *cobra.Command, cfg *config.ShowConfig) {
 	// Same rule as export, import and list: -h belongs to --host, so help gets ?.
 	f.BoolP("help", "?", false, "help for show "+cmd.Use)
 
+	f.StringVar(&cfg.Engine, "engine", "mysql", "Database engine: mysql, pg")
 	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
 	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
 	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
@@ -104,6 +102,15 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 		return err
 	}
 
+	e, err := parseEngine(cfg.Engine)
+	if err != nil {
+		return err
+	}
+	applyEnginePort(cmd, &cfg.Config, e)
+	if err := checkShowEngineOptions(e, kind.Short); err != nil {
+		return err
+	}
+
 	if err := validateShowConfig(cfg); err != nil {
 		return err
 	}
@@ -117,20 +124,18 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 	common.InitLogger(cfg.LogLevel)
 	logConnEnv(connEnv)
 	common.Logger.Info("show config",
+		"engine", cfg.Engine,
 		"kind", kind.Short,
 		"schema", cfg.Schema,
 		"name", cfg.Object,
 		"output", cfg.Output,
 	)
 
-	dsn := common.BuildDSN(&cfg.Config)
-	db, err := sql.Open("mysql", dsn)
+	db, err := openDatabase(e, &cfg.Config)
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to database")
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
 
 	if err := common.PingWithRetry(db); err != nil {
 		return err
@@ -151,6 +156,15 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 }
 
 func validateShowConfig(cfg *config.ShowConfig) error {
+	// Resolved here for the same reason list does it: runShow needs the engine to
+	// dial, the validator needs it to reject a charset PostgreSQL cannot name.
+	e, err := parseEngine(cfg.Engine)
+	if err != nil {
+		return err
+	}
+	if err := checkCharsetForEngine(e, cfg.DefaultCharset); err != nil {
+		return err
+	}
 	if cfg.Host == "" {
 		return common.Usagef("--host is required")
 	}

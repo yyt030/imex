@@ -15,6 +15,8 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
@@ -22,6 +24,7 @@ import (
 // Importer handles data import operations
 type Importer struct {
 	cfg   *config.ImportConfig
+	be    backend.Backend
 	db    *sql.DB
 	stats *common.Stats
 
@@ -70,11 +73,17 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 	// not depend on the dial succeeding.
 	logImportConfig(cfg)
 
-	// Build DSN using mysql.Config to properly escape special characters
-	dsn := common.BuildDSN(&cfg.Config)
+	// The engine decides the driver, the placeholder syntax, the identifier
+	// quoting and every metadata query below. cmd/validate.go rejects an unknown
+	// --engine as a usage error, so this can only fail for a library caller that
+	// wrote Config.Engine by hand.
+	be, err := backend.ForConfig(&cfg.Config)
+	if err != nil {
+		return nil, err
+	}
 
 	dialStart := time.Now()
-	db, err := sql.Open("mysql", dsn)
+	db, err := be.Open(&cfg.Config)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to connect to database")
 	}
@@ -90,9 +99,21 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 
 	return &Importer{
 		cfg:        cfg,
+		be:         be,
 		db:         db,
 		connectDur: time.Since(dialStart),
 	}, nil
+}
+
+// backend returns the engine this run writes through. A zero-valued Importer is
+// legal (the tests and any library caller that builds one by hand never set
+// Engine), and such a run writes MySQL exactly as it did before --engine existed,
+// so the zero value resolves to the MySQL backend instead of a nil interface.
+func (imp *Importer) backend() backend.Backend {
+	if imp.be == nil {
+		return backend.Must(backend.EngineMySQL)
+	}
+	return imp.be
 }
 
 // Close closes the importer and releases resources
@@ -461,7 +482,7 @@ func (imp *Importer) tableExists(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	var found int
-	existsSQL := "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+	existsSQL := imp.backend().TableExistsSQL()
 	common.LogInteractionSQL(existsSQL, imp.cfg.Database, imp.cfg.Table)
 	if err := imp.db.QueryRowContext(ctx,
 		common.TagSQL(existsSQL),
@@ -486,12 +507,7 @@ func (imp *Importer) validateTargetColumns(ctx context.Context, cols []string) e
 		return errors.Errorf("target table %q does not exist in database %q", imp.cfg.Table, imp.cfg.Database)
 	}
 
-	placeholders := strings.Repeat("?,", len(cols))
-	placeholders = placeholders[:len(placeholders)-1]
-	colsSQL := fmt.Sprintf(
-		"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND UPPER(COLUMN_NAME) IN (%s)",
-		placeholders,
-	)
+	colsSQL := imp.backend().TargetColumnCheckSQL(len(cols))
 	q := common.TagSQL(colsSQL)
 	args := make([]interface{}, 0, len(cols)+2)
 	args = append(args, imp.cfg.Database, imp.cfg.Table)
@@ -542,9 +558,7 @@ func (imp *Importer) countUniqueKeys(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	var n int
-	uniqSQL := `SELECT COUNT(DISTINCT INDEX_NAME)
-FROM information_schema.STATISTICS
-WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND (NON_UNIQUE = 0 OR INDEX_NAME = 'PRIMARY')`
+	uniqSQL := imp.backend().UniqueKeyColumnsSQL()
 	common.LogInteractionSQL(uniqSQL, imp.cfg.Database, imp.cfg.Table)
 	err := imp.db.QueryRowContext(ctx,
 		common.TagSQL(uniqSQL),
@@ -566,7 +580,7 @@ func (imp *Importer) headerLooksLikeData(ctx context.Context, fields []string) (
 	if imp.cfg.Table == "" {
 		return false, nil
 	}
-	listSQL := "SELECT UPPER(COLUMN_NAME) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+	listSQL := imp.backend().ColumnListSQL()
 	common.LogInteractionSQL(listSQL, imp.cfg.Database, imp.cfg.Table)
 	rows, err := imp.db.QueryContext(ctx,
 		common.TagSQL(listSQL),
@@ -606,12 +620,7 @@ func (imp *Importer) columnInfoFor(ctx context.Context, cols []string) ([]common
 	if len(cols) == 0 {
 		return nil, nil, nil
 	}
-	placeholders := strings.Repeat("?,", len(cols))
-	placeholders = placeholders[:len(placeholders)-1]
-	infoSQL := fmt.Sprintf(
-		"SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME IN (%s)",
-		placeholders,
-	)
+	infoSQL := imp.backend().ColumnTypesSQL(len(cols))
 	q := common.TagSQL(infoSQL)
 	args := make([]interface{}, 0, len(cols)+2)
 	args = append(args, imp.cfg.Database, imp.cfg.Table)
@@ -641,8 +650,8 @@ func (imp *Importer) columnInfoFor(ctx context.Context, cols []string) ([]common
 	binaries := make([]bool, len(cols))
 	for i, c := range cols {
 		if dt, ok := byName[strings.ToLower(strings.TrimSpace(c))]; ok {
-			kinds[i] = common.ClassifyColumnKind(dt)
-			binaries[i] = common.IsBinaryTypeName(dt)
+			kinds[i] = imp.backend().MetadataKind(dt)
+			binaries[i] = imp.backend().MetadataBinary(dt)
 		} else {
 			kinds[i] = common.KindUnknown
 		}
@@ -712,7 +721,7 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 	// budget comes from a SHOW VARIABLES query on the pool, and holding a
 	// transaction while waiting for a second connection is a deadlock risk if
 	// the pool is ever limited to one connection.
-	batchSize, maxBatchBytes := imp.resolveBatchSize(len(columns))
+	batchSize, maxBatchBytes := imp.resolveBatchSize(ctx, len(columns))
 
 	// Open the writer session. It owns the transaction, the --commit-count
 	// policy, idle commits and transient-error replay.
@@ -881,7 +890,10 @@ loop:
 			batchValues = appendRowValues(batchValues, row, imp.projection)
 		}
 
-		insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))
+		insertSQL, err := imp.buildBatchInsertSQL(columns, len(batch.data))
+		if err != nil {
+			return err
+		}
 
 		// 执行批量插入（瞬断时自动重连并回放本事务的未提交批次）
 		writeAt := time.Now()
@@ -964,7 +976,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	batchSize, maxBatchBytes := imp.resolveBatchSize(len(columns))
+	batchSize, maxBatchBytes := imp.resolveBatchSize(ctx, len(columns))
 	skipCount := int64(imp.cfg.SkipCount)
 	rowLimit := int64(imp.cfg.RowCount)
 	commitCount := int64(imp.cfg.CommitCount)
@@ -1062,9 +1074,13 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 
 	// Stage 2: worker goroutines, each with its own connection/transaction.
 
-	// Build the DSN once for all workers (BuildDSN embeds charset/session vars).
-	dsn := common.BuildDSN(&imp.cfg.Config)
-	warnIfThreadsExceedCapacity(ctx, imp.db, numThreads)
+	// Each worker dials through the backend, so a parallel run opens as many
+	// engine-native connections as there are threads and the DSN-building —
+	// including the charset and session-variable settings only MySQL has — stays
+	// in one place. --threads is refused for engines the CLI has not verified in
+	// parallel, which is what makes this path MySQL-only in practice rather than
+	// in code.
+	imp.warnIfThreadsExceedCapacity(ctx, numThreads)
 	warnIfReplayWindowScales(numThreads)
 
 	for i := 0; i < numThreads; i++ {
@@ -1072,7 +1088,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 		go func(threadID int) {
 			defer wg.Done()
 
-			db, err := sql.Open("mysql", dsn)
+			db, err := imp.backend().Open(&imp.cfg.Config)
 			if err != nil {
 				errCh <- errors.Wrapf(err, "thread %d: failed to connect", threadID)
 				cancel()
@@ -1135,7 +1151,12 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 					flat = appendRowValues(flat, row, imp.projection)
 				}
 
-				insertSQL := imp.buildBatchInsertSQL(columns, len(batch.data))
+				insertSQL, err := imp.buildBatchInsertSQL(columns, len(batch.data))
+				if err != nil {
+					errCh <- err
+					cancel()
+					return
+				}
 				writeAt := time.Now()
 				if err := session.write(insertSQL, flat, len(batch.data)); err != nil {
 					preview := common.FailingSQL(insertSQL, flat)
@@ -1206,7 +1227,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 }
 
 func (imp *Importer) deleteTable(ctx context.Context) error {
-	query := fmt.Sprintf("DELETE FROM `%s`", imp.cfg.Table)
+	query := "DELETE FROM " + imp.backend().QuoteIdent(imp.cfg.Table)
 	common.LogInteractionSQL(query)
 	_, err := imp.db.ExecContext(ctx, common.TagSQL(query))
 	return err
@@ -1330,38 +1351,34 @@ func (imp *Importer) applyColumnMapping(fileColumns []string) (*ColumnMapping, e
 	return cm, nil
 }
 
-func (imp *Importer) buildBatchInsertSQL(columns []string, rowCount int) string {
+func (imp *Importer) buildBatchInsertSQL(columns []string, rowCount int) (string, error) {
 	// Trim whitespace from column names
 	targetColumns := make([]string, len(columns))
 	for i, col := range columns {
 		targetColumns[i] = strings.TrimSpace(col)
 	}
 
-	// One placeholder group per row: "(?,?,?)" for a three-column table. Building
-	// it once lets the batch write rowCount copies of a single string instead of
-	// rowCount*columns writes of one byte.
-	group := "(" + strings.TrimSuffix(strings.Repeat("?,", len(targetColumns)), ",") + ")"
+	be := imp.backend()
+
+	// One placeholder group per row: "(?,?,?)" for a three-column table on MySQL,
+	// "($1,$2,$3)" on PostgreSQL, where every parameter carries its own ordinal
+	// across the whole statement. Building it once lets the batch write a single
+	// string instead of rowCount*columns writes of one byte.
+	groups := be.ValueGroups(rowCount, len(targetColumns))
 	separators := 0
 	if rowCount > 0 {
 		separators = rowCount - 1
 	}
 
-	// For insert_update mode, append ON DUPLICATE KEY UPDATE
+	// For insert_update mode, append the engine's upsert clause. PostgreSQL's
+	// ON CONFLICT needs a conflict target the tool will not guess, so the backend
+	// says so here and the CLI refuses the mode before a run ever gets this far.
 	var onDup string
 	if imp.cfg.Mode == config.ImportModeInsertUpdate {
-		var od strings.Builder
-		od.WriteString(" ON DUPLICATE KEY UPDATE ")
-		for i, col := range targetColumns {
-			if i > 0 {
-				od.WriteString(", ")
-			}
-			od.WriteString("`")
-			od.WriteString(col)
-			od.WriteString("` = VALUES(`")
-			od.WriteString(col)
-			od.WriteString("`)")
+		var err error
+		if onDup, err = be.UpsertSuffix(targetColumns); err != nil {
+			return "", err
 		}
-		onDup = od.String()
 	}
 
 	// The statement is assembled once, in a buffer sized up front: the
@@ -1372,43 +1389,36 @@ func (imp *Importer) buildBatchInsertSQL(columns []string, rowCount int) string 
 	tag := common.SQLTag()
 	colListLen := 0
 	for _, col := range targetColumns {
-		colListLen += len(col) + 2 // the backticks around each name
+		colListLen += len(col) + 2 // the two quote characters around each name
 	}
 	if len(targetColumns) > 1 {
 		colListLen += 2 * (len(targetColumns) - 1) // ", " between names
 	}
 
 	var sb strings.Builder
-	sb.Grow(len(tag) + 1 + len("INSERT INTO `") + len(imp.cfg.Table) + len("` (") +
-		colListLen + len(") VALUES ") + rowCount*len(group) + separators + len(onDup))
+	into := be.QuoteIdent(imp.cfg.Table)
+	sb.Grow(len(tag) + 1 + len("INSERT INTO ") + len(into) + len(" (") +
+		colListLen + len(") VALUES ") + len(groups) + separators + len(onDup))
 	if tag != "" {
 		sb.WriteString(tag)
 		sb.WriteByte(' ')
 	}
-	sb.WriteString("INSERT INTO `")
-	sb.WriteString(imp.cfg.Table)
-	sb.WriteString("` (")
+	sb.WriteString("INSERT INTO ")
+	sb.WriteString(into)
+	sb.WriteString(" (")
 
 	for i, col := range targetColumns {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		sb.WriteString("`")
-		sb.WriteString(col)
-		sb.WriteString("`")
+		sb.WriteString(be.QuoteIdent(col))
 	}
 
 	sb.WriteString(") VALUES ")
-
-	for i := 0; i < rowCount; i++ {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		sb.WriteString(group)
-	}
+	sb.WriteString(groups)
 	sb.WriteString(onDup)
 
-	return sb.String()
+	return sb.String(), nil
 }
 
 // createTableNameRe matches the table-name token that follows

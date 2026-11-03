@@ -388,6 +388,35 @@
 # `imex export --socket PATH` and `imex import -S PATH` are now usage errors
 # (exit 2), and an IMEX_SOCKET left in a shell profile is simply never read.
 # See requirements.md 变更记录 124.
+# Re-baselined note 27 (2026-11-03): `--engine` landed, adding PostgreSQL as a
+# second engine selectable per invocation. Exactly sixteen lines entered the
+# file -- `      --engine string  Database engine: mysql, pg (default "mysql")`
+# once in `## export`, once in `## import`, once in each of the eight
+# `## list <object>` bodies and once in each of the six `## show <kind>` bodies.
+# Nothing else moved: no description was reworded and no column shifted, because
+# the new spec is shorter than the longest one already in every one of those
+# blocks (`--socket-write-timeout duration`), so the alignment is untouched --
+# the re-baseline reports 16 added lines and 0 removed lines across all twenty
+# sections. The three parent faces (`## root`, `## list`, `## show`) gain
+# nothing: the option belongs to the leaf command that opens the connection.
+# MySQL is byte-identical before and after. 43 command forms were run against
+# the same live MariaDB 10.6.23 with general_log turned on for each, once with
+# the binary built from HEAD and once with this tree's binary: 404 statements
+# per pass, equal in text and in order for 41 forms, and equal per connection
+# for the two `--threads` forms, where the server is free to interleave the
+# concurrent sessions. The products of a 200,000-row table hash the same both
+# ways (DEL 30,957,980 B, md5 1865ef052d479a1421f7b72f4ca210d7; Parquet
+# 28,110,445 B, md5 3d5fd4a34eded9080a37889406e9f9fc).
+# What `--engine pg` refuses, each as a usage error (exit 2): `-f sql` in both
+# directions, every `show` kind, `list events`, `--threads` above 1,
+# `--session-var`, `--no-hex-blob` and `--mode replace`/`create`/`insert_update`.
+# The engine has no environment variable -- `IMEX_ENGINE` is not read, and
+# `TestEngineHasNoEnvironmentVariable` pins that setting it leaves the flag at
+# its default -- so this file's env surface is exactly what note 26 left.
+# All nineteen live bodies were re-taken from the binary built from this tree and
+# diff EMPTY; `## version` remains the frozen snapshot. The file goes 1,105 ->
+# 1,150 lines: sixteen arrive with the new flag, this note adds twenty-nine. Still
+# 20 sections, 0 lines over 118 bytes. See requirements.md 变更记录 125.
 
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
@@ -439,6 +468,7 @@ Flags:
   -D, --database string                 Database name (also IMEX_DATABASE)
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
       --default-charset string          Connection & output-file charset (utf8mb4 default)
+      --engine string                   Database engine: mysql, pg (default "mysql")
       --escape string                   Escape character (only with --format del) (default "\"")
       --extended-insert                 Merge rows into multi-row INSERTs (only with --format sql)
   -f, --format string                   Output file format (del/sql/parquet) (default "del")
@@ -512,6 +542,7 @@ Flags:
   -D, --database string                 Database name (also IMEX_DATABASE)
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
       --default-charset string          Connection & input-file charset (utf8mb4 default)
+      --engine string                   Database engine: mysql, pg (default "mysql")
       --escape string                   Escape character (only with --format del) (default "\"")
   -f, --format string                   Input file format (del/sql/parquet) (default "del")
   -?, --help                            help for import
@@ -594,6 +625,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for list databases
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -627,6 +659,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for list tables
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -661,6 +694,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for list views
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -693,6 +727,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for list columns
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -726,6 +761,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for list indexes
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -760,6 +796,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for list triggers
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -794,6 +831,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for list routines
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -828,6 +866,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for list events
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -896,6 +935,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for show tab
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -926,6 +966,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for show vws
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -956,6 +997,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for show trg
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -986,6 +1028,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for show evt
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -1016,6 +1059,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for show prc
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -1046,6 +1090,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg (default "mysql")
   -?, --help                            help for show fcn
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")

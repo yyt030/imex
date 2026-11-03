@@ -14,8 +14,11 @@ import (
 // retry a bounded number of times and then fail the whole run, after other
 // workers have already committed their batches. Reading it lets the parallel
 // paths report the mismatch before any data moves.
-func MaxConnections(ctx context.Context, db *sql.DB) (int, error) {
-	query := "SELECT @@max_connections"
+//
+// The query comes from the backend, because the ceiling is spelled
+// `SELECT @@max_connections` on MySQL and `SELECT current_setting(...)` on
+// PostgreSQL while the answer is the same integer.
+func MaxConnections(ctx context.Context, db *sql.DB, query string) (int, error) {
 	LogInteractionSQL(query)
 	var value int
 	if err := db.QueryRowContext(ctx, TagSQL(query)).Scan(&value); err != nil {

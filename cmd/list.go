@@ -1,14 +1,11 @@
 package cmd
 
 import (
-	"database/sql"
 	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-
-	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
@@ -99,6 +96,7 @@ func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 	// Override the default help flag so -h stays available for --host.
 	f.BoolP("help", "?", false, "help for list "+cmd.Use)
 
+	f.StringVar(&cfg.Engine, "engine", "mysql", "Database engine: mysql, pg")
 	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
 	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
 	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
@@ -129,6 +127,12 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 		return err
 	}
 
+	e, err := parseEngine(cfg.Engine)
+	if err != nil {
+		return err
+	}
+	applyEnginePort(cmd, &cfg.Config, e)
+
 	if err := validateListConfig(cfg); err != nil {
 		return err
 	}
@@ -142,6 +146,7 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 	common.InitLogger(cfg.LogLevel)
 	logConnEnv(connEnv)
 	common.Logger.Info("list config",
+		"engine", cfg.Engine,
 		"object", object,
 		"database", cfg.Database,
 		"table", cfg.Table,
@@ -149,14 +154,11 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 		"output", cfg.Output,
 	)
 
-	dsn := common.BuildDSN(&cfg.Config)
-	db, err := sql.Open("mysql", dsn)
+	db, err := openDatabase(e, &cfg.Config)
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to database")
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
 
 	if err := common.PingWithRetry(db); err != nil {
 		return err
@@ -178,6 +180,17 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 }
 
 func validateListConfig(cfg *config.ListConfig) error {
+	// The engine is resolved here as well as in runList: the option checks below
+	// are validation, and a caller that builds a ListConfig by hand must hit the
+	// same refusal as one that came through the command line. runList needs the
+	// value anyway, to pick the backend it dials.
+	e, err := parseEngine(cfg.Engine)
+	if err != nil {
+		return err
+	}
+	if err := checkListEngineOptions(e, cfg); err != nil {
+		return err
+	}
 	if cfg.Host == "" {
 		return common.Usagef("--host is required")
 	}

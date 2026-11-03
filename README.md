@@ -26,6 +26,7 @@
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
+- **双引擎**：`--engine` 取 `mysql`（默认）或 `pg`。PostgreSQL 走 `github.com/jackc/pgx/v5`，支持 `export`/`import` 的 `-f del` 与 `-f parquet`（单线程、`--mode insert`）和 `list` 的七个对象；`show`、`-f sql`、并行、`--session-var` 等 MySQL 专有能力在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -153,8 +154,9 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 
 | 选项 | 短选项 | 说明 | 环境变量 | 默认值 |
 |------|--------|------|----------|--------|
+| `--engine` | | 数据库引擎：`mysql`（默认）或 `pg`（PostgreSQL，经 `jackc/pgx/v5`）；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节 | 无（刻意不设） | `mysql` |
 | `--host` | `-h` | 数据库主机地址 | `IMEX_HOST` | `127.0.0.1` |
-| `--port` | `-P` | TCP/IP 端口 | `IMEX_PORT` | `3306` |
+| `--port` | `-P` | TCP/IP 端口（`--engine pg` 时默认 `5432`） | `IMEX_PORT` | `3306` |
 | `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明） | `IMEX_USER` | `root` |
 | `--password` | `-p` | 数据库密码 | `IMEX_PASSWORD` | 空 |
 | `--database` | `-D` | 数据库名 | `IMEX_DATABASE` | 空 |
@@ -248,7 +250,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--shard-key` | | 分片键列名（空=自动检测主键/唯一键）；**只有并行导出读取并校验它**——显式给出的列在表里不存在时为用法错误、退出码 2，自动检测失败仍回落单线程；`--threads 1` 或并行请求回落到单线程时该值不起作用，运行记一条 `warn` 并在配置记录标 `shard_key_ignored=true`（不改变退出码与产物） | 空 |
 | `--batch-size` | | 读→写交接每批的行数（仅单线程导出流水线；与 `--threads>1` 同时显式给出即用法错误，退出码 2） | `1000` |
 | `--pipeline-buffer` | | 读→写交接队列深度（批数；0=同步交接；仅单线程导出，与 `--threads>1` 同时显式给出即用法错误，退出码 2） | `10` |
-| `--default-charset` | | 连接与输出文件字符集（见上方说明；utf8mb4/utf8/latin1/ascii/gbk/gb18030） | `utf8mb4` |
+| `--default-charset` | | 连接与输出文件字符集（见上方说明；utf8mb4/utf8/latin1/ascii/gbk/gb18030。`--engine pg` 时它映射为 `client_encoding`，只认五个名字，见「PostgreSQL 引擎」） | `utf8mb4` |
 | `--hex-blob` | | 二进制列强制写为 `0x` 十六进制字面量（非 utf8mb4 时自动开启）；仅 DEL/SQL 文本格式，`--format parquet` 下传入报错 | `false` |
 | `--no-hex-blob` | | 强制二进制列原样透传（非 utf8mb4 下可能损坏，会打印告警）；与 `--hex-blob` 互斥；`--format parquet` 下传入报错 | `false` |
 | `--parquet-compression` | | Parquet 页压缩算法（none/snappy/zstd）；仅 `--format parquet`，其它格式下传入报错（退出码 2）。导入无需指定：编解码器记录在文件 footer 里 | `none` |
@@ -297,7 +299,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。
+连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。`--engine pg` 时 `--session-var` 与 `-f sql` 以及 `--mode replace`/`--mode create`/`--mode insert_update` 都会被拒绝（退出码 `2`，见「PostgreSQL 引擎」）。
 
 **导入选项：**
 
@@ -367,7 +369,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。对象名就是子命令名：
+`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时八个对象里七个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。对象名就是子命令名：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -439,7 +441,7 @@ imex list tables -u root -p pass -D shop -o /backup/shop_tables.txt
 imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 ```
 
-`show` 打印**一个**对象在服务器上保存的 `CREATE` 语句原文，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。六个 kind 一律三个字母：
+`show` 打印**一个**对象在服务器上保存的 `CREATE` 语句原文，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。六个 kind 一律三个字母。`show` 整个命令依赖 MySQL 的 `SHOW CREATE` 语句族，因此 `--engine pg` 下六个 kind 全部退出 `2`（PostgreSQL 没有对应语句，即便拼出 DDL 也回放不进 `imex import -f sql`），取定义请用 `pg_dump`：
 
 | kind | 别名（英文全名） | 语句 | 定义所在列 |
 |------|------------------|------|------------|
@@ -523,7 +525,7 @@ imex list tab -D shop -u root -p pass 2>/dev/null | awk 'NR > 1 { print $2 }' |
 
 ### 连接信息来自环境变量
 
-export、import、`list` 三条需要连库的命令，六个连接选项都可以由环境变量供值，容器与 CI 里设一次即可，不必每条命令重复写地址与口令：
+export、import、`list`、`show` 四条需要连库的命令，五个连接选项都可以由环境变量供值，容器与 CI 里设一次即可，不必每条命令重复写地址与口令。`--engine` 不在其中——引擎只能由命令行显式选定，没有 `IMEX_ENGINE`：
 
 ```bash
 export IMEX_HOST=127.0.0.1 IMEX_PORT=3306 IMEX_USER=app IMEX_PASSWORD=pass IMEX_DATABASE=mydb
@@ -542,9 +544,41 @@ imex list tables
 
 - **优先级：命令行显式写下的选项 > 环境变量 > 选项的内置默认值。** 判据是这个选项在命令行上被写过没有，不看取值，因此 `IMEX_USER=svc` 时 `imex export -u root` 用的仍是 `root`，`IMEX_PASSWORD=pass` 时 `imex export -p ""` 用的仍是空口令。
 - **空白等于没设**：变量不存在、为空、或去掉首尾空白后为空，都退回内置默认值；供值的变量两端空白会被去掉。
-- **缺值提示点名两个来源**：`--password` 是唯一既没有默认值、又最常被放进环境的必填项，缺失时的用法错误文案为 `--password is required (or set IMEX_PASSWORD)`，export、import、`list` 三条命令一字不差。它是一句静态文案，只说明「这个值有两个来源」：写了 `-p ""` 而 `IMEX_PASSWORD` 有值时，按优先级用的仍是那个空值、打出的仍是这句提示，此时该改的是命令行上的空值而不是环境变量。
+- **缺值提示点名两个来源**：`--password` 是唯一既没有默认值、又最常被放进环境的必填项，缺失时的用法错误文案为 `--password is required (or set IMEX_PASSWORD)`，export、import、`list`、`show` 四条命令一字不差（`cmd/conn_env_test.go` 钉前两条，`cmd/list_test.go`/`cmd/show_test.go` 钉后两条）。它是一句静态文案，只说明「这个值有两个来源」：写了 `-p ""` 而 `IMEX_PASSWORD` 有值时，按优先级用的仍是那个空值、打出的仍是这句提示，此时该改的是命令行上的空值而不是环境变量。
 - **日志只出现变量名，绝不出现值**：有变量供值时记 INFO `connection values supplied by environment variables="[IMEX_USER IMEX_PASSWORD]"`。这条记录同样进 `--messages` 文件，所以口令（含 `ENC:` 密文）不会落到任何产物里。
 - 这与四个全局开关的语义**相反**，是刻意的：`IMEX_ERROR_STACK`/`IMEX_ECHO_SQL_VALUES`/`IMEX_NO_SQL_TAG`/`IMEX_LOG_FORMAT` 是**覆盖**（布尔与布局只有「打开/选一个」这一维），连接变量是**默认值的来源**（让 env 压过命令行写下的地址，同一条命令就会连到操作者没写的那个库）。
+
+### PostgreSQL 引擎（`--engine pg`）
+
+加 `--engine pg` 即连 PostgreSQL（驱动 `github.com/jackc/pgx/v5`，直连明文 TCP，连接 URL 固定 `sslmode=disable`）。默认端口随之变成 `5432`——但只在命令行没写 `-P`、环境也没给 `IMEX_PORT` 时生效。本轮在 PostgreSQL 14.24 上实测。
+
+```bash
+imex export --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe \
+  -q "SELECT * FROM users" -o /backup/users.del
+imex import --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe \
+  -i /backup/users.del -t users
+imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
+```
+
+**能用的**：`export -f del|parquet`（单线程）、`import -f del|parquet --mode insert`（单线程）、`list` 的七个对象（`dbs tab vws col idx trg rtn`）。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
+
+**不能用的**（连库之前就被拦下，退出码 `2`，文案点名原因）：
+
+| 命令 / 选项 | 拒绝理由 |
+|-------------|----------|
+| `show`（六个 kind 全部） | PostgreSQL 没有 `SHOW CREATE` 语句族，产物也回放不进 `imex import -f sql`；取定义请用 `pg_dump` |
+| `list evt` | PostgreSQL 没有事件调度器，定时作业在 `cron` 或 `pgAgent` 里 |
+| `export/import -f sql` | 产物是 MySQL 方言（`SET NAMES`、反引号、`ON DUPLICATE KEY UPDATE`），PostgreSQL 读不进去 |
+| `--threads > 1` | 并行分片走 `MOD()` 与 `LIMIT … OFFSET`，只有 MySQL 方言 |
+| `--mode replace\|create\|insert_update` | 分别依赖 `TRUNCATE`+建库语义、`SHOW CREATE` 拼 DDL、`ON DUPLICATE KEY UPDATE` |
+| `--session-var` | 会话参数名与 `SET` 语法两边不同形，不猜 |
+| `--no-hex-blob` | `bytea` 走文本协议时裸 NUL 报 `SQLSTATE 22021`，pg 侧恒用 `0x` 十六进制，关不掉 |
+
+**取值写法与 MySQL 不同**（这是 pg 的原生文本，不是转译成 MySQL 样式）：`boolean` → `t`/`f`；`timestamp` → `2026-01-31 09:26:15.123456`；`timestamptz` → `2026-01-31 09:26:15.123456+08`；`date` → `2026-01-31`；`real`/`double precision` → Go 最短往返写法；特殊值 `infinity`/`-infinity` 原样透传，`±Inf`/`NaN` 写成 `Infinity`/`-Infinity`/`NaN`；NULL 仍是 `-`；`bytea` 恒为 `0x…`。
+
+**`--default-charset` 在 pg 侧是 `client_encoding`**，只认五个名字：`UTF8`、`LATIN1`、`GBK`、`GB18030`、`SQL_ASCII`（写 `utf8mb4`/`utf8` 会落到 `UTF8`，`latin1`/`iso-8859-1` 落到 `LATIN1`，`gbk`/`936` 落到 `GBK`，`gb18030`/`5488` 落到 `GB18030`，`ascii`/`us-ascii` 落到 `SQL_ASCII`）。表外取值是用法错误、退出 `2`：`invalid --default-charset "nonsense" with --engine pg: PostgreSQL has no such client encoding (supported: utf8mb4, latin1, gbk, gb18030, ascii)`。
+
+**两级命名空间**：PostgreSQL 是「库 + schema」，而一个连接只能进一个库，所以 `-D` 归连接用，对象范围取该角色 `search_path` 的第一个 schema（`current_schema()`）。要换 schema，由连接角色的 `search_path` 决定，工具不加新选项。不给 `-D` 时默认排除 `pg_catalog`、`information_schema`、`pg_toast` 三个系统 schema，`--all` 取消排除。`list` 输出里那一列的名字仍叫 `database`，pg 下它装的是 schema 名。`list columns`/`list indexes` 仍要求 `--database`，与 MySQL 侧同口径。
 
 ### 并行导出
 

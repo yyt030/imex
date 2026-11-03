@@ -8,27 +8,26 @@ import (
 	"github.com/pkg/errors"
 )
 
-// generatedColumnQuery lists the generated (computed) columns of the target
-// table. EXTRA is the only portable marker: MySQL 5.7/8.0 report
-// "VIRTUAL GENERATED" / "STORED GENERATED", MariaDB 10.2+ uses the same words,
-// and OceanBase in MySQL mode follows the MySQL spelling. GENERATION_EXPRESSION
-// is deliberately not selected: a server that lacks that column would fail the
-// whole query, turning a nicety into an aborted import.
-const generatedColumnQuery = `SELECT UPPER(COLUMN_NAME)
-FROM information_schema.COLUMNS
-WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND EXTRA LIKE '%GENERATED%'`
-
 // generatedColumns returns the generated columns of the target table among cols.
 // The table always exists when this runs: every import mode that reaches the
 // data stage has either found the table or created it. A nil map means the table
 // has no generated column in this file.
+//
+// The statement comes from the backend, because the two engines mark a computed
+// column in different catalogue places — MySQL-family servers in
+// information_schema.COLUMNS.EXTRA, PostgreSQL in pg_attribute — while both
+// return the folded name this map is keyed by. PostgreSQL's ALWAYS identity
+// columns come back from the same query for the same reason: an INSERT that
+// supplies a value for one is rejected outright (428C9), exactly like a MySQL
+// stored generated column.
 func (imp *Importer) generatedColumns(ctx context.Context, cols []string) (map[string]bool, error) {
 	if imp.db == nil || imp.cfg.Table == "" || len(cols) == 0 {
 		return nil, nil
 	}
-	common.LogInteractionSQL(generatedColumnQuery, imp.cfg.Database, imp.cfg.Table)
+	query := imp.backend().GeneratedColumnsSQL()
+	common.LogInteractionSQL(query, imp.cfg.Database, imp.cfg.Table)
 	rows, err := imp.db.QueryContext(ctx,
-		common.TagSQL(generatedColumnQuery),
+		common.TagSQL(query),
 		imp.cfg.Database, imp.cfg.Table)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to query generated columns")

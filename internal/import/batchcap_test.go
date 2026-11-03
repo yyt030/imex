@@ -1,11 +1,19 @@
 package _import
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/config"
 )
+
+// mysqlMaxParams is MySQL's prepared-statement parameter ceiling, which the
+// backend derives the row cap from. It is spelled out here rather than imported
+// because the tests below assert the number the resolver reports, and a test that
+// took its expectation from the same constant it is checking would assert nothing.
+const mysqlMaxParams = 65535
 
 func TestEffectiveBatchSize(t *testing.T) {
 	cases := []struct {
@@ -17,13 +25,14 @@ func TestEffectiveBatchSize(t *testing.T) {
 		{"no column info keeps the request", 1000, 0, 1000},
 		{"negative column info keeps the request", 1000, -3, 1000},
 		{"narrow table is untouched", 1000, 8, 1000},
-		{"placeholder ceiling clamps", 100000, 3, maxPlaceholders / 3},
-		{"exactly at the ceiling is kept", maxPlaceholders / 3, 3, maxPlaceholders / 3},
+		{"placeholder ceiling clamps", 100000, 3, mysqlMaxParams / 3},
+		{"exactly at the ceiling is kept", mysqlMaxParams / 3, 3, mysqlMaxParams / 3},
 		{"absurdly wide table still ships one row", 1000, 70000, 1},
 	}
+	imp := &Importer{}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := effectiveBatchSize(c.batch, c.columns); got != c.expected {
+			if got := imp.effectiveBatchSize(c.batch, c.columns); got != c.expected {
 				t.Fatalf("effectiveBatchSize(%d, %d) = %d, want %d", c.batch, c.columns, got, c.expected)
 			}
 		})
@@ -91,7 +100,7 @@ func TestBatchByteLimit(t *testing.T) {
 		// import died with Error 1153, landing 0 of 5,000 rows, while the record still
 		// named max_allowed_packet as the decider. The budget is the server's, with the
 		// 9/10 margin, at every size. A non-positive packet cannot reach here:
-		// fetchMaxAllowedPacket substitutes defaultMaxAllowedPacket for it.
+		// The backend substitutes its assumed ceiling for it.
 		{65536, 65536 * 9 / 10},
 		{1024, 1024 * 9 / 10},
 	}
@@ -140,7 +149,7 @@ func TestBatchBudgetAppliesStatementCapWithoutConnection(t *testing.T) {
 	cfg.StatementSize = 4096
 	imp := &Importer{cfg: cfg}
 
-	if _, got := imp.resolveBatchSize(4); got != 4096 {
+	if _, got := imp.resolveBatchSize(context.Background(), 4); got != 4096 {
 		t.Fatalf("budget = %d, want the explicit 4096", got)
 	}
 
@@ -148,8 +157,8 @@ func TestBatchBudgetAppliesStatementCapWithoutConnection(t *testing.T) {
 	wide := config.NewImportConfig()
 	wide.StatementSize = 1 << 30
 	impWide := &Importer{cfg: wide}
-	want := batchByteLimit(defaultMaxAllowedPacket)
-	if _, got := impWide.resolveBatchSize(4); got != want {
+	want := batchByteLimit(backend.MySQLPacketCeilingFallback)
+	if _, got := impWide.resolveBatchSize(context.Background(), 4); got != want {
 		t.Fatalf("budget = %d, want the unchanged fallback %d", got, want)
 	}
 }
@@ -215,18 +224,18 @@ func TestResolveBatchSizeWithoutConnection(t *testing.T) {
 	cfg.BatchSize = 5000
 	imp := &Importer{cfg: cfg}
 
-	batchSize, maxBytes := imp.resolveBatchSize(20)
-	if want := maxPlaceholders / 20; batchSize != want {
+	batchSize, maxBytes := imp.resolveBatchSize(context.Background(), 20)
+	if want := mysqlMaxParams / 20; batchSize != want {
 		t.Fatalf("batchSize = %d, want clamp to %d", batchSize, want)
 	}
-	if want := batchByteLimit(defaultMaxAllowedPacket); maxBytes != want {
+	if want := batchByteLimit(backend.MySQLPacketCeilingFallback); maxBytes != want {
 		t.Fatalf("maxBytes = %d, want fallback %d", maxBytes, want)
 	}
 
 	// Narrow tables keep the configured size, and the memoised budget is stable.
 	cfg2 := config.NewImportConfig()
 	imp2 := &Importer{cfg: cfg2}
-	if size, _ := imp2.resolveBatchSize(3); size != cfg2.BatchSize {
+	if size, _ := imp2.resolveBatchSize(context.Background(), 3); size != cfg2.BatchSize {
 		t.Fatalf("batchSize = %d, want configured %d", size, cfg2.BatchSize)
 	}
 }

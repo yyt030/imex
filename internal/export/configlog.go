@@ -1,6 +1,7 @@
 package export
 
 import (
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
@@ -11,8 +12,24 @@ import (
 //
 // The single-threaded path, a parallel shard, and the configuration record all
 // need the same answer, so it lives in one place here.
+//
+// --engine pg is always on. A PostgreSQL server rejects a NUL in any text value
+// (measured: `ERROR: invalid byte sequence for encoding "UTF8": 0x00`, SQLSTATE
+// 22021, on the first row of a bytea column dumped raw under utf8mb4), so the
+// charset rule that exists to protect MySQL's byte-safe charsets cannot apply
+// here: bytea is binary whatever the client encoding is. --no-hex-blob is refused
+// for that engine in cmd/engine.go rather than silently overridden.
 func effectiveHexBlob(cfg *config.ExportConfig) bool {
-	return cfg.HexBlob || (!cfg.NoHexBlob && config.HexBlobForCharset(cfg.DefaultCharset))
+	if cfg.HexBlob {
+		return true
+	}
+	if cfg.NoHexBlob {
+		return false
+	}
+	if cfg.Engine == string(backend.EnginePG) {
+		return true
+	}
+	return config.HexBlobForCharset(cfg.DefaultCharset)
 }
 
 // logExportConfig writes the one record that says what the run is about to do.
@@ -42,6 +59,7 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		value interface{}
 	}{
 		// Connection
+		{"engine", "engine", cfg.Engine},
 		{"host", "host", cfg.Host},
 		{"port", "port", cfg.Port},
 		{"user", "user", cfg.User},

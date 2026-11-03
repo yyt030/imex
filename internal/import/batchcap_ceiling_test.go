@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
@@ -36,8 +37,8 @@ func captureLog(t *testing.T, fn func()) string {
 	return string(data)
 }
 
-// The driver will not interpolate a statement above its own 64 MiB ceiling
-// (driverInterpolationCap): it returns driver.ErrSkip and database/sql silently
+// The MySQL driver will not interpolate a statement above its own 64 MiB ceiling
+// (backend.MySQLDriverInterpolationCap): it returns driver.ErrSkip and database/sql silently
 // rebuilds every statement as a server-side prepared statement. Measured on an
 // 80 MiB import, that fallback cost 2.078s where 8 MiB COM_QUERY batches took
 // 1.195s. A server advertising 128 MiB max_allowed_packet therefore yields a
@@ -48,7 +49,8 @@ func TestBatchCeilingsClampsToDriverInterpolationCap(t *testing.T) {
 	if want := int64(120795955); server128 != want {
 		t.Fatalf("formula assumption: batchByteLimit(128MiB) = %d, want %d", server128, want)
 	}
-	driverBudget := driverBatchBudget()
+	mysql := backend.Must(backend.EngineMySQL)
+	driverBudget := driverBatchBudget(mysql)
 
 	cases := []struct {
 		name          string
@@ -69,9 +71,9 @@ func TestBatchCeilingsClampsToDriverInterpolationCap(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			budget, limiting, above := batchCeilings(c.packetBudget, c.statementSize)
+			budget, limiting, above := batchCeilings(mysql, c.packetBudget, c.statementSize)
 			if budget != c.wantBudget || limiting != c.wantLimiting || above != c.wantAbove {
-				t.Fatalf("batchCeilings(%d, %d) = (%d, %q, %v), want (%d, %q, %v)",
+				t.Fatalf("batchCeilings(mysql, %d, %d) = (%d, %q, %v), want (%d, %q, %v)",
 					c.packetBudget, c.statementSize, budget, limiting, above,
 					c.wantBudget, c.wantLimiting, c.wantAbove)
 			}
@@ -83,12 +85,27 @@ func TestBatchCeilingsClampsToDriverInterpolationCap(t *testing.T) {
 // for what estimateRowBytes does not count, otherwise the fix would be a no-op
 // that still flips protocol on the very batches it is meant to prevent.
 func TestDriverBatchBudgetStaysInsideTheCap(t *testing.T) {
-	budget := driverBatchBudget()
-	if budget >= driverInterpolationCap {
-		t.Fatalf("driver budget %d is not below the interpolation ceiling %d", budget, driverInterpolationCap)
+	mysql := backend.Must(backend.EngineMySQL)
+	budget := driverBatchBudget(mysql)
+	const interpolationCap = backend.MySQLDriverInterpolationCap
+	if budget >= interpolationCap {
+		t.Fatalf("driver budget %d is not below the interpolation ceiling %d", budget, interpolationCap)
 	}
-	if want := batchByteLimit(driverInterpolationCap); budget != want {
+	if want := batchByteLimit(interpolationCap); budget != want {
 		t.Fatalf("driver budget = %d, want the shared margin result %d", budget, want)
+	}
+
+	// The PostgreSQL ceiling is the protocol message cap, so the margin applies to
+	// a number the server itself enforces: the budget stays below 1 GiB by
+	// construction and never leaves the batch pipeline for a path the design does
+	// not target.
+	pg := backend.Must(backend.EnginePG)
+	pgBudget := driverBatchBudget(pg)
+	if want := batchByteLimit(pg.DriverStatementCap()); pgBudget != want {
+		t.Fatalf("PostgreSQL driver budget = %d, want %d", pgBudget, want)
+	}
+	if pgBudget >= pg.DriverStatementCap() {
+		t.Fatalf("PostgreSQL budget %d is not below the protocol cap %d", pgBudget, pg.DriverStatementCap())
 	}
 }
 

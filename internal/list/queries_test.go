@@ -236,3 +236,41 @@ func TestBuildQueryAlwaysUsesInformationSchema(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildQueryDispatchesOnEngine pins the engine switch on the one entry point
+// Run uses. Both the flag default ("mysql") and the zero value must stay on the
+// MySQL builder — that is what every run from before PostgreSQL support looked
+// like to the server — and "pg" must reach the catalog builder with $n
+// placeholders instead of ?.
+func TestBuildQueryDispatchesOnEngine(t *testing.T) {
+	for _, engine := range []string{"mysql", ""} {
+		cfg := listCfg(ObjectTables)
+		cfg.Engine = engine
+		query, _, _, err := BuildQuery(cfg)
+		if err != nil {
+			t.Fatalf("engine %q: %v", engine, err)
+		}
+		if !strings.Contains(query, "FROM information_schema.TABLES") {
+			t.Errorf("engine %q did not build the MySQL statement: %s", engine, query)
+		}
+		if strings.Contains(query, "$1") {
+			t.Errorf("engine %q emitted a PostgreSQL placeholder: %s", engine, query)
+		}
+	}
+
+	pgCfg := listCfg(ObjectTables)
+	pgCfg.Engine = "pg"
+	query, args, _, err := BuildQuery(pgCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "FROM pg_catalog.pg_class c") {
+		t.Errorf("--engine pg did not build the catalog statement: %s", query)
+	}
+	if strings.Contains(query, "?") {
+		t.Errorf("--engine pg emitted a MySQL placeholder: %s", query)
+	}
+	if len(args) != 0 {
+		t.Errorf("--engine pg bound %d args to an unscoped list tables: %v", len(args), args)
+	}
+}

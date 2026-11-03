@@ -49,7 +49,7 @@ import (
 var cliBinary string
 
 func TestMain(m *testing.M) {
-	if os.Getenv("IMEX_TEST_DSN") == "" {
+	if os.Getenv("IMEX_TEST_DSN") == "" && os.Getenv("IMEX_TEST_PG_DSN") == "" {
 		// Library-level tests skip themselves; nothing to build.
 		os.Exit(m.Run())
 	}
@@ -95,20 +95,14 @@ func newCLILive(t *testing.T) *cliEnv {
 	if err != nil {
 		t.Fatalf("parse DSN: %v", err)
 	}
-	var host, port string
-	if mc.Net != "unix" {
-		host, port, err = net.SplitHostPort(mc.Addr)
-		if err != nil {
-			t.Fatalf("split %q: %v", mc.Addr, err)
-		}
+	// Only TCP: --socket was removed, so a unix-socket DSN has no way to reach the
+	// server from the command line and the harness says so instead of sending -S.
+	host, port, err := net.SplitHostPort(mc.Addr)
+	if err != nil {
+		t.Fatalf("IMEX_TEST_DSN must name a TCP address, got %q: %v", mc.Addr, err)
 	}
-
-	base := []string{"-u", mc.User, "-p", mc.Passwd, "-D", mc.DBName, "--log-level", "error"}
-	if mc.Net == "unix" {
-		base = append(base, "-S", mc.Addr)
-	} else {
-		base = append(base, "-h", host, "-P", port)
-	}
+	base := []string{"-u", mc.User, "-p", mc.Passwd, "-D", mc.DBName, "--log-level", "error",
+		"-h", host, "-P", port}
 
 	return &cliEnv{liveEnv: env, dir: t.TempDir(), base: base}
 }
@@ -1340,19 +1334,12 @@ func TestOptionMatrixConnectionRejectionIsNotRetried(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse DSN: %v", err)
 	}
-	host, port, db := mc.Addr, "", mc.DBName
-	if mc.Net != "unix" {
-		host, port, err = net.SplitHostPort(mc.Addr)
-		if err != nil {
-			t.Fatalf("split %q: %v", mc.Addr, err)
-		}
+	host, port, err := net.SplitHostPort(mc.Addr)
+	if err != nil {
+		t.Fatalf("IMEX_TEST_DSN must name a TCP address, got %q: %v", mc.Addr, err)
 	}
-	bad := []string{"-u", mc.User, "-p", "definitely-not-the-password", "-D", db, "--log-level", "warn"}
-	if mc.Net == "unix" {
-		bad = append([]string{"-S", mc.Addr}, bad...)
-	} else {
-		bad = append([]string{"-h", host, "-P", port}, bad...)
-	}
+	bad := []string{"-u", mc.User, "-p", "definitely-not-the-password", "-D", mc.DBName, "--log-level", "warn",
+		"-h", host, "-P", port}
 
 	src, _ := env.makePair(t, "pingrej")
 	input := env.cliExport(t, src, "del", "pingrej.del")

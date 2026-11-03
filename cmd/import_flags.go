@@ -22,6 +22,7 @@ func registerImportFlags(cmd *cobra.Command) {
 	f.BoolP("help", "?", false, "help for import")
 
 	// Connection options; each also reads IMEX_* when the flag is not given.
+	f.StringVar(&importCfg.Engine, "engine", "mysql", "Database engine: mysql, pg")
 	f.StringVarP(&importCfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
 	f.IntVarP(&importCfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
 	f.StringVarP(&importCfg.User, "user", "u", "root", "Database username (also IMEX_USER)")

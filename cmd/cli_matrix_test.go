@@ -225,6 +225,10 @@ func validateOnly(t *testing.T, sub string, args []string) error {
 	t.Helper()
 	*exportCfg = *newExportConfigForTest()
 	*importCfg = *newImportConfigForTest()
+	// Both RunE bodies start by applying the --default-charset temp variable, so
+	// a harness that skips it would validate a charset the command never uses.
+	exportDefaultCharset = ""
+	importDefaultCharset = ""
 	logFormat = "console"
 	resetChangedFlags(exportCmd, importCmd, rootCmd)
 
@@ -232,10 +236,16 @@ func validateOnly(t *testing.T, sub string, args []string) error {
 		if err := exportCmd.Flags().Parse(args); err != nil {
 			return err
 		}
+		if exportDefaultCharset != "" {
+			exportCfg.DefaultCharset = exportDefaultCharset
+		}
 		return validateExportConfig(exportCmd, exportCfg)
 	}
 	if err := importCmd.Flags().Parse(args); err != nil {
 		return err
+	}
+	if importDefaultCharset != "" {
+		importCfg.DefaultCharset = importDefaultCharset
 	}
 	return validateImportConfig(importCmd, importCfg)
 }

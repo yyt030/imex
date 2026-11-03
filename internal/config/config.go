@@ -115,6 +115,14 @@ type DelModifier struct {
 // wire text (decimal point '.', no leading-zero stripping), so those DB2-era
 // modifiers are gone as well.
 type Config struct {
+	// Engine selects the backend the connection options are sent to: "mysql"
+	// (the default, and the only value these options had any meaning for until
+	// --engine existed) or "pg". It is a CLI option, not an IMEX_* variable, so
+	// contract face ④ is untouched: the five connection variables keep naming
+	// five MySQL connection fields. See internal/backend for what each engine
+	// does with the rest of this struct.
+	Engine string
+
 	Host     string
 	Port     int
 	User     string
@@ -245,6 +253,7 @@ func defaultDelModifier() DelModifier {
 
 func defaultConfig() Config {
 	return Config{
+		Engine:             "mysql",
 		Host:               "127.0.0.1",
 		Port:               3306,
 		User:               "root",

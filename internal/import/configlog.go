@@ -30,6 +30,7 @@ func importConfigFields(cfg *config.ImportConfig) []interface{} {
 		value interface{}
 	}{
 		// Connection
+		{"engine", "engine", cfg.Engine},
 		{"host", "host", cfg.Host},
 		{"port", "port", cfg.Port},
 		{"user", "user", cfg.User},

@@ -5,6 +5,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/config"
 )
 
@@ -83,10 +84,23 @@ func whereClause(conds []condition) (string, []any) {
 }
 
 // BuildQuery returns the statement, its bound arguments and the output column
-// names for one list object. The statement always reads information_schema and
+// names for one list object. The statement always reads the system catalog and
 // never interpolates user input: --database, --table and --pattern travel as
 // placeholders.
+//
+// The engine decides which catalog is read and which placeholder style the
+// statement uses. The default is MySQL, and the MySQL builder is unchanged by
+// the split: every statement it emits is byte-identical to the one this function
+// emitted before PostgreSQL existed, so what a server sees for --engine mysql
+// does not depend on this refactor.
 func BuildQuery(cfg *config.ListConfig) (string, []any, []string, error) {
+	if cfg.Engine == string(backend.EnginePG) {
+		return buildPGQuery(cfg)
+	}
+	return buildMySQLQuery(cfg)
+}
+
+func buildMySQLQuery(cfg *config.ListConfig) (string, []any, []string, error) {
 	switch cfg.Object {
 	case ObjectDatabases:
 		return buildDatabases(cfg)

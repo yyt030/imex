@@ -2,51 +2,25 @@ package _import
 
 import (
 	"context"
-	"database/sql"
 	"math"
 	"time"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
-	"github.com/pkg/errors"
 )
 
-// maxPlaceholders is the hard ceiling of a MySQL prepared statement: the
-// parameter count is transmitted as an unsigned 16-bit integer, so a batch may
-// never carry more than 65535 `?` markers in total. A batch of rows with C
-// columns therefore holds at most 65535/C rows, regardless of --batch-size.
-const maxPlaceholders = 65535
+// The ceilings that used to be constants in this file moved to the backend
+// package with the PostgreSQL port, because they are not universal: the
+// placeholder limit belongs to each protocol's parameter count, and the packet
+// ceiling is a MySQL variable the PostgreSQL server does not have. The names are
+// backend.MySQLPacketCeilingFallback and backend.MySQLDriverInterpolationCap.
 
-// defaultMaxAllowedPacket is assumed when the server value cannot be read
-// (permission errors, proxies that hide SHOW VARIABLES). It is deliberately
-// conservative: under-splitting batches only costs a few more round-trips,
-// while over-splitting nothing would fail mid-import. The number is also the
-// OceanBase tenant default for V2.1.x/V2.2.x/V3.1.x/V3.2.x (4,194,304), so the
-// fallback matches a real OB server rather than an invented one. V4.x documents
-// 16,777,216 instead, and this constant cannot be made version-aware: the only
-// way to learn which OB a server is runs through SHOW VARIABLES as well
-// (version_comment), so the same failure that forces the fallback also hides the
-// version.
-const defaultMaxAllowedPacket int64 = 4 << 20
-
-// packetSafetyMargin is the fraction of max_allowed_packet the batches stay
+// packetSafetyMargin is the fraction of the packet ceiling the batches stay
 // under. What it has to absorb is everything estimateRowBytes does not count:
 // the statement skeleton ("INSERT INTO `db`.`table` (`a`,`b`) VALUES "), the
 // row separators, and the type/length prefixes the driver puts in front of each
 // parameter on the binary protocol.
 const packetSafetyMargin = 9 // keep batches at <= 9/10 of the packet limit
-
-// driverInterpolationCap is the client-side ceiling the MySQL driver applies to
-// an interpolated statement. go-sql-driver/mysql defaults Config.MaxAllowedPacket
-// to 64 MiB, imex does not override it (internal/common.BuildDSN), and once the
-// interpolated text passes that ceiling the driver returns driver.ErrSkip
-// (connection.go: "if len(buf)+4 > mc.maxAllowedPacket"), which makes
-// database/sql fall back to server-side prepared statements — a different
-// protocol path than the one the batching design targets, and measurably slower
-// (one 80 MiB statement took 2.078s where the same data in 8 MiB COM_QUERY
-// batches took 1.195s). A server with a large max_allowed_packet therefore gets
-// *less* suitable batches if nothing clamps the derived budget, which is what
-// driverBatchBudget is for.
-const driverInterpolationCap int64 = 64 << 20
 
 // maxQueuedBatchBytes is the memory envelope the hand-off queue is *reported*
 // against. --pipeline-buffer counts batches and one batch can be as large as the
@@ -67,11 +41,21 @@ const driverInterpolationCap int64 = 64 << 20
 const maxQueuedBatchBytes int64 = 1 << 30
 
 // driverBatchBudget is the byte budget a batch must stay under to keep the
-// statement inside the driver's interpolation ceiling. It reuses the same safety
+// statement inside the ceiling the *driver* imposes. It reuses the same safety
 // margin as the server budget, so the statement skeleton and the row separators
-// are absorbed the same way.
-func driverBatchBudget() int64 {
-	return batchByteLimit(driverInterpolationCap)
+// are absorbed the same way. For MySQL that ceiling is go-sql-driver's own
+// Config.MaxAllowedPacket, which defaults to 64 MiB and which imex does not
+// override (internal/common.BuildDSN): once the interpolated text passes it the
+// driver returns driver.ErrSkip (connection.go: "if len(buf)+4 >
+// mc.maxAllowedPacket"), which makes database/sql fall back to server-side
+// prepared statements — a different protocol path than the one the batching
+// design targets, and measurably slower (one 80 MiB statement took 2.078s where
+// the same data in 8 MiB COM_QUERY batches took 1.195s). A server with a large
+// max_allowed_packet therefore gets *less* suitable batches if nothing clamps the
+// derived budget, which is what this is for. PostgreSQL reports the protocol cap
+// as its own ceiling here, so the clamp is one it cannot exceed by construction.
+func driverBatchBudget(be backend.Backend) int64 {
+	return batchByteLimit(be.DriverStatementCap())
 }
 
 // queuedBytes is the most parsed data the hand-off queue can retain at the given
@@ -90,23 +74,15 @@ func queuedBytes(depth int, maxBatchBytes int64) int64 {
 }
 
 // effectiveBatchSize clamps the configured row batch size so that
-// rows*columns stays under the protocol's placeholder ceiling. The clamp is
-// logged once by the caller because it changes throughput characteristics.
-func effectiveBatchSize(batchSize, columns int) int {
-	if columns <= 0 {
+// rows*columns stays under the protocol's placeholder ceiling, which each backend
+// computes for its own parameter limit. The clamp is logged once by the caller
+// because it changes throughput characteristics.
+func (imp *Importer) effectiveBatchSize(batchSize, columns int) int {
+	max, _ := imp.backend().BatchRowCap(columns)
+	if max == 0 || batchSize <= max {
 		return batchSize
 	}
-	max := maxPlaceholders / columns
-	if max < 1 {
-		// More columns than the protocol allows placeholders for. Emitting one
-		// row per statement still fails, but it fails on the server rather than
-		// spinning here with an empty batch.
-		max = 1
-	}
-	if batchSize > max {
-		return max
-	}
-	return batchSize
+	return max
 }
 
 // shouldFlush reports whether a batch has reached one of its two ceilings: the
@@ -187,26 +163,6 @@ func estimateRowBytes(row []interface{}) int64 {
 	return n
 }
 
-// fetchMaxAllowedPacket reads the server's packet ceiling. The value is a
-// server-side property of the *target* database, and a batch that exceeds it
-// fails with error 1153 ("Packet too large") mid-transaction — so the import
-// side, which builds its own batches from parsed rows, has to respect it even
-// though the source file may contain far larger statements.
-func fetchMaxAllowedPacket(db *sql.DB) (int64, error) {
-	var name string
-	var value int64
-	showSQL := "SHOW VARIABLES LIKE 'max_allowed_packet'"
-	common.LogInteractionSQL(showSQL)
-	row := db.QueryRow(common.TagSQL(showSQL))
-	if err := row.Scan(&name, &value); err != nil {
-		return defaultMaxAllowedPacket, err
-	}
-	if value <= 0 {
-		return defaultMaxAllowedPacket, errors.Errorf("server reported max_allowed_packet=%d", value)
-	}
-	return value, nil
-}
-
 // batchByteLimit converts a packet ceiling into the per-batch byte budget. There is
 // deliberately no floor: a minimum batch size cannot be worth more than the ceiling
 // it is derived from. Measured with the server at max_allowed_packet=39936, the
@@ -235,55 +191,55 @@ func applyStatementCap(packetBudget int64, statementSize int) int64 {
 }
 
 // batchCeilings decides which ceiling governs the per-batch byte budget and
-// whether the result is still inside what the driver will interpolate. Three
-// ceilings compete: the server's max_allowed_packet (the only one that can be
-// queried), an explicit --statement-size (which may only lower the result), and
-// the driver's interpolation ceiling (see driverInterpolationCap), which the
-// first two know nothing about.
+// whether the result is still inside what the driver will accept. Three ceilings
+// compete: the server's packet ceiling (the only one that can be queried), an
+// explicit --statement-size (which may only lower the result), and the driver's
+// own statement ceiling (see driverBatchBudget), which the first two know nothing
+// about.
 //
 // A server budget above the driver ceiling is a trap rather than headroom: the
 // resulting batch leaves the interpolated COM_QUERY path and every statement
 // becomes a server-side round trip of its own. The default is therefore clamped
-// and reported as "driver_packet_cap". An explicit --statement-size above the
-// ceiling is the user's own number, so it is honoured (aboveDriverCeiling tells
-// the caller to report it) instead of being silently overridden.
-func batchCeilings(packetBudget int64, statementSize int) (budget int64, limiting string, aboveDriverCeiling bool) {
+// and reported as the backend's driver-cap name. An explicit --statement-size
+// above the ceiling is the user's own number, so it is honoured
+// (aboveDriverCeiling tells the caller to report it) instead of being silently
+// overridden.
+func batchCeilings(be backend.Backend, packetBudget int64, statementSize int) (budget int64, limiting string, aboveDriverCeiling bool) {
 	budget = applyStatementCap(packetBudget, statementSize)
 	explicit := statementSize > 0 && int64(statementSize) < packetBudget
-	limiting = "max_allowed_packet"
+	limiting = be.BatchWords().PacketCap
 	if explicit {
 		limiting = "statement-size"
 	}
-	if driverBudget := driverBatchBudget(); budget > driverBudget {
+	if driverBudget := driverBatchBudget(be); budget > driverBudget {
 		if explicit {
 			return budget, limiting, true
 		}
-		return driverBudget, "driver_packet_cap", false
+		return driverBudget, be.BatchWords().DriverCap, false
 	}
 	return budget, limiting, false
 }
 
 // batchBudget returns the per-batch byte ceiling for the connected server,
-// resolved once and reused for every batch of the run.
-func (imp *Importer) batchBudget() int64 {
+// resolved once and reused for every batch of the run. An unconnected importer
+// (a library caller, or a unit test) gets the backend's assumed ceiling rather
+// than no answer, because the batching code cannot run without a budget.
+func (imp *Importer) batchBudget(ctx context.Context) int64 {
 	imp.packetOnce.Do(func() {
-		if imp.db == nil {
-			imp.maxBatchBytes = applyStatementCap(batchByteLimit(defaultMaxAllowedPacket), imp.cfg.StatementSize)
-			return
-		}
-		packet, err := fetchMaxAllowedPacket(imp.db)
+		be := imp.backend()
+		words := be.BatchWords()
+		packet, err := be.PacketCeiling(ctx, imp.db)
 		if err != nil {
-			common.Logger.Warn("could not read max_allowed_packet, assuming conservative batch limit",
-				"assumed_bytes", defaultMaxAllowedPacket, "error", err)
+			common.Logger.Warn(words.PacketUnknown, "assumed_bytes", packet, "error", err)
 		}
-		budget, limiting, aboveCeiling := batchCeilings(batchByteLimit(packet), imp.cfg.StatementSize)
+		budget, limiting, aboveCeiling := batchCeilings(be, batchByteLimit(packet), imp.cfg.StatementSize)
 		imp.maxBatchBytes = budget
 		if aboveCeiling {
-			common.Logger.Warn("--statement-size is above the driver interpolation ceiling, generated statements will fall back to server-side prepared statements",
-				"statement_size", imp.cfg.StatementSize, "driver_ceiling_bytes", driverBatchBudget())
+			common.Logger.Warn(words.DriverOver,
+				"statement_size", imp.cfg.StatementSize, "driver_ceiling_bytes", driverBatchBudget(be))
 		}
 		common.Logger.Info("import batch byte cap resolved",
-			"max_allowed_packet", packet,
+			words.PacketCap, packet,
 			"batch_bytes", imp.maxBatchBytes,
 			"statement_size", imp.cfg.StatementSize,
 			"limiting_factor", limiting,
@@ -317,15 +273,16 @@ func (imp *Importer) resolveQueueDepth(maxBatchBytes int64) int {
 
 // resolveBatchSize clamps --batch-size to the placeholder ceiling for this table
 // and logs the clamp once, because it silently changes throughput behaviour.
-func (imp *Importer) resolveBatchSize(columns int) (int, int64) {
-	batchSize := effectiveBatchSize(imp.cfg.BatchSize, columns)
+func (imp *Importer) resolveBatchSize(ctx context.Context, columns int) (int, int64) {
+	batchSize := imp.effectiveBatchSize(imp.cfg.BatchSize, columns)
 	if batchSize != imp.cfg.BatchSize {
-		common.Logger.Warn("lowering --batch-size to stay under the MySQL placeholder limit",
+		_, limit := imp.backend().BatchRowCap(columns)
+		common.Logger.Warn(imp.backend().BatchWords().BatchSizeClamp,
 			"requested", imp.cfg.BatchSize, "effective", batchSize, "columns", columns,
-			"limit", maxPlaceholders,
+			"limit", limit,
 		)
 	}
-	budget := imp.batchBudget()
+	budget := imp.batchBudget(ctx)
 	imp.resolveQueueDepth(budget)
 	return batchSize, budget
 }
@@ -338,11 +295,11 @@ func (imp *Importer) resolveBatchSize(columns int) (int, int64) {
 // the others have already committed rows. It is a warning rather than a refusal
 // because max_connections can be raised by the DBA mid-run, and because a server
 // that allows the connection still imports correctly.
-func warnIfThreadsExceedCapacity(ctx context.Context, db *sql.DB, threads int) {
-	if db == nil || threads <= 1 {
+func (imp *Importer) warnIfThreadsExceedCapacity(ctx context.Context, threads int) {
+	if imp.db == nil || threads <= 1 {
 		return
 	}
-	maxConns, err := common.MaxConnections(ctx, db)
+	maxConns, err := common.MaxConnections(ctx, imp.db, imp.backend().MaxConnectionsSQL())
 	if err != nil {
 		common.Logger.Debug("could not read max_connections", "error", err)
 		return

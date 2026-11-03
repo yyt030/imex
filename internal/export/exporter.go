@@ -12,6 +12,8 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
@@ -19,6 +21,7 @@ import (
 // Exporter handles data export operations
 type Exporter struct {
 	config    *config.ExportConfig
+	be        backend.Backend
 	db        *sql.DB
 	sqlParser *SQLParser
 	stats     *common.Stats
@@ -50,11 +53,17 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	// not depend on the dial succeeding.
 	logExportConfig(cfg)
 
-	// Build DSN using mysql.Config to properly escape special characters
-	dsn := common.BuildDSN(&cfg.Config)
+	// The engine decides everything below: which driver to open, which statement
+	// opens the consistent read, which type vocabulary the writers classify
+	// against. --engine is validated as a usage error in cmd, so an unknown value
+	// cannot reach here from the CLI; this check is for library callers.
+	be, err := backend.ForConfig(&cfg.Config)
+	if err != nil {
+		return nil, err
+	}
 
 	dialStart := time.Now()
-	db, err := sql.Open("mysql", dsn)
+	db, err := be.Open(&cfg.Config)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to connect to database")
 	}
@@ -80,22 +89,34 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 		return nil, pingErr
 	}
 
-	// Enable consistent snapshot for transactional consistency
-	common.LogInteractionSQL("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-	if _, err := db.Exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		common.Logger.Warn("failed to set isolation level", "error", err)
-	}
-	common.LogInteractionSQL("START TRANSACTION WITH CONSISTENT SNAPSHOT")
-	if _, err := db.Exec("START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
-		common.Logger.Warn("failed to start consistent snapshot", "error", err)
+	// Open the consistent read. Each engine names its own steps, and each step
+	// carries the warning wording the tool has always used for it, so a MySQL
+	// run logs exactly what it logged before this indirection existed.
+	for _, step := range be.SnapshotSteps() {
+		common.LogInteractionSQL(step.SQL)
+		if _, err := db.Exec(step.SQL); err != nil {
+			common.Logger.Warn(step.Warn, "error", err)
+		}
 	}
 
 	return &Exporter{
 		config:     cfg,
+		be:         be,
 		db:         db,
 		sqlParser:  NewSQLParser(),
 		connectDur: time.Since(dialStart),
 	}, nil
+}
+
+// backend returns the engine driver for this run. Exporter literals built by
+// tests and by library callers that skip NewExporter have no engine recorded, so
+// the accessor falls back to MySQL — the engine every existing caller means —
+// instead of dereferencing a nil interface.
+func (e *Exporter) backend() backend.Backend {
+	if e.be == nil {
+		return backend.Must(backend.EngineMySQL)
+	}
+	return e.be
 }
 
 // Close closes the exporter and releases resources
@@ -238,7 +259,13 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	// Compute effective hex-blob setting and log the decision.
 	// HexBlob forces on; NoHexBlob forces off; both false means automatic
 	// (hex enabled when charset is not byte-safe, i.e. not utf8mb4/utf8).
-	binaryFlags := common.BinaryColumnFlags(colTypes)
+	// Cell fixups rewrite the values the driver hands back into the text this
+	// engine's dump format is defined to carry. MySQL needs none (its text
+	// protocol already sends the stored bytes), so the slice is all nils there and
+	// the check below costs one nil compare per cell.
+	fixups := e.backend().CellFixups(colTypes)
+
+	binaryFlags := e.backend().BinaryFlags(colTypes)
 	hex := effectiveHexBlob(e.config)
 	if hex && !e.config.HexBlob && !e.config.NoHexBlob {
 		// Auto-enabled by charset: log info
@@ -271,7 +298,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	var writer Writer
 	switch e.config.Format {
 	case "del":
-		delWriter := NewDelWriter(outputFile, &e.config.DelModifier, !e.config.DelModifier.NoColNames, common.ApplyColumnKinds(colTypes))
+		delWriter := NewDelWriter(outputFile, &e.config.DelModifier, !e.config.DelModifier.NoColNames, e.backend().ColumnKinds(colTypes))
 		delWriter.SetBinaryFormat(binaryFlags, hex)
 		writer = delWriter
 	case "sql":
@@ -281,7 +308,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		}
 		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, e.config.Create, !e.config.NoData, createStmt, e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
-		sqlWriter.SetColumnKinds(common.ApplyColumnKinds(colTypes))
+		sqlWriter.SetColumnKinds(e.backend().ColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		writer = sqlWriter
 	case "parquet":
@@ -415,6 +442,9 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 				// re-imports as 2000. Rewrite the bare "0" to "0000".
 				if anyYear && isYear[i] && len(v) == 1 && v[0] == '0' {
 					v = yearZero
+				}
+				if fix := fixups[i]; fix != nil {
+					v = fix(v)
 				}
 				if cap(cur)-len(cur) < len(v) {
 					cur = chunkPool.Get().([]byte)
@@ -581,7 +611,7 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	// server's ceiling is a likely mid-run failure rather than a slowdown. The
 	// CLI bound (1..256) knows nothing about the target, which is why this is read
 	// from the server and reported here instead of being validated statically.
-	if maxConns, err := common.MaxConnections(ctx, e.db); err == nil {
+	if maxConns, err := common.MaxConnections(ctx, e.db, e.backend().MaxConnectionsSQL()); err == nil {
 		if need := e.config.Threads + 1; maxConns > 0 && need > maxConns {
 			common.Logger.Warn("workers exceed the server connection limit, workers that cannot connect will retry and may fail the export",
 				"threads", e.config.Threads, "connections_needed", need, "max_connections", maxConns,
@@ -805,7 +835,7 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 	}
 
 	// Compute binary flags and hex setting for this shard
-	binaryFlags := common.BinaryColumnFlags(colTypes)
+	binaryFlags := e.backend().BinaryFlags(colTypes)
 	hex := effectiveHexBlob(e.config)
 
 	// Create writer for this shard (writeCreate=false: the preamble and the
@@ -813,7 +843,7 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 	var writer Writer
 	switch e.config.Format {
 	case "del":
-		delWriter := NewDelWriter(out, &e.config.DelModifier, false, common.ApplyColumnKinds(colTypes))
+		delWriter := NewDelWriter(out, &e.config.DelModifier, false, e.backend().ColumnKinds(colTypes))
 		delWriter.SetBinaryFormat(binaryFlags, hex)
 		writer = delWriter
 	case "sql":
@@ -823,7 +853,7 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 		}
 		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, false, !e.config.NoData, "", e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
-		sqlWriter.SetColumnKinds(common.ApplyColumnKinds(colTypes))
+		sqlWriter.SetColumnKinds(e.backend().ColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		writer = sqlWriter
 	default:
@@ -916,10 +946,7 @@ func (e *Exporter) openShardConn(workerID, shardIdx int) (*sql.DB, error) {
 
 // createShardConnection creates a new database connection for a shard
 func (e *Exporter) createShardConnection(workerID, shardIdx int) (*sql.DB, error) {
-	// Build DSN using the shared Config
-	dsn := common.BuildDSN(&e.config.Config)
-
-	db, err := sql.Open("mysql", dsn)
+	db, err := e.backend().Open(&e.config.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -934,18 +961,15 @@ func (e *Exporter) createShardConnection(workerID, shardIdx int) (*sql.DB, error
 		return nil, err
 	}
 
-	// Set isolation level for consistent snapshot
-	if common.InfoEnabled() {
-		common.Logger.Info("db interaction", "worker", workerID, "shard", shardIdx, "sql", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-	}
-	if _, err := db.Exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		common.Logger.Warn("failed to set isolation level for shard", "worker", workerID, "shard", shardIdx, "error", err)
-	}
-	if common.InfoEnabled() {
-		common.Logger.Info("db interaction", "worker", workerID, "shard", shardIdx, "sql", "START TRANSACTION WITH CONSISTENT SNAPSHOT")
-	}
-	if _, err := db.Exec("START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
-		common.Logger.Warn("failed to start consistent snapshot for shard", "worker", workerID, "shard", shardIdx, "error", err)
+	// Open the shard's consistent read, attributing both the interaction log and
+	// any warning to the worker and shard that ran them.
+	for _, step := range e.backend().SnapshotSteps() {
+		if common.InfoEnabled() {
+			common.Logger.Info("db interaction", "worker", workerID, "shard", shardIdx, "sql", step.SQL)
+		}
+		if _, err := db.Exec(step.SQL); err != nil {
+			common.Logger.Warn(step.Warn+" for shard", "worker", workerID, "shard", shardIdx, "error", err)
+		}
 	}
 
 	return db, nil
