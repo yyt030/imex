@@ -417,6 +417,33 @@
 # diff EMPTY; `## version` remains the frozen snapshot. The file goes 1,105 ->
 # 1,150 lines: sixteen arrive with the new flag, this note adds twenty-nine. Still
 # 20 sections, 0 lines over 118 bytes. See requirements.md 变更记录 125.
+# Re-baselined note 28 (2026-11-03): a SQL export is data-only and there is no
+# option to put DDL back in. `--create` and `--no-data` were deleted outright --
+# no alias, no deprecation shim -- the way `--no-create` (变更记录 100), `--quiet`
+# (101), `list -f/--format` (102) and `--socket` (124) were deleted before them,
+# so `export -f sql --create`, `export -f sql --no-data` and the same two options
+# with `-f del` or `-f parquet` are all `unknown flag` usage errors (exit 2, six
+# forms measured, and none of them leaves an output file behind). `## export` lost
+# the two flag lines and its `--create` example; the example now reads
+# `imex show tab users -D mydb -o /backup/users_ddl.sql`, because table
+# definitions come only from `imex show tab` -- the only place this tool reads
+# SHOW CREATE TABLE. That is also the face-⑤ delta: a general_log capture of
+# `-f sql -q "SELECT * FROM cmp127"` with the previous binary plus `--create`
+# versus this binary without it differs by exactly that one statement
+# (`/* imex:0095741 */ SHOW CREATE TABLE `cmp127``), 9 log lines against 8, all
+# of them otherwise identical. `## import` does not move at all: `--mode create`
+# still takes CREATE TABLE from the file, which is what `show tab` writes (a 223 B
+# definition plus a 271 B data file replays a 3-row table, CHECKSUM equal to the
+# source; the old `--create` file was 544 B, the 50 B being the two section
+# comments and one blank line). The default `-f sql` product itself is unchanged
+# byte for byte -- md5 9952746dccb3e3b82b68d6a7d4d5f74d for both binaries, 271 B,
+# and `--threads 4` produces the same md5 -- so this note only removes an opt-in.
+# The two remaining SQL-layout options keep their scope registration, so no help
+# marker moved. All nineteen live bodies were re-taken from the binary built from
+# this tree; only `## export` differed (+2 -5 lines) and `## version` remains the
+# frozen snapshot. Four lines leave with the two options and the example (1,150 ->
+# 1,146), this note adds twenty-seven, and the file now reads 1,173. Still 20
+# sections, 0 lines over 118 bytes. See requirements.md 变更记录 127.
 
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
@@ -431,10 +458,8 @@ Examples:
   imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.sql -f sql -q "SELECT * FROM users"
 
-  # SQL export is data-only; add --create when the dump must be self-contained
-  # (import ... --mode create reads the CREATE TABLE from the file)
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
-    -o /backup/users.sql -f sql --create -q "SELECT * FROM users"
+  # SQL export carries data only; get the table definition from show
+  imex show tab users -D mydb -o /backup/users_ddl.sql
 
   # Read the query from a file instead of the command line
   imex export -h 127.0.0.1 -u root -p pass -D mydb \
@@ -464,7 +489,6 @@ Flags:
       --char-del string                 String delimiter (only with --format del) (default "\"")
       --col-del string                  Column delimiter (only with --format del) (default ",")
       --connect-timeout duration        TCP connect timeout (default 5s)
-      --create                          Output a CREATE TABLE statement (only with --format sql)
   -D, --database string                 Database name (also IMEX_DATABASE)
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
       --default-charset string          Connection & output-file charset (utf8mb4 default)
@@ -479,7 +503,6 @@ Flags:
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-char-del                     Do not use string delimiter (only with --format del)
       --no-col-names                    Do not output column names (only with --format del)
-      --no-data                         Do not output INSERT statements (only with --format sql)
       --no-escape                       Disable escaping (only with --format del)
       --no-hex-blob                     Force raw binary passthrough (may corrupt data) (not with --format parquet)
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)

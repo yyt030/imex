@@ -26,8 +26,7 @@ func sqlRoundTrip(t *testing.T, columns []string, rows [][]interface{}, statemen
 	t.Helper()
 
 	var buf bytes.Buffer
-	w := export.NewSQLWriter(&buf, "t", columns, statementSize, false, true,
-		"", config.DefaultCharset)
+	w := export.NewSQLWriter(&buf, "t", columns, statementSize, config.DefaultCharset)
 	w.SetBinaryFormat(binaryFlags, hexBlob)
 	if err := w.WriteHeader(columns); err != nil {
 		t.Fatalf("WriteHeader: %v", err)
@@ -447,8 +446,7 @@ func TestSQLRoundTrip_SingleRowInsert(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	w := export.NewSQLWriter(&buf, "t", columns, config.DefaultStatementSize, false, true,
-		"", config.DefaultCharset)
+	w := export.NewSQLWriter(&buf, "t", columns, config.DefaultStatementSize, config.DefaultCharset)
 	w.SetSingleRowInsert(true)
 	if err := w.WriteHeader(columns); err != nil {
 		t.Fatalf("WriteHeader: %v", err)

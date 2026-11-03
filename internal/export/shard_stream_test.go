@@ -247,7 +247,7 @@ func TestShardStream_OutputOrderIsShardOrderNotFinishOrder(t *testing.T) {
 	}
 
 	out := t.TempDir() + "/streamed.del"
-	e := streamTestExporter(t, "del", true, false, true)
+	e := streamTestExporter(t, "del", true)
 	e.config.Output = out
 
 	// Producer i writes its own shard marker, but shard i+1 starts earlier and

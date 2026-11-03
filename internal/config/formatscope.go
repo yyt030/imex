@@ -96,8 +96,6 @@ const binaryEncodingReason = "binary columns are already stored as binary"
 func ExportOptionScopes() OptionScopes {
 	delAndSQL := []string{FormatDel, FormatSQL}
 	return OptionScopes{
-		sqlOnly("create"),
-		sqlOnly("no-data"),
 		sqlOnly("statement-size"),
 		sqlOnly("extended-insert"),
 		parquetOnly("parquet-compression"),

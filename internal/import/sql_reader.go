@@ -53,9 +53,9 @@ func NewSQLReader(r *bufio.Reader) *SQLReader {
 // list and buffering its rows. CREATE TABLE statements encountered along the
 // way are captured for create mode.
 //
-// A file with CREATE statements but no INSERTs (a --no-data export) is not an
-// error: it returns no columns and HasData() reports false, so create mode can
-// still apply the captured structure.
+// A file with CREATE statements but no INSERTs (a `show tab` definition file) is
+// not an error: it returns no columns and HasData() reports false, so create mode
+// can still apply the captured structure.
 func (s *SQLReader) ReadHeader() ([]string, error) {
 	for {
 		stmt, ok := s.nextStatement()

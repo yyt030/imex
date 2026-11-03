@@ -317,9 +317,9 @@ func (p *SQLParser) ExtractTableName(query string) (string, error) {
 // ExtractTableRef returns the two parts of the single table a SELECT reads from:
 // the schema qualifier ("" when the query did not name one) and the bare table
 // name. Export needs both: the emitted dump always references the bare table so
-// it loads into whatever database it is pointed at, while SHOW CREATE TABLE has
-// to be looked up in the schema the query actually named, which is not always the
-// connection's --database.
+// it loads into whatever database it is pointed at, while the parallel path's
+// shard-key probe and statistics lookups have to run against the schema the query
+// actually named, which is not always the connection's --database.
 func (p *SQLParser) ExtractTableRef(query string) (schema, name string, err error) {
 	stmt, err := p.parser.Parse(query)
 	if err != nil {

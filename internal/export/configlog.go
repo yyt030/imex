@@ -84,12 +84,9 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		// Charset
 		{"default-charset", "default_charset", cfg.DefaultCharset},
 
-		// SQL layout. SQL export is data-only by default and --create opts the
-		// table structure back in, so the printed value is the one the writer
-		// acts on — the same way hex_blob below prints the resolved value rather
-		// than the flag bits.
-		{"create", "create", cfg.Create},
-		{"no-data", "no_data", cfg.NoData},
+		// SQL layout. Two fields only: a SQL export is data-only, so the layout
+		// knobs are the statement budget and whether rows merge. Table structure
+		// is not this command's business (`imex show tab` produces it).
 		{"statement-size", "statement_size", cfg.StatementSize},
 		{"extended-insert", "extended_insert", cfg.ExtendedInsert},
 

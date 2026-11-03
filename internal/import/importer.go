@@ -248,7 +248,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 		readerColumns = fileColumns
 	}
 
-	// A structure-only SQL file (--no-data export) carries CREATE statements
+	// A structure-only SQL file (a `show tab` definition) carries CREATE statements
 	// but no rows: create mode applies them and finishes with 0 rows instead
 	// of demanding a column list it cannot have.
 	structureOnly := imp.cfg.Format == "sql" && imp.cfg.Mode == config.ImportModeCreate &&
@@ -326,17 +326,17 @@ func (imp *Importer) Import(ctx context.Context) error {
 			imp.cfg.Table = name
 			common.Logger.Info("table name derived from SQL file", "table", name)
 		}
-		// A data-only SQL file carries no DDL, so with -t the run can only work
-		// against a table that already exists. Without this check the first batch
-		// was read and INSERTed, and the server answered with the raw 1146 after
-		// the data had moved; fail before reading instead, and name both ways out.
+		// A SQL export carries no DDL, so with -t the run can only work against a
+		// table that already exists. Without this check the first batch was read
+		// and INSERTed, and the server answered with the raw 1146 after the data
+		// had moved; fail before reading instead, and name both ways out.
 		if len(createStmts) == 0 {
 			exists, err := imp.tableExists(ctx)
 			if err != nil {
 				return err
 			}
 			if !exists {
-				return errors.Errorf("create mode found no CREATE TABLE statement in the SQL file and table %q does not exist in database %q: re-export with --create, or import with --mode insert into an existing table", imp.cfg.Table, imp.cfg.Database)
+				return errors.Errorf("create mode found no CREATE TABLE statement in the SQL file and table %q does not exist in database %q: put the `imex show tab %s` definition in front of the data, or import with --mode insert into an existing table", imp.cfg.Table, imp.cfg.Database, imp.cfg.Table)
 			}
 		}
 		for _, stmt := range createStmts {

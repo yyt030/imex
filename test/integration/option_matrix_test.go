@@ -734,12 +734,12 @@ func TestOptionMatrixEchoesInteractionSQL(t *testing.T) {
 	// carries the trace: an operator reading a failed run has to see what was sent
 	// without re-running it under --log-level debug.
 	infoOut, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
-		"-o", filepath.Join(env.dir, "dbgsql_info.sql"), "--threads", "4", "--create",
+		"-o", filepath.Join(env.dir, "dbgsql_info.sql"), "--threads", "4",
 		"--log-level", "info")
 	if code != 0 {
 		t.Fatalf("info-level parallel export: exit %d\n%s", code, infoOut)
 	}
-	for _, want := range []string{"db interaction", "SHOW CREATE TABLE", "information_schema",
+	for _, want := range []string{"db interaction", "information_schema",
 		"SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", "START TRANSACTION WITH CONSISTENT SNAPSHOT"} {
 		if !strings.Contains(strings.ToLower(infoOut), strings.ToLower(want)) {
 			t.Errorf("info-level run missing %q in the SQL echo\n%s", want, infoOut)
@@ -757,7 +757,7 @@ func TestOptionMatrixEchoesInteractionSQL(t *testing.T) {
 
 	// --log-level warn is the off switch, and the only one.
 	warnOut, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
-		"-o", filepath.Join(env.dir, "dbgsql_warn.sql"), "--threads", "4", "--create",
+		"-o", filepath.Join(env.dir, "dbgsql_warn.sql"), "--threads", "4",
 		"--log-level", "warn")
 	if code != 0 {
 		t.Fatalf("warn-level parallel export: exit %d\n%s", code, warnOut)
@@ -767,7 +767,7 @@ func TestOptionMatrixEchoesInteractionSQL(t *testing.T) {
 	}
 
 	out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
-		"-o", filepath.Join(env.dir, "dbgsql_debug.sql"), "--threads", "4", "--log-level", "debug", "--create")
+		"-o", filepath.Join(env.dir, "dbgsql_debug.sql"), "--threads", "4", "--log-level", "debug")
 	if code != 0 {
 		t.Fatalf("debug parallel export: exit %d\n%s", code, out)
 	}
@@ -803,6 +803,21 @@ func TestOptionMatrixEchoesInteractionSQL(t *testing.T) {
 	}
 	if strings.Contains(stdout, "db interaction") {
 		t.Errorf("the SQL trace leaked into list stdout:\n%s", stdout)
+	}
+
+	// show runs its own definition query through the same recorder. Since a SQL
+	// export stopped reading SHOW CREATE TABLE, this is the only command that
+	// sends it, and an operator still has to see it at the default level.
+	showOut, showErr, code := env.runShowCLI(t, "tab", src, "--log-level", "info",
+		"-o", filepath.Join(env.dir, "dbgsql_show.sql"))
+	if code != 0 {
+		t.Fatalf("show tab: exit %d\n%s", code, showErr)
+	}
+	if showOut != "" {
+		t.Errorf("--output must keep show's stdout empty, got:\n%s", showOut)
+	}
+	if !strings.Contains(showErr, "db interaction") || !strings.Contains(showErr, "SHOW CREATE TABLE") {
+		t.Errorf("show echoed no definition query at info level:\n%s", showErr)
 	}
 }
 
@@ -876,18 +891,18 @@ func TestOptionMatrixDateFormats(t *testing.T) {
 	})
 }
 
-// TestOptionMatrixNoDataCreate crosses the SQL export defaults (--create, which
-// is off by default, and --no-data) with the import modes, including the
-// combinations that can only fail and must fail with a usable message rather
-// than an empty table.
-func TestOptionMatrixNoDataCreate(t *testing.T) {
+// TestOptionMatrixDataOnlySQLExport crosses the data-only SQL product with the
+// import modes, including the combinations that can only fail and must fail with
+// a usable message rather than an empty table. The DDL side of a replayable dump
+// comes from `imex show tab`, because the export no longer writes one.
+func TestOptionMatrixDataOnlySQLExport(t *testing.T) {
 	env := newCLILive(t)
 	src, _ := env.makePair(t, "nodelete")
 
-	t.Run("默认 SQL 导出仅数据", func(t *testing.T) {
+	t.Run("SQL 导出仅数据", func(t *testing.T) {
 		file := env.cliExport(t, src, "sql", "data_only.sql")
 		if strings.Contains(readFile(t, file), "CREATE TABLE") {
-			t.Error("SQL export defaults to data-only and must not emit a CREATE TABLE statement")
+			t.Error("a SQL export must not emit a CREATE TABLE statement")
 		}
 		dst := env.liveTable(t, "data_dst")
 		env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
@@ -895,27 +910,39 @@ func TestOptionMatrixNoDataCreate(t *testing.T) {
 		assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
 	})
 
-	t.Run("--create 写入结构且保留数据", func(t *testing.T) {
-		file := env.cliExport(t, src, "sql", "with_create.sql", "--create")
-		text := readFile(t, file)
-		if !strings.Contains(text, "CREATE TABLE") {
-			t.Error("--create must emit a CREATE TABLE statement")
+	// The definition on its own is still a valid create-mode input, which is what
+	// `show tab` + `import -M create` promises.
+	t.Run("show tab 的结构 + mode create", func(t *testing.T) {
+		ddl := filepath.Join(env.dir, "structure_only.sql")
+		if out, errOut, code := env.runShowCLI(t, "tab", src, "-o", ddl); code != 0 {
+			t.Fatalf("show tab: exit %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
 		}
-		if !strings.Contains(text, "INSERT INTO") {
-			t.Error("--create must not swallow the data")
-		}
-	})
-
-	t.Run("仅结构 --create --no-data + mode create", func(t *testing.T) {
-		file := env.cliExport(t, src, "sql", "structure_only.sql", "--create", "--no-data")
 		dst := env.liveTable(t, "struct_dst")
-		env.cliImport(t, dst, "sql", file, "--mode", string(config.ImportModeCreate))
+		env.cliImport(t, dst, "sql", ddl, "--mode", string(config.ImportModeCreate))
 		if n := env.rowCount(t, dst); n != 0 {
 			t.Errorf("structure-only import left %d rows, want 0", n)
 		}
 	})
 
-	t.Run("默认仅数据 + mode create 必须明确失败", func(t *testing.T) {
+	// The two products concatenated are the self-contained dump --create used to
+	// be: create the table and fill it from one file.
+	t.Run("结构 + 数据 + mode create", func(t *testing.T) {
+		ddl := filepath.Join(env.dir, "full_ddl.sql")
+		if out, errOut, code := env.runShowCLI(t, "tab", src, "-o", ddl); code != 0 {
+			t.Fatalf("show tab: exit %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+		}
+		data := env.cliExport(t, src, "sql", "full_data.sql")
+		file := filepath.Join(env.dir, "full.sql")
+		body := readFile(t, ddl) + readFile(t, data)
+		if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
+			t.Fatalf("write combined dump: %v", err)
+		}
+		dst := env.liveTable(t, "full_dst")
+		env.cliImport(t, dst, "sql", file, "--mode", string(config.ImportModeCreate))
+		assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
+	})
+
+	t.Run("仅数据 + mode create 必须明确失败", func(t *testing.T) {
 		file := env.cliExport(t, src, "sql", "data_only_for_create.sql")
 		dst := env.liveTable(t, "data_create_dst")
 		out, code := env.runImportCLI(t, "-i", file, "-t", dst, "-f", "sql", "--mode", "create")
@@ -923,15 +950,20 @@ func TestOptionMatrixNoDataCreate(t *testing.T) {
 			t.Fatalf("data-only file with --mode create must exit 1, got %d\n%s", code, out)
 		}
 		// The failure has to name the missing DDL and the way out, not arrive as
-		// the server's raw 1146 after the first batch was already sent.
+		// the server's raw 1146 after the first batch was already sent. The advice
+		// can no longer be "re-export with --create": that option is gone.
 		for _, want := range []string{
 			"create mode found no CREATE TABLE statement",
 			"does not exist in database",
-			"re-export with --create",
+			"imex show tab",
+			"--mode insert into an existing table",
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("error must mention %q, got:\n%s", want, firstLines(out, 4))
 			}
+		}
+		if strings.Contains(out, "--create") {
+			t.Errorf("the error must not point at a removed option:\n%s", firstLines(out, 4))
 		}
 		if strings.Contains(out, "1146") {
 			t.Errorf("data-only create mode must fail before the first INSERT, got server error 1146:\n%s", firstLines(out, 4))
@@ -945,7 +977,7 @@ func TestOptionMatrixNoDataCreate(t *testing.T) {
 		}
 	})
 
-	t.Run("默认仅数据 + mode create 对已存在的表照旧导入", func(t *testing.T) {
+	t.Run("仅数据 + mode create 对已存在的表照旧导入", func(t *testing.T) {
 		file := env.cliExport(t, src, "sql", "data_only_for_existing_create.sql")
 		dst := env.liveTable(t, "data_create_existing_dst")
 		env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))

@@ -25,8 +25,6 @@ func TestOptionScopesAppliesTo(t *testing.T) {
 		{"export", "statement-size", FormatSQL, true},
 		{"export", "statement-size", FormatDel, false},
 		{"export", "statement-size", FormatParquet, false},
-		{"export", "create", FormatSQL, true},
-		{"export", "create", FormatDel, false},
 		{"export", "extended-insert", FormatSQL, true},
 		{"export", "extended-insert", FormatParquet, false},
 		{"export", "char-del", FormatDel, true},
@@ -102,9 +100,9 @@ func TestOptionScopeViolation(t *testing.T) {
 		{
 			name:    "first registered flag wins",
 			scopes:  ExportOptionScopes(),
-			changed: changedOf("col-del", "create"),
+			changed: changedOf("col-del", "statement-size"),
 			format:  FormatParquet,
-			want:    "--create can only be used with --format sql",
+			want:    "--statement-size can only be used with --format sql",
 		},
 		{
 			name:    "format that reads its own options",

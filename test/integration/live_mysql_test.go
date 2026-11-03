@@ -9,6 +9,7 @@ package integration
 // tables and drops them on cleanup, so runs can share one schema.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"github.com/imex/internal/config"
 	"github.com/imex/internal/export"
 	_import "github.com/imex/internal/import"
+	"github.com/imex/internal/show"
 )
 
 type liveEnv struct {
@@ -127,9 +129,6 @@ func (e *liveEnv) export(t *testing.T, opts exportOptions) {
 	cfg.Format = opts.format
 	cfg.Query = "SELECT * FROM `" + opts.table + "`"
 	cfg.Threads = opts.threads
-	// SQL export is data-only by default; --create is what opts a dump into
-	// carrying the table structure, which --mode create imports need.
-	cfg.Create = opts.create
 	if opts.progressInterval > 0 {
 		cfg.ProgressInterval = opts.progressInterval
 	}
@@ -163,10 +162,37 @@ type exportOptions struct {
 	// batchSize moves the hand-off option the parallel path does not read; zero
 	// keeps the shipped default, which is the case that must stay quiet.
 	batchSize int
-	// create opts an SQL export into emitting a CREATE TABLE statement, exactly
-	// as --create does on the command line. Only the --mode create round trip
-	// needs it; every other export is the data-only default.
-	create bool
+}
+
+// dumpWithDDL writes a SQL file that `import --mode create` can build a table
+// from: the definition `imex show tab` produces, followed by a data-only export.
+// A SQL export carries INSERT statements only, so assembling the two is what a
+// user does; the tests that need DDL go through the same two steps rather than
+// pretending the writer emits one.
+func (e *liveEnv) dumpWithDDL(t *testing.T, table, output string) {
+	t.Helper()
+
+	kind, ok := show.Lookup("tab")
+	if !ok {
+		t.Fatal("show kind tab must be registered")
+	}
+	showCfg := config.NewShowConfig()
+	showCfg.Config = e.base
+	showCfg.Object = table
+	var ddl bytes.Buffer
+	if _, err := show.Run(context.Background(), e.db, kind, showCfg, &ddl); err != nil {
+		t.Fatalf("show tab %s: %v", table, err)
+	}
+
+	data := filepath.Join(t.TempDir(), "data.sql")
+	e.export(t, exportOptions{table: table, format: "sql", output: data, threads: 1})
+	body, err := os.ReadFile(data)
+	if err != nil {
+		t.Fatalf("read data dump: %v", err)
+	}
+	if err := os.WriteFile(output, append(ddl.Bytes(), body...), 0o644); err != nil {
+		t.Fatalf("write dump: %v", err)
+	}
 }
 
 func (e *liveEnv) importFile(t *testing.T, opts importOptions) {
@@ -422,8 +448,8 @@ func TestLive_SQLNumericLiteralsUnquoted(t *testing.T) {
 // columns: the export carries their values, but writing them back is rejected
 // under strict mode (Error 1906), so the INSERT list must leave them out and let
 // the server recompute them. Before that, importing any table with a virtual or
-// stored generated column failed on the first batch — including a --create round
-// trip of imex's own dump and mysqldump's output on the same server.
+// stored generated column failed on the first batch — including a create-mode
+// round trip of imex's own dump and mysqldump's output on the same server.
 func TestLive_GeneratedColumnsExcluded(t *testing.T) {
 	env := newLiveEnv(t)
 	dir := t.TempDir()
@@ -508,7 +534,7 @@ func TestLive_GeneratedColumnsExcluded(t *testing.T) {
 	t.Run("sql-create", func(t *testing.T) {
 		dst := env.liveTable(t, "gen_dst_create")
 		file := filepath.Join(dir, "generated-create.sql")
-		env.export(t, exportOptions{table: src, format: "sql", output: file, create: true})
+		env.dumpWithDDL(t, src, file)
 		stats := env.importFileStats(t, importOptions{
 			input: file, format: "sql", mode: config.ImportModeCreate, table: dst, threads: 1,
 		})
@@ -629,13 +655,13 @@ func TestLive_ImportModes(t *testing.T) {
 		t.Fatalf("replace mode: got %v", got)
 	}
 
-	// Create mode: export a table as SQL and let the importer create and fill a
-	// differently named table from the same file.
+	// Create mode: take the definition from show and the rows from a data-only
+	// export, then let the importer create and fill a differently named table.
 	src := env.liveTable(t, "createsrc")
 	created := env.liveTable(t, "created")
 	env.fillSource(t, src)
 	sqlFile := filepath.Join(dir, "create.sql")
-	env.export(t, exportOptions{table: src, format: "sql", output: sqlFile, threads: 1, create: true})
+	env.dumpWithDDL(t, src, sqlFile)
 	env.importFile(t, importOptions{
 		input: sqlFile, format: "sql", mode: config.ImportModeCreate, table: created, commitCount: 4,
 	})

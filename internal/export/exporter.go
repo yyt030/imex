@@ -205,21 +205,6 @@ func (e *Exporter) warnIfShardKeyIgnored() {
 func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err error) {
 	e.warnIfShardKeyIgnored()
 
-	// For SQL format, pre-fetch the CREATE TABLE statement while the
-	// connection is still free. Only when the dump was asked to carry it
-	// (--create).
-	var createStmt string
-	if e.config.Format == "sql" && e.config.Create {
-		schema, tableName, err := e.sqlParser.ExtractTableRef(e.config.Query)
-		if err != nil {
-			return errors.Wrap(err, "failed to extract table name")
-		}
-		createStmt, err = e.getCreateTableStatement(schema, tableName)
-		if err != nil {
-			return errors.Wrap(err, "failed to get CREATE TABLE statement")
-		}
-	}
-
 	// Execute query with attribution tag
 	taggedQuery := common.TagSQL(e.config.Query)
 	common.LogInteractionSQL(e.config.Query)
@@ -306,7 +291,7 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		if err != nil {
 			return errors.Wrap(err, "failed to extract table name")
 		}
-		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, e.config.Create, !e.config.NoData, createStmt, e.config.DefaultCharset)
+		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetColumnKinds(e.backend().ColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
@@ -838,8 +823,8 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 	binaryFlags := e.backend().BinaryFlags(colTypes)
 	hex := effectiveHexBlob(e.config)
 
-	// Create writer for this shard (writeCreate=false: the preamble and the
-	// CREATE TABLE statement are written by the stream writer)
+	// Create writer for this shard: the preamble is written once by the merge
+	// step, so a shard contributes VALUES rows only.
 	var writer Writer
 	switch e.config.Format {
 	case "del":
@@ -851,7 +836,7 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 		if err != nil {
 			return 0, errors.Wrap(err, "failed to extract table name")
 		}
-		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, false, !e.config.NoData, "", e.config.DefaultCharset)
+		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, e.config.DefaultCharset)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetColumnKinds(e.backend().ColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
@@ -1007,19 +992,12 @@ func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string) error 
 		// The output is opened with the same writer a serial export uses, so
 		// a parallel dump can never drift from a single-threaded one in its
 		// preamble or epilogue.
-		schema, tableName, err := e.sqlParser.ExtractTableRef(e.config.Query)
+		tableName, err := e.sqlParser.ExtractTableName(e.config.Query)
 		if err != nil {
 			return errors.Wrap(err, "failed to extract table name")
 		}
-		var createStmt string
-		if e.config.Create {
-			createStmt, err = e.getCreateTableStatement(schema, tableName)
-			if err != nil {
-				return errors.Wrap(err, "failed to get CREATE TABLE statement")
-			}
-		}
 		sqlWriter = NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize,
-			e.config.Create, !e.config.NoData, createStmt, e.config.DefaultCharset)
+			e.config.DefaultCharset)
 		if err := sqlWriter.WriteHeader(columns); err != nil {
 			return errors.Wrap(err, "failed to write header")
 		}
@@ -1050,30 +1028,6 @@ func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string) error 
 	}
 
 	return nil
-}
-
-// getCreateTableStatement gets the CREATE TABLE statement for a table. schema is
-// the qualifier the query carried ("" when it named none) and is used only to
-// look the table up: SHOW CREATE TABLE runs in the connection's own database
-// when the query did not name one, and in the named schema otherwise. The
-// returned text is the server's own definition and already targets the bare
-// table, so it needs no re-qualification for the dump.
-func (e *Exporter) getCreateTableStatement(schema, tableName string) (string, error) {
-	target := "`" + tableName + "`"
-	if schema != "" {
-		target = "`" + schema + "`." + target
-	}
-	createQuery := "SHOW CREATE TABLE " + target
-	common.LogInteractionSQL(createQuery)
-	query := common.TagSQL(createQuery)
-	row := e.db.QueryRowContext(context.Background(), query)
-
-	var name, createStmt string
-	if err := row.Scan(&name, &createStmt); err != nil {
-		return "", err
-	}
-
-	return createStmt + ";", nil
 }
 
 // Writer interface for different export formats

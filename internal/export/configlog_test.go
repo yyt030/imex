@@ -36,7 +36,7 @@ var (
 		"char_del", "col_del", "row_del", "escape", "no_escape", "no_char_del",
 		"timestamp_fmt", "date_fmt", "no_col_names",
 	}
-	sqlLayoutKeys = []string{"create", "no_data", "statement_size", "extended_insert"}
+	sqlLayoutKeys = []string{"statement_size", "extended_insert"}
 	// parquetLayoutKeys mirrors the parquet-only scope entry: the codec name is
 	// the only layout question the Parquet writer answers.
 	parquetLayoutKeys = []string{"parquet_compression"}

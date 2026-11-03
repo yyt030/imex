@@ -98,7 +98,7 @@ func appendRowValues(dst, row []interface{}, projection []int) []interface{} {
 // stay out of it. Writing a value for a generated column is rejected outright
 // under strict mode (Error 1906: "The value specified for generated column ...
 // has been ignored"), which failed every import of such a table — including a
-// --create round trip of imex's own dump, and mysqldump's output on the same
+// create-mode round trip of imex's own dump, and mysqldump's output on the same
 // server. The server recomputes the column from its expression, so the value
 // the export carried is redundant rather than lost.
 //

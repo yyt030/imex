@@ -9,23 +9,17 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"github.com/imex/internal/common"
 )
 
-// SQLWriter writes data in SQL format (CREATE TABLE + INSERT statements)
+// SQLWriter writes data rows as INSERT statements. It never writes DDL: table
+// definitions come from `imex show tab`, which is the only place this tool reads
+// SHOW CREATE TABLE.
 type SQLWriter struct {
 	bw            *bufio.Writer
 	tableName     string
 	columns       []string
 	statementSize int
-	writeCreate   bool
-	writeData     bool
-	// createStmt is the pre-fetched CREATE TABLE statement. The exporter must
-	// obtain it before opening the streaming cursor, because the single
-	// export connection is held by the open result set.
-	createStmt string
 	// batch holds the pending VALUES tuples (without the INSERT prefix);
 	// row is the scratch tuple for the row being formatted. Both are byte
 	// slices reused across rows: formatting appends in place instead of
@@ -54,19 +48,15 @@ type SQLWriter struct {
 	everMerged   bool
 }
 
-// NewSQLWriter creates a new SQL format writer.
-// createStmt must be provided by the caller (via SHOW CREATE TABLE) before the
-// result-set cursor is opened; it is used only when writeCreate is true.
-// charset is the connection charset used for the SET NAMES header line.
-func NewSQLWriter(w io.Writer, tableName string, columns []string, statementSize int, writeCreate, writeData bool, createStmt string, charset string) *SQLWriter {
+// NewSQLWriter creates a new SQL format writer. It writes the rows of one
+// result set as INSERT statements and nothing else; charset is the connection
+// charset used for the SET NAMES header line.
+func NewSQLWriter(w io.Writer, tableName string, columns []string, statementSize int, charset string) *SQLWriter {
 	return &SQLWriter{
 		bw:            bufio.NewWriterSize(w, 256*1024),
 		tableName:     tableName,
 		columns:       columns,
 		statementSize: statementSize,
-		writeCreate:   writeCreate,
-		writeData:     writeData,
-		createStmt:    createStmt,
 		charset:       charset,
 	}
 }
@@ -93,48 +83,13 @@ func (s *SQLWriter) columnKind(idx int) common.ColumnKind {
 	return common.KindUnknown
 }
 
-// WriteHeader writes the SET NAMES charset line, then CREATE TABLE if enabled.
+// WriteHeader writes the self-describing SET NAMES charset line.
+//
+// This mirrors mysqldump's --set-charset behavior: the standard mysql client uses
+// it to set the connection charset, and imex's own importer skips this line.
 func (s *SQLWriter) WriteHeader(columns []string) error {
-	// Write the self-describing charset header whenever we're going to emit
-	// any content (CREATE TABLE or INSERT data). This mirrors mysqldump's
-	// --set-charset behavior; the standard mysql client uses it to set the
-	// connection charset, and imex's own importer skips this line.
-	if s.writeCreate || s.writeData {
-		if _, err := fmt.Fprintf(s.bw, "/*!40101 SET NAMES %s */;\n", s.charset); err != nil {
-			return err
-		}
-	}
-
-	if !s.writeCreate {
-		return nil
-	}
-
-	if s.createStmt == "" {
-		return errors.New("CREATE TABLE statement was not provided")
-	}
-	createStmt := s.createStmt
-
-	// Write header comment
-	if _, err := fmt.Fprintf(s.bw, "-- Table structure for %s\n", s.tableName); err != nil {
-		return err
-	}
-
-	// Write CREATE TABLE statement
-	if _, err := fmt.Fprintln(s.bw, createStmt); err != nil {
-		return err
-	}
-
-	if _, err := fmt.Fprintln(s.bw); err != nil {
-		return err
-	}
-
-	if s.writeData {
-		if _, err := fmt.Fprintf(s.bw, "-- Data for %s\n", s.tableName); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	_, err := fmt.Fprintf(s.bw, "/*!40101 SET NAMES %s */;\n", s.charset)
+	return err
 }
 
 // SetSingleRowInsert selects the layout the exporter uses by default: one INSERT
@@ -149,9 +104,6 @@ func (s *SQLWriter) SetSingleRowInsert(on bool) {
 
 // WriteRow writes INSERT statement for a row
 func (s *SQLWriter) WriteRow(values []interface{}) error {
-	if !s.writeData {
-		return nil
-	}
 	s.ensureColList()
 
 	// Build VALUES tuple in the scratch row buffer, appending in place. The
@@ -172,9 +124,6 @@ func (s *SQLWriter) WriteRow(values []interface{}) error {
 
 // WriteRawRow writes INSERT statement for a row using sql.RawBytes to avoid allocation
 func (s *SQLWriter) WriteRawRow(values []sql.RawBytes) error {
-	if !s.writeData {
-		return nil
-	}
 	s.ensureColList()
 
 	s.row = s.row[:0]
@@ -353,13 +302,11 @@ func (s *SQLWriter) Flush() error {
 // WriteFooter flushes the last batched INSERT and the buffered writer.
 func (s *SQLWriter) WriteFooter() error {
 	// Flush any remaining batched INSERT statements
-	if s.writeData {
-		if !s.singleRow && s.mergedTuples >= 2 && !s.everMerged {
-			s.warnNeverMerged()
-		}
-		if err := s.flushBatch(); err != nil {
-			return err
-		}
+	if !s.singleRow && s.mergedTuples >= 2 && !s.everMerged {
+		s.warnNeverMerged()
+	}
+	if err := s.flushBatch(); err != nil {
+		return err
 	}
 
 	return s.bw.Flush()

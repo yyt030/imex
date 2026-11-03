@@ -166,7 +166,8 @@ func TestSQLReader_CreateStatements(t *testing.T) {
 }
 
 func TestSQLReader_StructureOnly(t *testing.T) {
-	// A --no-data export carries CREATE statements but no INSERTs. ReadHeader
+	// A definition file — `imex show tab` output, or a mysqldump --no-data style
+	// file — carries CREATE statements but no INSERTs. ReadHeader
 	// must report the structure without erroring (the importer's create mode
 	// applies it), and isStructureOnlySQL must recognize that state.
 	input := "-- Table structure\nCREATE TABLE `t` (`id` INT) ENGINE=InnoDB;\n"

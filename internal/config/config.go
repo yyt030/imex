@@ -175,14 +175,10 @@ type ExportConfig struct {
 	// (verified against the server's general log), so merging on the export side
 	// only inflates the file and makes the reader materialise a whole statement.
 	ExtendedInsert bool
-	// Create opts a SQL export into emitting a CREATE TABLE statement. SQL
-	// export defaults to data-only, so the layout the common case produces needs
-	// no extra flag; --create re-attaches the table structure when the dump must
-	// be self-contained (import --mode create). There is no --no-create: with the
-	// structure already opt-in, a second switch for turning it off would only be
-	// a way to contradict --create.
-	Create bool
-	NoData bool // skip INSERT statements
+	// No DDL fields here on purpose: a SQL export is data-only, and table
+	// definitions are read by `imex show tab` instead. The import side still
+	// accepts CREATE TABLE from a file (--mode create), because such files come
+	// from show's own product or from another tool, not from this writer.
 
 	// ParquetCompression is the page-compression codec for --format parquet
 	// (none, snappy or zstd). Only the Parquet writer reads it; the DEL and SQL

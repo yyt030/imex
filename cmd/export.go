@@ -31,10 +31,8 @@ Examples:
   imex export -h 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.sql -f sql -q "SELECT * FROM users"
 
-  # SQL export is data-only; add --create when the dump must be self-contained
-  # (import ... --mode create reads the CREATE TABLE from the file)
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
-    -o /backup/users.sql -f sql --create -q "SELECT * FROM users"
+  # SQL export carries data only; get the table definition from show
+  imex show tab users -D mydb -o /backup/users_ddl.sql
 
   # Read the query from a file instead of the command line
   imex export -h 127.0.0.1 -u root -p pass -D mydb \

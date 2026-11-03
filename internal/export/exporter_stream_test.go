@@ -11,17 +11,15 @@ import (
 )
 
 // streamTestExporter builds the minimal Exporter writeShardStream needs: no
-// database, because every case here is a data-only export (withCreate=false,
-// which is also what the CLI does unless --create is given).
-func streamTestExporter(t *testing.T, format string, withCreate, noData, noColNames bool) *Exporter {
+// database, because a SQL export is data-only and the merge step supplies the
+// preamble itself.
+func streamTestExporter(t *testing.T, format string, noColNames bool) *Exporter {
 	t.Helper()
 
 	cfg := config.NewExportConfig()
 	cfg.Output = filepath.Join(t.TempDir(), "out."+format)
 	cfg.Format = format
 	cfg.Query = "SELECT * FROM users"
-	cfg.Create = withCreate
-	cfg.NoData = noData
 	cfg.DelModifier.NoColNames = noColNames
 
 	return &Exporter{config: cfg, sqlParser: NewSQLParser()}
@@ -60,7 +58,7 @@ func readOut(t *testing.T, path string) string {
 // this merge step (and suppressed per shard); it is gone because it made the
 // dump unreplayable into an empty schema.
 func TestWriteShardStreamSQLHasNoTableLocks(t *testing.T) {
-	e := streamTestExporter(t, "sql", false, false, false)
+	e := streamTestExporter(t, "sql", false)
 
 	pipes := []*shardPipe{
 		filledPipe(t, "INSERT INTO `users` (`id`) VALUES (1);\n", 1<<20),
@@ -98,7 +96,7 @@ func TestWriteShardStream_DelHeaderOnlyWhenColumnNamesRequested(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			e := streamTestExporter(t, "del", false, false, c.noColNames)
+			e := streamTestExporter(t, "del", c.noColNames)
 			pipes := []*shardPipe{
 				filledPipe(t, "1,\"a\"\n", 1<<20),
 				filledPipe(t, "2,\"b\"\n", 1<<20),
@@ -121,7 +119,7 @@ func TestWriteShardStream_DelHeaderOnlyWhenColumnNamesRequested(t *testing.T) {
 // A shard split across many blocks must land in the output contiguously and in
 // order, which is the property the concatenated temporary files used to give.
 func TestWriteShardStream_KeepsBlockBoundariesIntact(t *testing.T) {
-	e := streamTestExporter(t, "del", false, false, true)
+	e := streamTestExporter(t, "del", true)
 
 	// 3 blocks per shard, each shard carrying a marker per block.
 	pipeA := filledPipe(t, "AAAA1\nAAAA2\nAAAA3\n", 6)

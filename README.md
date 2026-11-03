@@ -134,9 +134,12 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
   -t users
 
 # 从 SQL 文件创建表并导入（create 模式也需 -t 指定新表名）
-# 前置导出必须带 --create，因为 SQL 导出默认只导数据、不含 CREATE TABLE
+# SQL 导出只带数据，建表语句由 `imex show tab` 取，两个文件拼起来才是自带结构的导出
+imex show tab users -h 127.0.0.1 -u root -p password -D mydb \
+  -o /backup/users_ddl.sql
 imex export -h 127.0.0.1 -u root -p password -D mydb \
-  -o /backup/users.sql -f sql --create -q "SELECT * FROM users"
+  -o /backup/users_data.sql -f sql -q "SELECT * FROM users"
+cat /backup/users_ddl.sql /backup/users_data.sql > /backup/users.sql
 imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.sql -f sql \
   --mode create -t users
@@ -288,10 +291,8 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 |------|------|--------|
 | `--statement-size` | 单条 INSERT 语句最大字节数（只有 `--extended-insert` 时是攒批上限；默认单行布局下一行无法再拆，超过它只记一次告警） | `8388608`（8MiB） |
 | `--extended-insert` | 把多行合并进一条 INSERT（按 `--statement-size` 分组，等价 mysqldump 默认行为）；若 `--statement-size` 低于单行语句宽度则一条也合不成，产物退回每行一条 INSERT 并记一次告警 | `false` |
-| `--create` | 输出 CREATE TABLE 语句（SQL 导出默认只导数据，需要自带建表语句时才加；与 `--format sql` 绑定，其他格式传入报用法错误） | `false` |
-| `--no-data` | 不输出 INSERT 语句 | `false` |
 
-> SQL 导出默认只写 `INSERT` 数据语句；加 `--create` 才附带 `CREATE TABLE`。无论哪种，文件描述的始终是**一张真实表**，因此 `--format sql` 只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。`-q`（含 `-q @file` 从文件读入的语句）里若表名带了 schema（`db.tbl`），导出会剥离 schema、只按裸表名写 `CREATE`/`INSERT`，而 `SHOW CREATE TABLE` 仍按查询点名的 schema 查找，因此不会再出现把连接的 `--database` 二次拼接导致的 `Error 1054/1146`；并行导出同样以查询点名的 schema 为准来探测分片键、读统计与采样边界（见「并行导出」一节）；`--mode create` 依赖文件里的 `CREATE TABLE`，故这类导出必须带 `--create`。`--no-create` 已随默认值反转一并移除（结构本就是 opt-in，留一个反向开关只是给 `--create` 一个否决口），传入它会得到 `unknown flag: --no-create` 并退出 2；`--single-row-insert` 同样已删除——自默认布局改成每行一条 INSERT 起它就不再改变任何行为，只剩与 `--extended-insert` 互相否决这一处用途，传入它会得到 `unknown flag: --single-row-insert` 并退出 2。
+> SQL 导出只写数据语句：一行 `SET NAMES` 加每行一条 `INSERT`，**不含任何 DDL**。文件的另一半——建表语句——由 `imex show tab` 交回，它是本工具唯一读 `SHOW CREATE TABLE` 的地方，两者拼起来就是自带结构的导出（见上文 create 模式示例与「show - 对象定义导出」一节）。`--create` 与 `--no-data` 已直接删除、不留别名，传入即 `unknown flag: --create` / `unknown flag: --no-data` 并退出 2（`--no-create`、`--single-row-insert` 此前已按同一口径移除）。因为产物只描述数据，`--format sql` 仍只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。`-q`（含 `-q @file` 从文件读入的语句）里若表名带了 schema（`db.tbl`），导出只按裸表名写 `INSERT`，并行路径的分片键探测、统计读取与采样边界仍以查询点名的 schema 为准（见「并行导出」一节），因此不会再出现把连接的 `--database` 二次拼接导致的 `Error 1054/1146`。`import --mode create` 依赖文件里的 `CREATE TABLE`，本工具的 SQL 产物不再提供它，须由 `show tab` 补上；`mysqldump` 等外部工具的文件照旧直接可用。
 
 ### import - 数据导入
 
@@ -441,7 +442,7 @@ imex list tables -u root -p pass -D shop -o /backup/shop_tables.txt
 imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 ```
 
-`show` 打印**一个**对象在服务器上保存的 `CREATE` 语句原文，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。六个 kind 一律三个字母。`show` 整个命令依赖 MySQL 的 `SHOW CREATE` 语句族，因此 `--engine pg` 下六个 kind 全部退出 `2`（PostgreSQL 没有对应语句，即便拼出 DDL 也回放不进 `imex import -f sql`），取定义请用 `pg_dump`：
+`show` 打印**一个**对象在服务器上保存的 `CREATE` 语句原文，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。表的建表语句也只在这里取得——`export -f sql` 的产物是纯数据，全工具读 `SHOW CREATE TABLE` 的地方只有 `show tab`。六个 kind 一律三个字母。`show` 整个命令依赖 MySQL 的 `SHOW CREATE` 语句族，因此 `--engine pg` 下六个 kind 全部退出 `2`（PostgreSQL 没有对应语句，即便拼出 DDL 也回放不进 `imex import -f sql`），取定义请用 `pg_dump`：
 
 | kind | 别名（英文全名） | 语句 | 定义所在列 |
 |------|------------------|------|------------|
@@ -518,7 +519,7 @@ imex list tab -D shop -u root -p pass 2>/dev/null | awk 'NR > 1 { print $2 }' |
   done
 ```
 
-- 换成 SQL 产物就把 `-o` 的后缀改为 `.sql` 并加 `-f sql`，需要建表语句时再加 `--create`；`--pattern 'order%'` 可以直接加在 `imex list tab` 上做名字过滤。
+- 换成 SQL 产物就把 `-o` 的后缀改为 `.sql` 并加 `-f sql`；建表语句另用 `imex show tab $t -o …` 取，两个文件 `cat` 起来才等价于过去带 `--create` 的单个文件；`--pattern 'order%'` 可以直接加在 `imex list tab` 上做名字过滤。
 - 每条 `imex export` 各开一次 `START TRANSACTION WITH CONSISTENT SNAPSHOT`，**表与表的时点不一致**（v0.14.0 的 `general_log` 取证见变更记录 112 ⑦）。要整库一致快照属于尚未实现的数据库级批量导出，见变更记录 111 之后的功能差距讨论。
 - 表名或库名本身含连续空格时，`awk` 按「两个及以上空格」切列无法把它与列分隔区分——这是 `list` 对齐输出的固有性质，这类对象请改用 `--pattern` 分批或直接调用 `imex export`。
 - 想把枚举结果落成文件再慢慢用：`imex list tab -D shop -o names.txt`（重跑默认覆盖，怕踩到已有文件就加 `--no-overwrite`，命中时退出 1 且原文件不动）。取每张表的建表语句用 `imex show tab`，见「show - 对象定义导出」的循环示例。
@@ -763,7 +764,7 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 | `--parquet-compression` | `none`/`snappy`/`zstd` 三选一；仅 `--format parquet` 生效 | 非法值 `invalid --parquet-compression "gzip": must be one of none/snappy/zstd`、格式越界 `--parquet-compression can only be used with --format parquet`，均退出码 2 |
 | `encrypt` 的位置参数 | 恰好 1 个（密码明文） | `imex encrypt accepts 1 argument(s), received N`，退出码 2 |
 
-关联校验：`--create`/`--no-data`/`--statement-size`/`--extended-insert` 仅对 `--format sql` 生效（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`；导出侧 `-q` 必填，`-q @文件` 从文件读取 SQL（文件不存在、内容为空或 `@` 后缺路径均为用法错误，退出码 2）。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。另有一类**按执行路径判定**的越界：`export --threads>1` 时显式给出 `--batch-size` 或 `--pipeline-buffer` 即为用法错误（退出码 2），因为它对分片流式路径不改变任何输出；该校验排在 `--threads`→`--batch-size`→`--pipeline-buffer` 的顺序里，因此非法的 `--threads` 或非法的选项值仍先于冲突报出。另有两类**跨选项 / 跨服务器**的判定：DEL 的四个文本修饰 `--char-del`/`--col-del`/`--row-del`/`--escape` 之间必须互不相同（例外只有 `--escape` 与 `--char-del` 同值，即默认的双写转义；`--no-char-del`、`--no-escape` 各自免除相关项），同值写出的文件无法回读，因此按 char→col→row→escape 的固定顺序取第一条冲突报用法错误（退出码 2），同一条组合在导出与导入两侧判定一致；`--threads` 与目标库 `@@max_connections`、并行导入重放缓冲总量的关系则不是范围能表达的，连上库之后各记一条 `warn`（见上表）。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
+关联校验：`--statement-size`/`--extended-insert` 仅对 `--format sql` 生效（`--create`/`--no-data` 已随「SQL 导出只导数据」一并删除，不再登记，传入即为未知选项）（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`；导出侧 `-q` 必填，`-q @文件` 从文件读取 SQL（文件不存在、内容为空或 `@` 后缺路径均为用法错误，退出码 2）。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。另有一类**按执行路径判定**的越界：`export --threads>1` 时显式给出 `--batch-size` 或 `--pipeline-buffer` 即为用法错误（退出码 2），因为它对分片流式路径不改变任何输出；该校验排在 `--threads`→`--batch-size`→`--pipeline-buffer` 的顺序里，因此非法的 `--threads` 或非法的选项值仍先于冲突报出。另有两类**跨选项 / 跨服务器**的判定：DEL 的四个文本修饰 `--char-del`/`--col-del`/`--row-del`/`--escape` 之间必须互不相同（例外只有 `--escape` 与 `--char-del` 同值，即默认的双写转义；`--no-char-del`、`--no-escape` 各自免除相关项），同值写出的文件无法回读，因此按 char→col→row→escape 的固定顺序取第一条冲突报用法错误（退出码 2），同一条组合在导出与导入两侧判定一致；`--threads` 与目标库 `@@max_connections`、并行导入重放缓冲总量的关系则不是范围能表达的，连上库之后各记一条 `warn`（见上表）。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
 
 ### OceanBase 租户连接
 
@@ -884,7 +885,7 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
 
 工具与数据库之间的**交互语句**逐条记成 `db interaction`，从 v0.16.0 起走 **info 级别，即默认就能看到**，不需要加 `--log-level debug`——跑在生产上的导入/导出出错时，第一个要确认的就是"工具究竟发了什么"。绑定参数按既有脱敏规则以 `num`/`str(长度)`/`bytes(长度)`/`NULL` 呈现，真实值仍需 `--echo-sql-values`。
 
-覆盖范围是"语句数量不随行数增长"的那一类：导出侧的 `SHOW CREATE TABLE`、`INFORMATION_SCHEMA` 分片统计与列类型、`MIN`/`MAX`、`LIMIT 0` 列探测、采样探针、`version_comment`、`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` 与 `START TRANSACTION WITH CONSISTENT SNAPSHOT`；导入侧的表/列/唯一键校验、表头判定、`SHOW VARIABLES max_allowed_packet`、`CREATE TABLE`、`DELETE`、`SET FOREIGN_KEY_CHECKS`；`list databases|tables|columns|indexes` 的那条元数据查询同样回显。**逐行数据语句不打印**——攒批 INSERT/REPLACE 只在失败时经脱敏错误路径出现，因此默认日志不会因为导入百万行而膨胀。并行导出的每条记录都带 `worker=N` 与 `shard=N`：分片查询、以及每个分片连接自己开的快照都在其上；分片查询失败的文案也以 `(worker N, SQL: ...)` 开头。
+覆盖范围是"语句数量不随行数增长"的那一类：导出侧的 `INFORMATION_SCHEMA` 分片统计与列类型、`MIN`/`MAX`、`LIMIT 0` 列探测、采样探针、`version_comment`、`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` 与 `START TRANSACTION WITH CONSISTENT SNAPSHOT`；导入侧的表/列/唯一键校验、表头判定、`SHOW VARIABLES max_allowed_packet`、`CREATE TABLE`、`DELETE`、`SET FOREIGN_KEY_CHECKS`；`list databases|tables|columns|indexes` 的那条元数据查询、以及 `show <kind>` 的那条 `SHOW CREATE …` 定义查询同样回显（自变更记录 127 起，导出不再读 `SHOW CREATE TABLE`，全工具只有 `show` 读它）。**逐行数据语句不打印**——攒批 INSERT/REPLACE 只在失败时经脱敏错误路径出现，因此默认日志不会因为导入百万行而膨胀。并行导出的每条记录都带 `worker=N` 与 `shard=N`：分片查询、以及每个分片连接自己开的快照都在其上；分片查询失败的文案也以 `(worker N, SQL: ...)` 开头。
 
 体量实测（本地 MariaDB 10.6.23，20 万行表；下列字节数都是**整份命令日志**的大小，不是交互记录单独的字节）：串行导出 3 条记录、1,029 字节；`--threads 4` 自动 8 分片 32 条、5,928 字节（同一命令复跑在 5,884–5,929 字节间浮动，长度由分片边界的浮点写法决定）（每个分片连接各 2 条快照语句 + 1 条分片 SELECT）；导入 20 万行 SQL 文件 4 条、DEL 文件 5 条；`list tables` 1 条。开销与副作用实测：同一条 8 分片导出提到 `--log-level warn` 只剩版本横幅 1 条、151 字节，两级的产物 md5 逐字节相同（`2ac5b51d2374…`），三轮交替计时 99/104/103 ms 对 104/100/102 ms，看不出差别；导入 20 万行同样为 warn 1,079–1,242 ms 对 info 1,095–1,119 ms，默认级别日志里已知行值 `value-199999` 命中 **0**，落库 200,000 行与源表的 `BIT_XOR(CRC32(...))` 同为 `2180467309`。与逐条对比服务端 `general_log` 的结果：凡经 imex 代码发出的语句全部可见（改前 7 条里只见得到 2 条），唯一看不到的是**驱动自己注入**的 `SET NAMES`（由 `--default-charset` 决定，不经过本工具的日志），`--session-var` 的取值则在开局以 `session variables will be set on every connection vars=[...]` 记录。要一条不漏就查服务端 `general_log`。
 
@@ -898,7 +899,8 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
 
 加注释的范围是**工具对数据/结构/元数据主动发起的语句**：
 
-- 导出：主 `SELECT`、并行分片查询、列探测（`LIMIT 0`）、`SHOW CREATE TABLE`、主键/唯一键/列类型/min-max 探测
+- 导出：主 `SELECT`、并行分片查询、列探测（`LIMIT 0`）、主键/唯一键/列类型/min-max 探测
+- 结构定义：`show tab|vws|trg|evt|prc|fcn` 的 `SHOW CREATE …`（导出不在此列——SQL 产物只有数据）
 - 导入：`INSERT` / `REPLACE` / `INSERT … ON DUPLICATE KEY UPDATE` / `DELETE` / `CREATE TABLE`、目标表与列的存在性/类型校验查询
 
 **不加**注释的是工具的连接期与事务期内部控制语句：`SET NAMES` 与 `--session-var`（均由 DSN 在建连时发出、不经执行路径）、`SET FOREIGN_KEY_CHECKS`，以及 `START TRANSACTION` / `SET TRANSACTION` / `COMMIT` / `ROLLBACK`。
@@ -982,19 +984,12 @@ parquet-tools schema /backup/users.parquet
 ### SQL 格式
 
 ```sql
--- Table structure for users
-CREATE TABLE `users` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `name` varchar(100) NOT NULL,
-  `email` varchar(255) NOT NULL,
-  `created_at` datetime NOT NULL,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- Data for users
+/*!40101 SET NAMES utf8mb4 */;
 INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (1,'Alice','alice@example.com','2026-01-01 10:00:00');
 INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (2,'Bob','bob@example.com','2026-01-02 11:00:00');
 ```
+
+产物**只有数据**：一行 `SET NAMES` 字符集前导（`imex import` 会跳过它，标准 mysql 客户端用它设定连接字符集）加上逐行 `INSERT`，没有任何 DDL 与分节注释。建表语句由 `imex show tab users -D mydb -o users_ddl.sql` 单独取，要一个自带结构的文件就把两个产物拼起来（`cat users_ddl.sql users.sql > full.sql`，喂 `imex import -f sql --mode create` 实测可行）。
 
 SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended-insert` 的布局），`--extended-insert` 才把多行合并进一条语句。攒批交给导入侧是刻意的分工：导入器把语句拆成行后按 `--batch-size` 重新组批，文件是单行还是合并布局，服务端收到的语句一模一样（实测 20,000 行、`--batch-size 1000`：单行文件 20,000 条语句与合并文件 1 条语句都只产生 20 条服务端 INSERT）。合并布局在导出侧换到的只有体积——100 万行窄表实测：单行 2.5 s / 峰值内存 33 MB / 278,790,434 B（gzip 28,247,005 B），合并 2.7 s / 70 MB / 153,792,809 B（gzip 27,050,101 B，19 条语句）；代价是导入侧要一次性解析整条语句，同一份数据在 `--batch-size 1000` 下峰值内存 44 MB（单行）对 216 MB（合并）。
 
@@ -1053,7 +1048,7 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 | `internal/common/detect.go` 的 `ServerType`/`ServerMySQL`/`ServerOceanBase`/`String()`/`DetectServerType()` 在锁语句删除后已无任何调用者（五个名字 36 行），`version_comment` 探测的收益随锁判据一起消失，留着只会让人以为存在（或即将存在）OceanBase 专用路径 | 删除五个死符号，`detect.go` 61→25 行只保留 `MaxConnections`，全仓 `.go` 命中 0；与前一构建的 SQL/DEL 产物逐字节相同（419 B / 41 B，含 `--threads 2`），`--log-level debug` 日志里 `version_comment` 命中 0。同轮把掉线重试窗口补成量化文档（`-P 3399` 实测 2.675 s 放弃、可挺过约 2.4–3 秒；停 1.5 s 后的 10 万行并行导入 exit 0、最高 attempt 2），并把 `COMMIT` ack 丢失登记为未测边界。另：曾把 `IMEX_LOG_FORMAT` 改为 flag 优先，经裁定应与其余参数的 flag/env 关系一致（env 覆盖 flag），**已回退**，参数表与 3.3.2 按回退后的语义描述。 |
 | `--log-format` 的默认值叫 `java`：拿实现语言当格式名，与另一个合法值 `text` 不同构（一个说语言、一个说格式），`IMEX_LOG_FORMAT=java` 写进 CI 也读不出「这行日志长什么样」 | 值名改为 **`console`**（默认，定宽人读行），`java` 直接作废、不留别名：`--log-format java` 与 `IMEX_LOG_FORMAT=java` 现在是用法错误、退出码 **2**（`invalid --log-format "java": must be one of console/text`）；`console`/`text`、默认值、`IMEX_LOG_FORMAT=console` 覆盖 `--log-format text` 四种情形实测符合预期。`javaHandler` → `consoleHandler`、`LogFormatJava` → `LogFormatConsole`，帮助行与 `docs/cli-oracle.txt` 三个携带该标志的段落同步（note 11），帮助侧 delta 仍 **0 / 16 / 2**。 |
 | Parquet 导出此前恒为**未压缩**（parquet-go 的 `WriterConfig.Compression` 缺省即 `Uncompressed`，代码只设了 `Schema` 与 `MaxRowsPerRowGroup`），用户需要按数据形态在体积与 CPU 之间取舍 | 新增 `--parquet-compression none\|snappy\|zstd`，默认 `none`（旧行为即默认，产物逐字节不变），仅 `--format parquet`（其它格式越界、非法取值均退出 2）。三值都来自已有的 indirect 依赖 `klauspost/compress v1.18.5`，不新增模块，二进制 +4 KB。导入**没有也不需要**对应选项：codec 写在每列块 footer 里，`parquet.NewReader` 自动解码。实测 20,000 行往返：三档 footer 分别为 `UNCOMPRESSED`/`SNAPPY`/`ZSTD`，文件 2,363,430 / 997,410 / 759,240 B，导入后行数 20,000、CRC 和均为 42900513945642；不带选项与 `none` 逐字节相同。300k 行取舍矩阵见需求文档 5.3。定级 Y。详见需求文档变更记录 75 |
-| `--mode create` 配 `-t`、而 SQL 文件里没有 `CREATE TABLE` 时，不做预检就把第一批 INSERT 发出去，最后报服务端的原始 `Error 1146 Table … doesn't exist`（实测 5 行全部 failed，文案既不说“文件没有建表语句”，也不说怎么补） | 建表分支在读取任何数据之前先探测 `-t` 指定的表：文件无 CREATE 且表不存在时退出 1，文案为 `create mode found no CREATE TABLE statement in the SQL file and table "x" does not exist in database "db": re-export with --create, or import with --mode insert into an existing table`；表存在时照旧导入（实测 read=5 inserted=5）。失败路径从“1 条批量 INSERT”变成“0 条 INSERT + 1 条 information_schema 探测”，成功路径多同一条探测，故定级 Y。详见需求文档变更记录 76 |
+| `--mode create` 配 `-t`、而 SQL 文件里没有 `CREATE TABLE` 时，不做预检就把第一批 INSERT 发出去，最后报服务端的原始 `Error 1146 Table … doesn't exist`（实测 5 行全部 failed，文案既不说“文件没有建表语句”，也不说怎么补） | 建表分支在读取任何数据之前先探测 `-t` 指定的表：文件无 CREATE 且表不存在时退出 1，文案为 `create mode found no CREATE TABLE statement in the SQL file and table "x" does not exist in database "db": re-export with --create, or import with --mode insert into an existing table`；表存在时照旧导入（实测 read=5 inserted=5）。失败路径从“1 条批量 INSERT”变成“0 条 INSERT + 1 条 information_schema 探测”，成功路径多同一条探测，故定级 Y。详见需求文档变更记录 76。**注（2026-11-03，变更记录 127）**：本行引的文案后半句已改写——`--create` 连同「SQL 导出可带建表」这件事一起删掉了，现在那句是 `put the imex show tab <table> definition in front of the data, or import with --mode insert into an existing table`；行为一字未变（仍是读取任何数据之前退出 1、一条 INSERT 都不发），变的只是指引指向哪里。 |
 | 表头开关叫 `--no-col-names`：名字来自 DB2 的 `MODIFIED BY NOCOLNAMES`，读起来像“列名映射”而不是“关掉表头行”；导入侧忘记它时首行被当表头丢掉，3 行只进 2 行仍退出 0 | 两侧统一改名为 `--no-header`（导出“不写表头行”、导入“文件没有表头行”），硬改名不留别名：旧名在两侧都是 `unknown flag`、退出 2。实测 `export --no-header` 产物 3 行且首行即数据，`import --no-header -c id,name` 落库 3 行；配置回显键改为 `no_header`，WARN 文案提示补 `--no-header`。定级 X。详见需求文档变更记录 77 **注：本行改名已由下一条（变更 78）撤回。** |
 | 上一条把表头开关改名为 `--no-header`，用户复核认为原名更清楚：「`--no-col-names` 还是比 `--no-header` 清晰明了」——前者直说“不输出列名 / 首行不是列名”，后者容易被读成“文件没有头部（前导区）” | 撤回改名（改动从未提交、从未发布，因此无兼容成本，也不需要别名）。**实测**（本机 MariaDB，3 行表）：`export --no-col-names` 产物 3 行、首行即数据，配置回显 `no_col_names=true`；`import --no-col-names -c id,name` 退出 0、`read=3 inserted=3`、落库 3 行；同一文件只给 `-c` 时退出 0、只落 2 行，WARN 逐字点名 `--no-col-names`；两个子命令的 `--no-header` 均退出 **2**、`unknown flag: --no-header`。帮助文本、范围标记与配置回显键全部回到 v0.2.2 的形态（`docs/cli-oracle.txt` 的 `## export` 二次重新基线后 diff 0 行，`## import` 16 行、`## root` 2 行不变），故相对上一版无契约面变化，与上一条在面①上相抵；`TestCLINoHeaderIsUnknown` 钉住“只有一个名字”。详见需求文档变更记录 78 |
 | 目标表带 `VIRTUAL`/`STORED GENERATED` 生成列时，导入在第一批就失败：导出的 `INSERT` 列清单包含生成列，服务端严格模式回 `Error 1906 … The value specified for generated column … has been ignored`，实测 DEL / SQL / Parquet / `--mode create` 四条路径全部 `read=3 inserted=0 failed=3`（本机 mysqldump 的产物同样报 1906，不是 imex 独有的回退） | 导入前查一次 `information_schema.COLUMNS … EXTRA LIKE '%GENERATED%'`，把生成列从 `INSERT` 列清单里排除，并按原始位置掩码删掉每行对应值；DEL 的列类型/二进制标志仍按过滤前的列序解析，生成列夹在中间也不会错位。服务端按表达式重算，值不变。修复后四种路径均 `rows=3/3 mismatch=0`，服务端语句实测为 `INSERT INTO … (`id`, `v`)`；查询失败只 WARN 并按旧行为发送。详见需求文档变更记录 79 |
@@ -1274,7 +1269,7 @@ imex/
 │       ├── show_test.go         # show 六个 kind 的定义文本、库限定名、别名与回放
 │       ├── channel_test.go      # list/show 四格输出通道、同路径拒绝、--no-overwrite、追加语义
 │       ├── lock_contention_test.go # 重复主键 × 导入并发的锁冲突回归（真实二进制 + 真实库）
-│       └── export_cli_test.go   # 导出 CLI 三项：schema 限定查询、`--create` 默认、`-q @file`
+│       └── export_cli_test.go   # 导出 CLI 三项：schema 限定查询、产物无 DDL 且旧选项为未知选项、`-q @file`
 ├── docs/
 │   ├── requirements.md          # 需求文档
 │   └── cli-oracle.txt           # 已发布二进制的 --help 契约快照（回归基线）
