@@ -300,7 +300,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。`--engine pg` 时 `--session-var` 与 `-f sql` 以及 `--mode replace`/`--mode create`/`--mode insert_update` 都会被拒绝（退出码 `2`，见「PostgreSQL 引擎」）。
+连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。`--engine pg` 时 `--session-var` 与 `-f sql` 以及 `--mode create` 会被拒绝（退出码 `2`，见「PostgreSQL 引擎」）；`--mode replace` 与 `--mode insert_update` 与 `--threads` 可用，但 replace 在 pg 侧只是 `DELETE FROM`（没有可关的引用检查）、insert_update 要求表上有一把唯一的键（见下）。
 
 **导入选项：**
 
@@ -561,7 +561,11 @@ imex import --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe \
 imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 ```
 
-**能用的**：`export -f del|parquet`（单线程）、`import -f del|parquet --mode insert`（单线程）、`list` 的七个对象（`dbs tab vws col idx trg rtn`）。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
+**能用的**：`export -f del|parquet`（单线程）、`import -f del|parquet` 的 `--mode insert|replace|insert_update` 与 `--threads 1–256`、`list` 的七个对象（`dbs tab vws col idx trg rtn`）。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
+
+`--mode replace` 在这一引擎上是「`DELETE FROM 表`，不带任何会话开关」：MySQL 侧那句 `SET FOREIGN_KEY_CHECKS=0` 是 MySQL 语法，pg 没有等价设置，工具不发也不编造。代价是引用完整性关不掉——被别的表引用的表在清空时报 `SQLSTATE 23503`、退出 `1`，且原有行一条不少（实测 `parent` 两行仍在）。这是两引擎的真实行为差异，不是缺陷。
+
+`--mode insert_update` 的冲突键由目录表读出而不是猜：有主键用主键（其余唯一键另记一条 warn，因为 `ON CONFLICT (a)` 不会在 `b` 的冲突上触发而 MySQL 会）；无主键但只有一把唯一键就用它；无主键且有**两把以上**唯一键则退出 `1`，并且发生在写入任何数据之前。没有主键也没有任何唯一键时语句退回普通 `INSERT` 并给出 warn（重复导入会翻倍），与 MySQL 侧同口径。PostgreSQL 对新行和被改行都记 1 行受影响，`RowsAffected` 分不出插入与更新，所以这条语句带 `RETURNING (xmax = 0)` 逐行回执，`inserted`/`updated` 按回执计数、`unchanged` 由「文件行数 − 回执行数」得出；子句末尾另有 `IS DISTINCT FROM` 守卫，值已经完全相同的行不改写，实测那一行的 `xmin` 与 `ctid` 都不动，与 MySQL 记 0 受影响行的口径一致。文件里**同一个冲突键出现两次**时两引擎不同：这些行落进同一条语句时 PostgreSQL 拒绝执行（`ON CONFLICT DO UPDATE command cannot affect row a second time`，`SQLSTATE 21000`）、整个导入回滚并退出 `1`，MySQL 则按文件顺序逐行应用、最后一条生效；给同一份文件加 `--batch-size 1` 后两侧结果与计数一致，工具不替你重排或去掉文件里的行。
 
 **不能用的**（连库之前就被拦下，退出码 `2`，文案点名原因）：
 
@@ -570,12 +574,12 @@ imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 | `show`（六个 kind 全部） | PostgreSQL 没有 `SHOW CREATE` 语句族，产物也回放不进 `imex import -f sql`；取定义请用 `pg_dump` |
 | `list evt` | PostgreSQL 没有事件调度器，定时作业在 `cron` 或 `pgAgent` 里 |
 | `export/import -f sql` | 产物是 MySQL 方言（`SET NAMES`、反引号、`ON DUPLICATE KEY UPDATE`），PostgreSQL 读不进去 |
-| `--threads > 1` | 并行分片走 `MOD()` 与 `LIMIT … OFFSET`，只有 MySQL 方言 |
-| `--mode replace\|create\|insert_update` | 分别依赖 `TRUNCATE`+建库语义、`SHOW CREATE` 拼 DDL、`ON DUPLICATE KEY UPDATE` |
+| `export --threads > 1` | 并行导出靠 `MOD()` 与 `LIMIT … OFFSET` 切分片，只有 MySQL 方言，且 pg 侧尚未实测吞吐（导入侧的 `--threads` 已放行，见上） |
+| `--mode create` | 它跑的是 SQL 文件里来自 MySQL dump 的 `CREATE TABLE` 文本，而本工具在 pg 侧也导不出那种文本；请自行建表后用 `--mode insert` |
 | `--session-var` | 会话参数名与 `SET` 语法两边不同形，不猜 |
 | `--no-hex-blob` | `bytea` 走文本协议时裸 NUL 报 `SQLSTATE 22021`，pg 侧恒用 `0x` 十六进制，关不掉 |
 
-**取值写法与 MySQL 不同**（这是 pg 的原生文本，不是转译成 MySQL 样式）：`boolean` → `t`/`f`；`timestamp` → `2026-01-31 09:26:15.123456`；`timestamptz` → `2026-01-31 09:26:15.123456+08`；`date` → `2026-01-31`；`real`/`double precision` → Go 最短往返写法；特殊值 `infinity`/`-infinity` 原样透传，`±Inf`/`NaN` 写成 `Infinity`/`-Infinity`/`NaN`；NULL 仍是 `-`；`bytea` 恒为 `0x…`。
+**取值写法与 MySQL 不同**（这是 pg 的原生文本，不是转译成 MySQL 样式）：`boolean` → `t`/`f`；`timestamp` → `2026-01-31 09:26:15.123456`；`timestamptz` → `2026-01-31 09:26:15.123456+08`；`date` → `2026-01-31`；`real`/`double precision` → Go 最短往返写法；特殊值 `infinity`/`-infinity` 原样透传，`±Inf`/`NaN` 写成 `Infinity`/`-Infinity`/`NaN`；`bit(n)`/`bit varying(n)` → 比特串本身（`10100101`、`101`，与 `psql -t -A` 一致；变更记录 129 之前它被当成二进制列打成 `0x3130313030313031`，即那串 ASCII 的十六进制）；NULL 是一个**空字段**（两个分隔符之间没有内容，与 MySQL 侧同一套 DEL 布局规则，不是 `-`）；`bytea` 恒为 `0x…`。
 
 **`--default-charset` 在 pg 侧是 `client_encoding`**，只认五个名字：`UTF8`、`LATIN1`、`GBK`、`GB18030`、`SQL_ASCII`（写 `utf8mb4`/`utf8` 会落到 `UTF8`，`latin1`/`iso-8859-1` 落到 `LATIN1`，`gbk`/`936` 落到 `GBK`，`gb18030`/`5488` 落到 `GB18030`，`ascii`/`us-ascii` 落到 `SQL_ASCII`）。表外取值是用法错误、退出 `2`：`invalid --default-charset "nonsense" with --engine pg: PostgreSQL has no such client encoding (supported: utf8mb4, latin1, gbk, gb18030, ascii)`。
 

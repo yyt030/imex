@@ -64,6 +64,20 @@ type Importer struct {
 	// is nil whenever row order equals INSERT order — the common run, whose
 	// writers then flatten rows with a single append.
 	projection []int
+
+	// upsertTarget names the key an upsert conflicts on, for the engines whose
+	// syntax requires one (see backend.UpsertNeedsTarget). It is resolved once,
+	// in the insert_update pre-flight, before any batch is built.
+	upsertTarget []string
+
+	// upsertSuffix and upsertReturning are the two halves of the clause
+	// insert_update appends to a batch, resolved once by prepareUpsert from the
+	// final column list rather than per batch: the row count changes the VALUES
+	// list, never the clause. upsertReturning is non-empty only where the engine
+	// cannot tell a new row from a rewritten one by its affected-rows number
+	// (see backend.UpsertSuffix), and the writer then reads those rows back.
+	upsertSuffix    string
+	upsertReturning string
 }
 
 // NewImporter creates a new Importer instance
@@ -277,6 +291,9 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// INSERT and re-imports silently duplicate rows, so make that visible
 	// before any data is written.
 	if imp.cfg.Mode == config.ImportModeInsertUpdate {
+		if err := imp.resolveUpsertTarget(ctx); err != nil {
+			return err
+		}
 		if n, err := imp.countUniqueKeys(ctx); err != nil {
 			common.Logger.Warn("failed to verify unique keys for insert_update mode", "error", err)
 		} else if n == 0 {
@@ -288,17 +305,23 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// Handle import modes
 	switch imp.cfg.Mode {
 	case config.ImportModeReplace:
-		// Disable foreign key checks for replace mode
-		common.LogInteractionSQL("SET FOREIGN_KEY_CHECKS=0")
-		if _, err := imp.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
-			common.Logger.Warn("failed to disable foreign key checks", "error", err)
-		}
-		defer func() {
-			common.LogInteractionSQL("SET FOREIGN_KEY_CHECKS=1")
-			if _, err := imp.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
-				common.Logger.Warn("failed to re-enable foreign key checks", "error", err)
+		// Disable foreign key checks for replace mode, where the engine has a
+		// setting for it. PostgreSQL does not: referential integrity there is a
+		// property of each constraint, so the clear runs with checks in force and
+		// a dependent row answers SQLSTATE 23503 rather than coming loose.
+		off, on := imp.backend().FKCheckToggle()
+		if off != "" {
+			common.LogInteractionSQL(off)
+			if _, err := imp.db.ExecContext(ctx, off); err != nil {
+				common.Logger.Warn("failed to disable foreign key checks", "error", err)
 			}
-		}()
+			defer func() {
+				common.LogInteractionSQL(on)
+				if _, err := imp.db.ExecContext(ctx, on); err != nil {
+					common.Logger.Warn("failed to re-enable foreign key checks", "error", err)
+				}
+			}()
+		}
 
 		if err := imp.deleteTable(ctx); err != nil {
 			return errors.Wrap(err, "failed to delete table data")
@@ -376,15 +399,24 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// numeric/temporal fields; string fields are never rewritten. The binary
 	// flags let it decode the 0x hex literals the exporter writes for
 	// binary columns.
-	if imp.cfg.Format == "del" {
-		if delReader, ok := reader.(*DelReader); ok {
-			kinds, binaries, err := imp.columnInfoFor(ctx, readerColumns)
-			if err != nil {
+	//
+	// Parquet needs the same lookup for one of the two: every column in the file
+	// is a BYTE_ARRAY, so only the target type says whether those bytes are the
+	// column's content or the column's text. MySQL quotes a string and a byte
+	// slice identically, so the flags matter on the other engine, where a byte
+	// slice binds as a binary value and a uuid or integer[] column then receives
+	// bytes instead of the text it parses.
+	if imp.cfg.Format == "del" || imp.cfg.Format == "parquet" {
+		kinds, binaries, err := imp.columnInfoFor(ctx, readerColumns)
+		if err != nil {
+			if imp.cfg.Format == "del" {
 				common.Logger.Warn("failed to resolve target column types; DEL text modifiers disabled", "error", err)
-			} else {
-				delReader.SetColumnKinds(kinds)
-				delReader.SetBinaryColumns(binaries)
 			}
+		} else if delReader, ok := reader.(*DelReader); ok {
+			delReader.SetColumnKinds(kinds)
+			delReader.SetBinaryColumns(binaries)
+		} else if parquetReader, ok := reader.(*ParquetReader); ok {
+			parquetReader.SetBinaryColumns(binaries)
 		}
 	}
 
@@ -396,6 +428,12 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// writer), so the import stage fields are views rather than disjoint
 	// slices and must not be added together.
 	imp.setupDur = time.Since(startTime) - imp.headerDur
+
+	// The insert_update clause is resolved against the final column list, which is
+	// what both import paths build every batch from.
+	if err := imp.prepareUpsert(targetColumns); err != nil {
+		return err
+	}
 
 	// Choose parallel or single-threaded import
 	var importErr error
@@ -569,6 +607,101 @@ func (imp *Importer) countUniqueKeys(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// resolveUpsertTarget names the key the engine's upsert conflicts on, for the
+// engines that require it (see backend.UpsertNeedsTarget). It runs in the
+// insert_update pre-flight, before a batch is built, so a table the tool cannot
+// write an upsert for fails here rather than halfway through a load.
+//
+// The rule is the one MySQL's own wording implies: a primary key is the key a row
+// "already exists" on, so a primary key is the target. Without one, a single
+// unique constraint is the only key there is to mean. With two or more and no
+// primary key the candidates genuinely disagree about which stored row a file row
+// rewrites, and picking one would change the user's data, so this names the
+// candidates and stops.
+//
+// When the table has a primary key *and* further unique constraints, PostgreSQL
+// matches only the named key while MySQL matches any of them: that is not the same
+// run, so it says so before it starts.
+func (imp *Importer) resolveUpsertTarget(ctx context.Context) error {
+	be := imp.backend()
+	if !be.UpsertNeedsTarget() || imp.cfg.Table == "" {
+		return nil
+	}
+
+	uniqSQL := be.UniqueKeyIndexColumnsSQL()
+	common.LogInteractionSQL(uniqSQL, imp.cfg.Database, imp.cfg.Table)
+	rows, err := imp.db.QueryContext(ctx, common.TagSQL(uniqSQL), imp.cfg.Database, imp.cfg.Table)
+	if err != nil {
+		return errors.Wrap(err, "failed to inspect unique indexes")
+	}
+	defer rows.Close()
+
+	// One entry per key, in catalogue order (primary key first), each holding its
+	// columns in key order. A row's `isPrimary` repeats down a key's rows, so the
+	// first row of a group decides what the group is.
+	type keyGroup struct {
+		name string
+		isPK bool
+		cols []string
+	}
+	var groups []keyGroup
+	for rows.Next() {
+		var name, column string
+		var isPrimary int
+		if err := rows.Scan(&name, &isPrimary, &column); err != nil {
+			return errors.Wrap(err, "failed to scan unique index column")
+		}
+		if len(groups) == 0 || groups[len(groups)-1].name != name {
+			groups = append(groups, keyGroup{name: name, isPK: isPrimary != 0})
+		}
+		g := &groups[len(groups)-1]
+		g.cols = append(g.cols, column)
+	}
+	if err := rows.Err(); err != nil {
+		return errors.Wrap(err, "unique index iteration error")
+	}
+
+	var pk keyGroup
+	var others []keyGroup
+	for _, g := range groups {
+		if g.isPK && pk.name == "" {
+			pk = g
+		} else {
+			others = append(others, g)
+		}
+	}
+
+	switch {
+	case pk.name != "":
+		imp.upsertTarget = pk.cols
+		if len(others) > 0 {
+			names := make([]string, 0, len(others))
+			for _, g := range others {
+				names = append(names, g.name)
+			}
+			common.Logger.Warn(fmt.Sprintf("this engine matches only the key it names: ON CONFLICT (%s) does not fire on %s, which MySQL's ON DUPLICATE KEY UPDATE would have matched too",
+				strings.Join(imp.upsertTarget, ", "), strings.Join(names, ", ")),
+				"table", imp.cfg.Table)
+		}
+	case len(groups) == 1:
+		imp.upsertTarget = groups[0].cols
+		common.Logger.Debug("naming the upsert target from the table's only unique key",
+			"table", imp.cfg.Table, "key", groups[0].name, "columns", imp.upsertTarget)
+	case len(groups) == 0:
+		// No key to name. countUniqueKeys warns in the same pre-flight that the
+		// mode then degenerates to plain INSERT, and an empty target makes the
+		// backend emit no upsert clause at all.
+	default:
+		names := make([]string, 0, len(groups))
+		for _, g := range groups {
+			names = append(names, g.name)
+		}
+		return errors.Errorf("table %q has no primary key and %d unique keys (%s): imex will not guess which one an insert_update run rewrites, so give the table a primary key or use --mode insert",
+			imp.cfg.Table, len(groups), strings.Join(names, ", "))
+	}
+	return nil
+}
+
 // headerLooksLikeData reports whether the fields ReadHeader consumed as a
 // column header are more likely to be a data row. A header written by the tool
 // carries the table's own column names, so when none of the consumed fields is a
@@ -700,6 +833,34 @@ func (imp *Importer) addBatchResult(rows int64, res sql.Result) {
 	inserted := rows - updated - unchanged
 	if inserted < 0 {
 		inserted = 0
+	}
+	imp.stats.AddInserted(inserted)
+	imp.stats.AddUpdated(updated)
+	imp.stats.AddUnchanged(unchanged)
+}
+
+// addUpsertResult records the split an engine reported per row instead of by an
+// affected-rows total (see backend.UpsertSuffix). Nothing here is inferred: the
+// statement answered one row for each row it wrote, said whether that row was new,
+// and the rows the file carried that it did not touch are the remainder.
+//
+// The remainder is the same category on both engines. MySQL leaves a row whose
+// values already match the file alone and counts 0 affected rows for it;
+// PostgreSQL's clause carries an IS DISTINCT FROM guard for the same reason —
+// without it the server writes a fresh row version of a row nothing changed in,
+// which the counters would have to call an update. Measured on 14.24: the unguarded
+// form rewrote the identical row (xmin 202360 to 202361, ctid (0,1) to (0,2)) and
+// returned it, the guarded form answered zero rows for it and left xmin alone.
+func (imp *Importer) addUpsertResult(rows, inserted, updated int64) {
+	if written := inserted + updated; written > rows {
+		// Unreachable under the statement's own semantics; a server answering more
+		// rows than the batch carried must not push the counters past the file.
+		inserted = rows
+		updated = 0
+	}
+	unchanged := rows - inserted - updated
+	if unchanged < 0 {
+		unchanged = 0
 	}
 	imp.stats.AddInserted(inserted)
 	imp.stats.AddUpdated(updated)
@@ -1370,16 +1531,13 @@ func (imp *Importer) buildBatchInsertSQL(columns []string, rowCount int) (string
 		separators = rowCount - 1
 	}
 
-	// For insert_update mode, append the engine's upsert clause. PostgreSQL's
-	// ON CONFLICT needs a conflict target the tool will not guess, so the backend
-	// says so here and the CLI refuses the mode before a run ever gets this far.
-	var onDup string
-	if imp.cfg.Mode == config.ImportModeInsertUpdate {
-		var err error
-		if onDup, err = be.UpsertSuffix(targetColumns); err != nil {
-			return "", err
-		}
-	}
+	// The engine's upsert clause, resolved once by prepareUpsert from the final
+	// column list: MySQL's names no key, PostgreSQL's names the one
+	// resolveUpsertTarget picked out of the catalogue, and an engine that needs a
+	// key the tool could not name never reaches this line. The row count changes
+	// the VALUES list, never the clause, so neither half is rebuilt per batch.
+	onDup := imp.upsertSuffix
+	returning := imp.upsertReturning
 
 	// The statement is assembled once, in a buffer sized up front: the
 	// attribution comment goes in as the first bytes instead of being
@@ -1398,7 +1556,7 @@ func (imp *Importer) buildBatchInsertSQL(columns []string, rowCount int) (string
 	var sb strings.Builder
 	into := be.QuoteIdent(imp.cfg.Table)
 	sb.Grow(len(tag) + 1 + len("INSERT INTO ") + len(into) + len(" (") +
-		colListLen + len(") VALUES ") + len(groups) + separators + len(onDup))
+		colListLen + len(") VALUES ") + len(groups) + separators + len(onDup) + len(returning))
 	if tag != "" {
 		sb.WriteString(tag)
 		sb.WriteByte(' ')
@@ -1417,8 +1575,25 @@ func (imp *Importer) buildBatchInsertSQL(columns []string, rowCount int) (string
 	sb.WriteString(") VALUES ")
 	sb.WriteString(groups)
 	sb.WriteString(onDup)
+	sb.WriteString(returning)
 
 	return sb.String(), nil
+}
+
+// prepareUpsert resolves the insert_update clause once, after the INSERT's column
+// list is final (generated columns are out by then) and before the first batch is
+// built. It is a no-op for every other mode.
+func (imp *Importer) prepareUpsert(columns []string) error {
+	if imp.cfg.Mode != config.ImportModeInsertUpdate {
+		return nil
+	}
+	suffix, returning, err := imp.backend().UpsertSuffix(imp.cfg.Table, columns, imp.upsertTarget)
+	if err != nil {
+		return err
+	}
+	imp.upsertSuffix = suffix
+	imp.upsertReturning = returning
+	return nil
 }
 
 // createTableNameRe matches the table-name token that follows

@@ -19,6 +19,10 @@ type ParquetReader struct {
 	rowBuf  []parquet.Row
 	bufIdx  int
 	bufSize int
+
+	// binaryCols marks, per file position, the columns that hold raw bytes.
+	// Everything else is bound as text. See SetBinaryColumns.
+	binaryCols []bool
 }
 
 // NewParquetReader creates a new Parquet format reader.
@@ -75,6 +79,26 @@ func (p *ParquetReader) ReadHeader() ([]string, error) {
 	return p.columns, nil
 }
 
+// SetBinaryColumns marks which file columns carry raw bytes. The exporter writes
+// a bytea or BLOB column as its stored bytes and every other column as that
+// column's text, so the two need different Go bind types: a byte slice binds as
+// a binary value, and on PostgreSQL that is the only thing a bytea column takes.
+// Without the mark every byte-array cell goes out as a byte slice, which
+// PostgreSQL hands to a uuid column as its own bytes and to an integer[] column
+// as one array element per byte — measured on 14.24, both silently wrong and
+// reported as a successful insert.
+//
+// The flags arrive aligned to the file's column order, from the same
+// backend.MetadataBinary classification the DEL reader uses.
+func (p *ParquetReader) SetBinaryColumns(flags []bool) {
+	p.binaryCols = flags
+}
+
+// isBinaryColumn reports whether the file column at idx carries raw bytes.
+func (p *ParquetReader) isBinaryColumn(idx int) bool {
+	return idx < len(p.binaryCols) && p.binaryCols[idx]
+}
+
 // ReadRow reads a single row from the Parquet file.
 func (p *ParquetReader) ReadRow() (values []interface{}, err error) {
 	// Same reason as NewParquetReader: a damaged page can panic inside the
@@ -112,7 +136,7 @@ func (p *ParquetReader) ReadRow() (values []interface{}, err error) {
 			values[idx] = nil
 			continue
 		}
-		values[idx] = parquetValueToInterface(v)
+		values[idx] = parquetValueToInterface(v, p.isBinaryColumn(idx))
 	}
 
 	return values, nil
@@ -120,7 +144,14 @@ func (p *ParquetReader) ReadRow() (values []interface{}, err error) {
 
 // parquetValueToInterface converts a single parquet.Value into a Go value that
 // the importer can bind to a SQL placeholder.
-func parquetValueToInterface(v parquet.Value) interface{} {
+//
+// `binary` says the column's own content is bytes (a MySQL BLOB or a PostgreSQL
+// bytea). The writers store every column as a BYTE_ARRAY — a non-binary column
+// holds that column's text, a binary one holds its raw bytes — so the two cases
+// cannot be told apart from the file alone, and they must be bound as different
+// Go types: only a byte slice reaches a binary column as bytes, and a byte slice
+// is what corrupts the columns that are not.
+func parquetValueToInterface(v parquet.Value, binary bool) interface{} {
 	switch v.Kind() {
 	case parquet.Boolean:
 		return v.Boolean()
@@ -133,14 +164,17 @@ func parquetValueToInterface(v parquet.Value) interface{} {
 	case parquet.Double:
 		return v.Double()
 	case parquet.ByteArray, parquet.FixedLenByteArray:
-		// Return a []byte copy: byte-array values may carry raw non-UTF8
-		// content (BLOB columns stored as plain BYTE_ARRAY), and the value's
-		// backing buffer belongs to the row reader and is reused on the next
-		// ReadRows call. []byte binds to binary and character columns alike.
+		// The value's backing buffer belongs to the row reader and is reused on
+		// the next ReadRows call, so both branches copy out of it. An empty text
+		// value has to stay an empty string rather than become NULL, which is
+		// what the writer's []byte-on-write preserved on this side.
 		b := v.ByteArray()
-		out := make([]byte, len(b))
-		copy(out, b)
-		return out
+		if binary {
+			out := make([]byte, len(b))
+			copy(out, b)
+			return out
+		}
+		return string(b)
 	default:
 		return v.String()
 	}

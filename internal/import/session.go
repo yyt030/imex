@@ -133,6 +133,13 @@ func (s *writeSession) begin() error {
 // buffer. A transient connection loss is retried after reconnecting; the open
 // transaction's earlier batches are replayed first.
 func (s *writeSession) write(insertSQL string, values []interface{}, rows int) error {
+	// An engine whose affected-rows number cannot tell a new row from a rewritten
+	// one answers the statement with one row per row it touched instead, and the
+	// only way to read that is a query. See backend.UpsertSuffix.
+	if s.imp.upsertReturning != "" {
+		return s.writeCounting(insertSQL, values, rows)
+	}
+
 	var res sql.Result
 	err := common.Retry(s.ctx, s.policy, func(attempt int) error {
 		if attempt > 1 {
@@ -159,6 +166,63 @@ func (s *writeSession) write(insertSQL string, values []interface{}, rows int) e
 	s.pending = append(s.pending, pendingBatch{sql: insertSQL, values: values})
 	s.pendingBytes += batchSize(insertSQL, values)
 	return nil
+}
+
+// writeCounting is write() for an upsert whose statement carries a RETURNING
+// list: the split comes from the rows, so the counters say what the server
+// actually did rather than what an affected-rows total permits the tool to
+// infer. The retry shape is unchanged — a batch that has to be replayed is
+// counted once, on the attempt that succeeded.
+func (s *writeSession) writeCounting(insertSQL string, values []interface{}, rows int) error {
+	var inserted, updated int64
+	err := common.Retry(s.ctx, s.policy, func(attempt int) error {
+		if attempt > 1 {
+			if err := s.reconnect(); err != nil {
+				return err
+			}
+		}
+		newRows, rewroteRows, err := s.applyCounting(insertSQL, values)
+		if err != nil {
+			return err
+		}
+		inserted, updated = newRows, rewroteRows
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	s.imp.addUpsertResult(int64(rows), inserted, updated)
+	s.rowsInTx += int64(rows)
+	s.pending = append(s.pending, pendingBatch{sql: insertSQL, values: values})
+	s.pendingBytes += batchSize(insertSQL, values)
+	return nil
+}
+
+// applyCounting runs the statement and reads its one-column result: true for a
+// row the statement created, false for a row it rewrote.
+func (s *writeSession) applyCounting(insertSQL string, values []interface{}) (inserted, updated int64, err error) {
+	rows, err := s.tx.QueryContext(s.ctx, insertSQL, values...)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var isNew bool
+		if err := rows.Scan(&isNew); err != nil {
+			return 0, 0, err
+		}
+		if isNew {
+			inserted++
+		} else {
+			updated++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	return inserted, updated, nil
 }
 
 // reconnect discards the dead transaction, opens a new one and replays every

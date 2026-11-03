@@ -1,7 +1,11 @@
 package backend
 
 import (
+	"net/url"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
@@ -218,18 +222,78 @@ func TestSnapshotSteps(t *testing.T) {
 	}
 }
 
-// TestUpsertSuffixRefusesPG is the library-caller guard behind the CLI refusal.
+// TestUpsertSuffix checks both engines' upsert clause, including the one case
+// PostgreSQL answers with no clause at all: a table with no key to name.
 func TestUpsertSuffix(t *testing.T) {
 	cols := []string{"a", "b"}
-	got, err := Must(EngineMySQL).UpsertSuffix(cols)
+	got, ret, err := Must(EngineMySQL).UpsertSuffix("t", cols, nil)
 	if err != nil {
 		t.Fatalf("mysql upsert: %v", err)
 	}
 	if want := " ON DUPLICATE KEY UPDATE `a` = VALUES(`a`), `b` = VALUES(`b`)"; got != want {
 		t.Fatalf("mysql suffix = %q, want %q", got, want)
 	}
-	if _, err := Must(EnginePG).UpsertSuffix(cols); err == nil {
-		t.Fatal("PostgreSQL must refuse to guess an ON CONFLICT target")
+	if ret != "" {
+		t.Fatalf("mysql must not ask for rows back: 1, 2 and 0 affected rows already say it, got %q", ret)
+	}
+	if Must(EngineMySQL).UpsertNeedsTarget() {
+		t.Fatal("MySQL must not be asked for a conflict target: it would cost a catalogue query per run")
+	}
+
+	// The guard is part of the pinned text, not an optimisation: without it a row
+	// whose values already match the file is rewritten and reported as an update,
+	// while MySQL counts the same row as unchanged.
+	got, ret, err = Must(EnginePG).UpsertSuffix("t", cols, []string{"a"})
+	if err != nil {
+		t.Fatalf("pg upsert: %v", err)
+	}
+	want := ` ON CONFLICT ("a") DO UPDATE SET "a" = EXCLUDED."a", "b" = EXCLUDED."b"` +
+		` WHERE "t"."a" IS DISTINCT FROM EXCLUDED."a" OR "t"."b" IS DISTINCT FROM EXCLUDED."b"`
+	if got != want {
+		t.Fatalf("pg suffix = %q, want %q", got, want)
+	}
+	if ret != " RETURNING (xmax = 0)" {
+		t.Fatalf("pg returning = %q", ret)
+	}
+	// A composite target keeps its column order, which is what makes the index it
+	// matches unambiguous.
+	got, _, err = Must(EnginePG).UpsertSuffix("t", cols, []string{"b", "a"})
+	if err != nil {
+		t.Fatalf("pg composite upsert: %v", err)
+	}
+	want = ` ON CONFLICT ("b", "a") DO UPDATE SET "a" = EXCLUDED."a", "b" = EXCLUDED."b"` +
+		` WHERE "t"."a" IS DISTINCT FROM EXCLUDED."a" OR "t"."b" IS DISTINCT FROM EXCLUDED."b"`
+	if got != want {
+		t.Fatalf("pg composite suffix = %q, want %q", got, want)
+	}
+	// A name the statement has to quote is qualified by that same spelling, or the
+	// guard would point at a relation the INSERT never named.
+	got, _, err = Must(EnginePG).UpsertSuffix("Mixed Case", []string{"id"}, []string{"id"})
+	if err != nil {
+		t.Fatalf("pg quoted-name upsert: %v", err)
+	}
+	if want := ` ON CONFLICT ("id") DO UPDATE SET "id" = EXCLUDED."id"` +
+		` WHERE "Mixed Case"."id" IS DISTINCT FROM EXCLUDED."id"`; got != want {
+		t.Fatalf("pg quoted-name suffix = %q, want %q", got, want)
+	}
+	if s, r, err := Must(EnginePG).UpsertSuffix("t", cols, nil); err != nil || s != "" || r != "" {
+		t.Fatalf("pg suffix without a target = %q / %q, %v; want empty clause and no RETURNING", s, r, err)
+	}
+	if !Must(EnginePG).UpsertNeedsTarget() {
+		t.Fatal("PostgreSQL's ON CONFLICT must be given a target")
+	}
+}
+
+// TestFKCheckToggle pins the one session statement pair --mode replace wraps
+// around the clear: MySQL's own two statements, byte for byte, and nothing at all
+// where the engine has no such setting.
+func TestFKCheckToggle(t *testing.T) {
+	off, on := Must(EngineMySQL).FKCheckToggle()
+	if off != "SET FOREIGN_KEY_CHECKS=0" || on != "SET FOREIGN_KEY_CHECKS=1" {
+		t.Fatalf("mysql toggle = %q / %q", off, on)
+	}
+	if off, on := Must(EnginePG).FKCheckToggle(); off != "" || on != "" {
+		t.Fatalf("pg toggle = %q / %q; PostgreSQL has no session switch for referential checks", off, on)
 	}
 }
 
@@ -262,6 +326,7 @@ func TestMetadataProbes(t *testing.T) {
 		{"column_list", func(b Backend) string { return b.ColumnListSQL() }, 2},
 		{"generated_columns", func(b Backend) string { return b.GeneratedColumnsSQL() }, 2},
 		{"unique_keys", func(b Backend) string { return b.UniqueKeyColumnsSQL() }, 2},
+		{"unique_key_columns", func(b Backend) string { return b.UniqueKeyIndexColumnsSQL() }, 2},
 		{"target_check", func(b Backend) string { return b.TargetColumnCheckSQL(3) }, 5},
 		{"column_types", func(b Backend) string { return b.ColumnTypesSQL(3) }, 5},
 	} {
@@ -274,10 +339,20 @@ func TestMetadataProbes(t *testing.T) {
 	// PostgreSQL resolves the schema from the connection, not from --database,
 	// which is already spent as the DSN database.
 	pg := Must(EnginePG)
-	for _, sql := range []string{pg.TableExistsSQL(), pg.ColumnListSQL(), pg.TargetColumnCheckSQL(2), pg.ColumnTypesSQL(2), pg.GeneratedColumnsSQL(), pg.UniqueKeyColumnsSQL()} {
+	for _, sql := range []string{pg.TableExistsSQL(), pg.ColumnListSQL(), pg.TargetColumnCheckSQL(2), pg.ColumnTypesSQL(2), pg.GeneratedColumnsSQL(), pg.UniqueKeyColumnsSQL(), pg.UniqueKeyIndexColumnsSQL()} {
 		if !contains(sql, "current_schema()") {
 			t.Fatalf("probe must scope to the connection's schema: %s", sql)
 		}
+	}
+
+	// The conflict-target probe answers one row per key column, in key order, with
+	// the primary key's rows first — the only shape that can name a composite
+	// target. Each engine spells that in its own catalogue's vocabulary.
+	if sql := Must(EngineMySQL).UniqueKeyIndexColumnsSQL(); !contains(sql, "SEQ_IN_INDEX") {
+		t.Fatalf("mysql key-column probe does not order by key position: %s", sql)
+	}
+	if sql := Must(EnginePG).UniqueKeyIndexColumnsSQL(); !contains(sql, "WITH ORDINALITY") {
+		t.Fatalf("pg key-column probe does not unfold the key in order: %s", sql)
 	}
 }
 
@@ -368,6 +443,116 @@ func TestPacketCeilingWithoutConnection(t *testing.T) {
 	}
 }
 
+// TestPGConnectURLPinsTheConnectionParams closes the gap 11.2 named first: the four
+// parameters Open() puts in the connection URL had no case holding their values, so
+// dropping or re-spelling one stayed invisible. Both halves are pinned here — the
+// text this tool emits, and what pgx makes of that text, because a parameter the
+// driver does not read is worth nothing. StatementTimeout's min-of-two rule and the
+// whole-second rounding of connect_timeout are the two places a future edit is most
+// likely to change behaviour quietly.
+func TestPGConnectURLPinsTheConnectionParams(t *testing.T) {
+	base := &config.Config{
+		Host: "127.0.0.1", Port: 5432, User: "pgprobe", Password: "s3cret",
+		Database: "pgprobe", DefaultCharset: config.DefaultCharset,
+	}
+	s, err := connectURL(base)
+	if err != nil {
+		t.Fatalf("connectURL(defaults): %v", err)
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatalf("the emitted DSN does not parse: %v (%s)", err, s)
+	}
+	q := u.Query()
+	if q.Get("sslmode") != "disable" {
+		t.Errorf("sslmode = %q, want disable: a run the docs call plaintext must not negotiate TLS", q.Get("sslmode"))
+	}
+	if q.Get("client_encoding") != "UTF8" {
+		t.Errorf("client_encoding = %q, want UTF8 for the shipped --default-charset", q.Get("client_encoding"))
+	}
+	if _, ok := q["statement_timeout"]; ok {
+		t.Errorf("statement_timeout = %q with no socket timeout set; the option was not given", q.Get("statement_timeout"))
+	}
+	if _, ok := q["connect_timeout"]; ok {
+		t.Errorf("connect_timeout = %q with no --connect-timeout set", q.Get("connect_timeout"))
+	}
+	if u.Scheme != "postgres" || u.Host != "127.0.0.1:5432" || u.Path != "/pgprobe" {
+		t.Errorf("DSN identity = %s://%s%s, want postgres://127.0.0.1:5432/pgprobe", u.Scheme, u.Host, u.Path)
+	}
+
+	// What pgx reads out of that DSN: no TLS config, and the encoding as a session
+	// parameter it will actually send.
+	pc, err := pgconn.ParseConfig(s)
+	if err != nil {
+		t.Fatalf("pgx rejected the DSN this tool emits: %v", err)
+	}
+	if pc.TLSConfig != nil {
+		t.Error("pgx built a TLS config from sslmode=disable")
+	}
+	if pc.RuntimeParams["client_encoding"] != "UTF8" {
+		t.Errorf("pgx client_encoding = %q, want UTF8", pc.RuntimeParams["client_encoding"])
+	}
+	if pc.Host != "127.0.0.1" || pc.Port != 5432 || pc.Database != "pgprobe" || pc.User != "pgprobe" || pc.Password != "s3cret" {
+		t.Errorf("pgx read the identity as host=%q port=%d db=%q user=%q pw=%q", pc.Host, pc.Port, pc.Database, pc.User, pc.Password)
+	}
+
+	got := connectURLMust(t, &config.Config{
+		Host: "127.0.0.1", Port: 5432, User: "u", Password: "p@ss:w/ord?=&%",
+		Database: "d", DefaultCharset: "gbk",
+		SocketReadTimeout: 90 * time.Second, SocketWriteTimeout: 30 * time.Second,
+		ConnectTimeout: 1500 * time.Millisecond,
+	})
+	q = urlQuery(t, got)
+	// The charset maps, the smaller of the two socket deadlines wins, and a
+	// sub-second connect deadline rounds up rather than dialling with zero budget.
+	if q.Get("client_encoding") != "GBK" {
+		t.Errorf("client_encoding for --default-charset gbk = %q", q.Get("client_encoding"))
+	}
+	if q.Get("statement_timeout") != "30000ms" {
+		t.Errorf("statement_timeout = %q, want the 30 s socket deadline of 30000ms", q.Get("statement_timeout"))
+	}
+	if q.Get("connect_timeout") != "2" {
+		t.Errorf("connect_timeout = %q, want 1.5 s rounded up to 2", q.Get("connect_timeout"))
+	}
+	pc, err = pgconn.ParseConfig(got)
+	if err != nil {
+		t.Fatalf("pgx rejected a DSN built from a reserved-character password: %v", err)
+	}
+	if pc.Password != "p@ss:w/ord?=&%" {
+		t.Errorf("pgx recovered %q from the URL, want the password unchanged", pc.Password)
+	}
+	if pc.ConnectTimeout != 2*time.Second {
+		t.Errorf("pgx ConnectTimeout = %v, want 2s", pc.ConnectTimeout)
+	}
+	if pc.RuntimeParams["statement_timeout"] != "30000ms" {
+		t.Errorf("pgx statement_timeout = %q, want 300000ms", pc.RuntimeParams["statement_timeout"])
+	}
+
+	// A rejected charset has to fail here, not reach the server as a nonsense
+	// parameter: the CLI's own check runs earlier, but the backend must not lie.
+	if _, err := connectURL(&config.Config{DefaultCharset: "big5"}); err == nil {
+		t.Error("connectURL accepted a charset PostgreSQL has no encoding for")
+	}
+}
+
+func connectURLMust(t *testing.T, cfg *config.Config) string {
+	t.Helper()
+	s, err := connectURL(cfg)
+	if err != nil {
+		t.Fatalf("connectURL: %v", err)
+	}
+	return s
+}
+
+func urlQuery(t *testing.T, s string) url.Values {
+	t.Helper()
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatalf("parse %q: %v", s, err)
+	}
+	return u.Query()
+}
+
 // TestMetadataClassificationVocabulary pins the two type vocabularies the DEL,
 // Parquet and import paths classify against, including the types that must NOT be
 // treated as binary (uuid, json) and the ones that must be (bytea, bit).
@@ -409,8 +594,14 @@ func TestMetadataClassification(t *testing.T) {
 			t.Errorf("pg type %q = %v, want %v", name, got, want)
 		}
 	}
-	if !p.MetadataBinary("bytea") || !p.MetadataBinary("BIT") {
-		t.Fatal("bytea and bit must be binary")
+	if !p.MetadataBinary("bytea") {
+		t.Fatal("bytea must be binary")
+	}
+	// pgx hands back the ASCII bit string, not a packed byte string, so the hex
+	// rule would write 0x3130313030313031 for a value the server prints as 8
+	// characters. Measured on 14.24.
+	if p.MetadataBinary("BIT") || p.MetadataBinary("VARBIT") || p.MetadataBinary("bit varying") {
+		t.Fatal("bit and varbit arrive as printable text and must not take the hex path")
 	}
 	if p.MetadataBinary("uuid") || p.MetadataBinary("json") || p.MetadataBinary("text") {
 		t.Fatal("uuid/json/text are printable and must not take the hex path")

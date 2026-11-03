@@ -146,9 +146,37 @@ type Backend interface {
 
 	// UpsertSuffix returns the clause that turns an INSERT into
 	// "update on duplicate key", or an error for engines whose syntax the tool
-	// does not emit. --mode insert_update is refused at the CLI as well; this is
-	// the library-caller's guard.
-	UpsertSuffix(columns []string) (string, error)
+	// does not emit. table is the target of the INSERT, already the way the
+	// statement spells it; conflictTarget is what UpsertNeedsTarget asks for. An
+	// engine that needs neither passes them straight through unused.
+	//
+	// The second result is a RETURNING list, and it is what makes the counters
+	// true. PostgreSQL's affected-rows number counts a rewritten row and a new
+	// row the same way, so a run that updated 999 rows and inserted 1 reports
+	// exactly what a run that inserted all 1,000 reports; asking for one row per
+	// row the statement touched is the only way to tell them apart. MySQL answers
+	// 1, 2 or 0 per row and needs nothing back, so it returns "".
+	//
+	// The engines report the same three categories, not two. An INSERT that meets
+	// a row whose values are already the ones the file carries leaves that row
+	// alone on both engines — MySQL counts 0 affected rows, PostgreSQL's clause
+	// adds a WHERE guard and answers no row — and the importer files the difference
+	// under unchanged. See UpsertSuffix on each engine for the measured form.
+	UpsertSuffix(table string, columns, conflictTarget []string) (suffix, returning string, err error)
+
+	// UpsertNeedsTarget says whether the engine's upsert syntax has to be told
+	// which key it conflicts on. MySQL's ON DUPLICATE KEY UPDATE matches any
+	// unique key the server finds, so there is nothing to name; PostgreSQL's
+	// ON CONFLICT does not have that freedom, and an unnamed one is a syntax
+	// error. The caller resolves the target only where this answers true, so a
+	// MySQL run pays no extra catalogue query for PostgreSQL's grammar.
+	UpsertNeedsTarget() bool
+
+	// FKCheckToggle returns the two statements that turn referential checks off
+	// and back on around a --mode replace run, or empty strings for an engine
+	// with no such session setting. The caller emits neither when they are empty:
+	// a run must not log and retry a statement the server cannot parse.
+	FKCheckToggle() (off, on string)
 
 	// SnapshotSteps lists, in order, the statements that open a repeatable-read
 	// consistent read on a fresh connection, and the wording the tool has always
@@ -188,6 +216,14 @@ type Backend interface {
 	// --mode insert_update still answer with a valid statement, because the
 	// exporter-side column pre-flight is not mode-dependent.
 	UniqueKeyColumnsSQL() string
+
+	// UniqueKeyIndexColumnsSQL returns the same catalogue one row per key column
+	// instead of one row per table: (index or constraint name, primary-key flag,
+	// column name), ordered so a primary key's rows come before a unique key's
+	// and each group is in key order. This is what names an ON CONFLICT target;
+	// UniqueKeyColumnsSQL stays the count the pre-flight uses, so a MySQL run
+	// emits exactly the statements it always did.
+	UniqueKeyIndexColumnsSQL() string
 
 	// ColumnKinds and BinaryFlags classify the columns of a result set for the
 	// DEL/SQL/Parquet writers. They take driver type names, which are

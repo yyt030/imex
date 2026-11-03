@@ -79,8 +79,11 @@ func (mysqlBackend) BatchWords() BatchWords {
 }
 
 // UpsertSuffix is the ON DUPLICATE KEY UPDATE clause, built exactly as the
-// importer built it before this method existed.
-func (b mysqlBackend) UpsertSuffix(columns []string) (string, error) {
+// importer built it before this method existed. table and conflictTarget are
+// unused: this is the engine whose upsert names no key, and the server decides for
+// itself that a row whose values already match the file is worth 0 affected rows
+// rather than rewriting it — which is why no guard is spelled here.
+func (b mysqlBackend) UpsertSuffix(table string, columns, conflictTarget []string) (string, string, error) {
 	var od strings.Builder
 	od.WriteString(" ON DUPLICATE KEY UPDATE ")
 	for i, col := range columns {
@@ -92,7 +95,21 @@ func (b mysqlBackend) UpsertSuffix(columns []string) (string, error) {
 		od.WriteString(b.QuoteIdent(col))
 		od.WriteString(")")
 	}
-	return od.String(), nil
+	// No RETURNING: 1, 2 and 0 affected rows already say which of new, changed and
+	// identical a row was, so reading rows back would cost a round trip's worth of
+	// result bytes for nothing.
+	return od.String(), "", nil
+}
+
+// UpsertNeedsTarget is false here: ON DUPLICATE KEY UPDATE is decided by the
+// server, which matches whatever unique key a row collides with.
+func (mysqlBackend) UpsertNeedsTarget() bool { return false }
+
+// FKCheckToggle is the pair --mode replace has always sent. MariaDB and MySQL
+// both take it as a session setting; the re-enable is issued on the way out even
+// when the run failed, which is why the caller defers it.
+func (mysqlBackend) FKCheckToggle() (off, on string) {
+	return "SET FOREIGN_KEY_CHECKS=0", "SET FOREIGN_KEY_CHECKS=1"
 }
 
 func (mysqlBackend) SnapshotSteps() []SnapshotStep {
@@ -194,6 +211,19 @@ func (mysqlBackend) UniqueKeyColumnsSQL() string {
 	return `SELECT COUNT(DISTINCT INDEX_NAME)
 FROM information_schema.STATISTICS
 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND (NON_UNIQUE = 0 OR INDEX_NAME = 'PRIMARY')`
+}
+
+// UniqueKeyIndexColumnsSQL is the same catalogue one row per key column, with a
+// primary-key flag in place of NON_UNIQUE because a unique index and a primary key
+// share NON_UNIQUE = 0 and only one of them is the key an upsert means. A
+// functional index has no COLUMN_NAME here, only its expression, so those rows are
+// left out: a name is what a conflict target has to be built from.
+func (mysqlBackend) UniqueKeyIndexColumnsSQL() string {
+	return `SELECT INDEX_NAME, (INDEX_NAME = 'PRIMARY'), COLUMN_NAME
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+  AND (NON_UNIQUE = 0 OR INDEX_NAME = 'PRIMARY') AND COLUMN_NAME IS NOT NULL
+ORDER BY (INDEX_NAME = 'PRIMARY') DESC, INDEX_NAME, SEQ_IN_INDEX`
 }
 
 func (mysqlBackend) ColumnKinds(colTypes []*sql.ColumnType) []common.ColumnKind {

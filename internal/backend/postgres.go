@@ -99,9 +99,25 @@ func StatementTimeout(cfg *config.Config) time.Duration {
 // every connection and would silently upgrade a run that the documentation says
 // is plaintext.
 func (postgresBackend) Open(cfg *config.Config) (*sql.DB, error) {
-	enc, err := ClientEncoding(cfg.DefaultCharset)
+	s, err := connectURL(cfg)
 	if err != nil {
 		return nil, err
+	}
+	// The error is returned unwrapped: every caller already wraps an Open failure
+	// with "failed to connect to database", and saying it twice would change the
+	// text an operator reads for an unreachable server.
+	return sql.Open("pgx", s)
+}
+
+// connectURL spells the DSN Open() hands to pgx. It is separate from Open only so
+// that a test can read the four parameters back: sslmode, client_encoding,
+// statement_timeout and connect_timeout are the whole of what this tool promises a
+// PostgreSQL session is configured with, and nothing else in the suite would notice
+// one of them being dropped or re-spelled.
+func connectURL(cfg *config.Config) (string, error) {
+	enc, err := ClientEncoding(cfg.DefaultCharset)
+	if err != nil {
+		return "", err
 	}
 	u := &url.URL{
 		Scheme: "postgres",
@@ -122,11 +138,7 @@ func (postgresBackend) Open(cfg *config.Config) (*sql.DB, error) {
 		q.Set("connect_timeout", strconv.FormatInt(secs, 10))
 	}
 	u.RawQuery = q.Encode()
-
-	// The error is returned unwrapped: every caller already wraps an Open failure
-	// with "failed to connect to database", and saying it twice would change the
-	// text an operator reads for an unreachable server.
-	return sql.Open("pgx", u.String())
+	return u.String(), nil
 }
 
 // QuoteIdent double-quotes one identifier, doubling any double quote inside it.
@@ -238,15 +250,79 @@ func (postgresBackend) BatchWords() BatchWords {
 	}
 }
 
-// UpsertSuffix refuses --mode insert_update rather than translating it. MySQL's
-// ON DUPLICATE KEY UPDATE matches "any unique key", while PostgreSQL's ON
-// CONFLICT requires the conflict target to be named, and picking one
-// implicitly would change which rows a run rewrites on a table with two unique
-// keys. cmd/validate.go rejects the mode for --engine pg as well; this is the
-// guard for library callers that build an ImportConfig by hand.
-func (postgresBackend) UpsertSuffix([]string) (string, error) {
-	return "", errors.Errorf("--mode insert_update requires --engine mysql: PostgreSQL's ON CONFLICT needs an explicit conflict target, which imex will not guess")
+// UpsertSuffix is PostgreSQL's ON CONFLICT DO UPDATE, with the two expressions the
+// counters need.
+//
+// `xmax = 0` is true for a row the statement created and false for a row it
+// rewrote, measured on 14.24 against a table holding one identical row, one
+// changed row and one new one. The affected-rows number alone cannot say that — it
+// counts both kinds as 1 — so without this RETURNING a run that rewrote every row
+// would report that it inserted every row.
+//
+// The WHERE guard is what makes the third category exist. A DO UPDATE with no
+// guard fires even when every value already matches, and PostgreSQL writes a fresh
+// row version for it (measured: xmin 202360 became 202361 and ctid (0,1) became
+// (0,2) for a row inserted with its own values), so the row would be counted as an
+// update and rewritten for nothing. Comparing every SET column with IS DISTINCT
+// FROM — which, unlike `<>`, also tells NULL from a value rather than answering
+// NULL — leaves such a row alone and returns no row for it, which is what MySQL's
+// 0 affected rows means for the same row. The columns have to be qualified with
+// the table: measured on 14.24, a bare `v IS DISTINCT FROM EXCLUDED.v` fails with
+// `column reference "v" is ambiguous`, because the target row is in scope under its
+// own names as well.
+//
+// An empty target means the table has no key to name, which is the same degenerate
+// case MySQL reports: the clause would be a syntax error, so the caller gets an
+// upsert-free INSERT and the pre-flight has already warned that repeated imports
+// duplicate rows.
+func (b postgresBackend) UpsertSuffix(table string, columns, conflictTarget []string) (string, string, error) {
+	if len(conflictTarget) == 0 {
+		return "", "", nil
+	}
+	var up strings.Builder
+	up.WriteString(" ON CONFLICT (")
+	for i, col := range conflictTarget {
+		if i > 0 {
+			up.WriteString(", ")
+		}
+		up.WriteString(b.QuoteIdent(col))
+	}
+	up.WriteString(") DO UPDATE SET ")
+	for i, col := range columns {
+		if i > 0 {
+			up.WriteString(", ")
+		}
+		up.WriteString(b.QuoteIdent(col))
+		up.WriteString(" = EXCLUDED.")
+		up.WriteString(b.QuoteIdent(col))
+	}
+	if len(columns) > 0 {
+		quotedTable := b.QuoteIdent(table)
+		up.WriteString(" WHERE ")
+		for i, col := range columns {
+			if i > 0 {
+				up.WriteString(" OR ")
+			}
+			up.WriteString(quotedTable)
+			up.WriteString(".")
+			up.WriteString(b.QuoteIdent(col))
+			up.WriteString(" IS DISTINCT FROM EXCLUDED.")
+			up.WriteString(b.QuoteIdent(col))
+		}
+	}
+	return up.String(), " RETURNING (xmax = 0)", nil
 }
+
+// UpsertNeedsTarget is true here: an ON CONFLICT without a target is a syntax
+// error, so the importer has to read the key columns before it can build one.
+func (postgresBackend) UpsertNeedsTarget() bool { return true }
+
+// FKCheckToggle returns empty strings. PostgreSQL has no session switch for
+// referential integrity — it is a property of each constraint — so a --mode
+// replace run on this engine empties the table with checks still in force and a
+// row another table depends on fails with SQLSTATE 23503 instead of being
+// silently detached.
+func (postgresBackend) FKCheckToggle() (off, on string) { return "", "" }
 
 // SnapshotSteps opens the read transaction. PostgreSQL has no
 // START TRANSACTION WITH CONSISTENT SNAPSHOT (it is a MySQL/MariaDB extension),
@@ -352,6 +428,30 @@ WHERE c.relname = $2 AND n.nspname = current_schema() AND current_database() = $
   AND con.contype IN ('p', 'u')`
 }
 
+// UniqueKeyIndexColumnsSQL unwinds the same constraints one row per key column,
+// with the primary key's rows first and a primary-key flag MySQL's catalogue can
+// answer the same way: an ON CONFLICT target has to be named, and the order is what
+// lets the caller take the primary key without a second pass.
+//
+// Only constraints appear here. A standalone unique *index* — the same effect,
+// created with CREATE UNIQUE INDEX instead of a constraint clause — is a valid
+// conflict target to PostgreSQL but has no pg_constraint row, and
+// information_schema's equivalent does not list it either, so a table whose only
+// unique key is such an index reads as "no key" on both engines.
+func (postgresBackend) UniqueKeyIndexColumnsSQL() string {
+	return `SELECT con.conname,
+       CASE WHEN con.contype = 'p' THEN 1 ELSE 0 END,
+       a.attname
+FROM pg_catalog.pg_constraint con
+JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+WHERE c.relname = $2 AND n.nspname = current_schema() AND current_database() = $1
+  AND con.contype IN ('p', 'u')
+ORDER BY (con.contype = 'p') DESC, con.conname, k.ord`
+}
+
 // lowerRange renders "LOWER($3),LOWER($4)" for n parameters beginning at `first`.
 func (postgresBackend) lowerRange(first, n int) string {
 	parts := make([]string, 0, n)
@@ -437,10 +537,19 @@ func ClassifyPostgresType(name string) common.ColumnKind {
 // in Parquet, and the --hex-blob rule in DEL and SQL.
 //
 // uuid, json and xml stay out of the list: their driver text is already valid
-// ASCII and re-imports as itself. bit/varbit are in, because pgx hands back a
-// packed byte string that a text column would corrupt.
+// ASCII and re-imports as itself.
+//
+// bit and varbit are out, against the assumption this list once recorded. What
+// pgx hands back for a bit column is the ASCII bit string, not a packed byte
+// string — measured on 14.24: `B'10100101'` comes through as the eight characters
+// "10100101", which the hex rule then wrote out as 0x3130313030313031 (18 bytes
+// for a value the server prints in 8, and 34 bytes for a bit(16)). Text is both
+// what the server prints and what its bit input accepts, so a bit column now
+// leaves and returns as its own spelling.
 var pgBinaryTypes = map[string]bool{
-	"BYTEA": true, "BIT": true, "VARBIT": true, "BIT VARYING": true,
+	"BYTEA": true,
+	// PostGIS types are named here although the extension is not a dependency:
+	// where it exists its text output is WKB hex, which no text column takes.
 	"GEOMETRY": true, "GEOGRAPHY": true, "TID": true, "PG_LSN": true,
 	"INTERVAL": false,
 }

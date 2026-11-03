@@ -93,28 +93,10 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			want: "--format sql is not supported with --engine pg: a SQL dump is parsed with the MySQL statement grammar and carries MySQL INSERT text, import a --format del or --format parquet file instead",
 		},
 		{
-			name: "import_mode_replace",
-			sub:  "import",
-			args: pgImportFlags("--mode", "replace"),
-			want: "--mode replace is not supported with --engine pg: it needs DDL or an upsert that PostgreSQL spells differently and imex will not guess, use --mode insert",
-		},
-		{
-			name: "import_mode_insert_update",
-			sub:  "import",
-			args: pgImportFlags("--mode", "insert_update"),
-			want: "--mode insert_update is not supported with --engine pg: it needs DDL or an upsert that PostgreSQL spells differently and imex will not guess, use --mode insert",
-		},
-		{
 			name: "import_mode_create",
 			sub:  "import",
 			args: pgImportFlags("--mode", "create"),
-			want: "--mode create is not supported with --engine pg: it needs DDL or an upsert that PostgreSQL spells differently and imex will not guess, use --mode insert",
-		},
-		{
-			name: "import_threads",
-			sub:  "import",
-			args: pgImportFlags("--threads", "4"),
-			want: "--threads is not supported with --engine pg: parallel import has not been measured against PostgreSQL, use --threads 1",
+			want: "--mode create is not supported with --engine pg: it runs CREATE TABLE text out of a MySQL dump, which PostgreSQL does not accept, and imex cannot export that DDL on this engine either; create the table with pg_dump or your own DDL and use --mode insert",
 		},
 		{
 			name: "import_session_var",
@@ -222,6 +204,48 @@ func TestListAndShowRefusals(t *testing.T) {
 	}
 	if !common.IsUsageError(err) {
 		t.Errorf("show charset refusal must exit 2, got %q", err)
+	}
+}
+
+// TestPGImportOptionsAreAccepted pins the other half of the import matrix: the
+// options --engine pg now serves. A refusal case deleted from the table above has
+// to reappear here, or nothing at all says which side the option belongs on.
+// --threads, --mode replace and --mode insert_update were refusals until the port
+// round measured them against a real 14.24 server.
+func TestPGImportOptionsAreAccepted(t *testing.T) {
+	type optCase struct {
+		name string
+		args []string
+	}
+	cases := []optCase{
+		{"import_threads", pgImportFlags("--threads", "8")},
+		{"import_replace", pgImportFlags("--mode", "replace")},
+		{"import_replace_with_threads", pgImportFlags("--mode", "replace", "--threads", "4")},
+		{"import_insert_update", pgImportFlags("--mode", "insert_update")},
+		{"import_insert_update_with_threads", pgImportFlags("--mode", "insert_update", "--threads", "4")},
+		{"import_parquet", pgImportFlags("-f", "parquet", "-i", "/tmp/imex-engine-test.parquet")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := validateOnly(t, "import", c.args); err != nil {
+				t.Errorf("pg import refused %v: %v", c.args, err)
+			}
+		})
+	}
+
+	// The three the pg path still cannot serve, restated so a future acceptance
+	// has to be a deliberate edit here rather than a deletion above.
+	still := []optCase{
+		{"format_sql", pgImportFlags("-f", "sql")},
+		{"mode_create", pgImportFlags("--mode", "create")},
+		{"session_var", pgImportFlags("--session-var", "sql_mode=ALL")},
+	}
+	for _, c := range still {
+		t.Run(c.name, func(t *testing.T) {
+			if err := validateOnly(t, "import", c.args); err == nil {
+				t.Errorf("%s must still be refused on --engine pg", c.name)
+			}
+		})
 	}
 }
 

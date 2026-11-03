@@ -120,11 +120,14 @@ func checkExportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.
 
 // checkImportEngineOptions rejects the import options --engine pg cannot serve.
 //
-// --mode is refused as a set rather than one by one: replace empties the table
-// with SET FOREIGN_KEY_CHECKS (a MySQL variable PostgreSQL has no equivalent of),
-// insert_update needs an ON CONFLICT target the tool will not guess, and create
-// runs CREATE TABLE text out of a MySQL dump. Only --mode insert is honest enough
-// to run.
+// Only --mode create is refused, and for a reason the mode switch cannot fix: the
+// DDL comes out of the MySQL dump reader, which this engine refuses on the other
+// side of the same chain (see checkShowEngineOptions). --mode replace empties the
+// table with DELETE, which both engines parse, and the referential-check toggle
+// that MySQL wraps around it is now the backend's to supply — PostgreSQL has no
+// such session setting and gets no statement rather than a failing one.
+// --mode insert_update builds an ON CONFLICT whose target the importer reads out
+// of the catalogue instead of guessing.
 func checkImportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.ImportConfig) error {
 	if e != backend.EnginePG {
 		return nil
@@ -132,11 +135,8 @@ func checkImportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.
 	if cfg.Format == "sql" {
 		return pgRefusal("--format sql", "a SQL dump is parsed with the MySQL statement grammar and carries MySQL INSERT text, import a --format del or --format parquet file instead")
 	}
-	if cfg.Mode != config.ImportModeInsert {
-		return pgRefusal("--mode "+string(cfg.Mode), "it needs DDL or an upsert that PostgreSQL spells differently and imex will not guess, use --mode insert")
-	}
-	if cfg.ImportThreads > 1 {
-		return pgRefusal("--threads", "parallel import has not been measured against PostgreSQL, use --threads 1")
+	if cfg.Mode == config.ImportModeCreate {
+		return pgRefusal("--mode create", "it runs CREATE TABLE text out of a MySQL dump, which PostgreSQL does not accept, and imex cannot export that DDL on this engine either; create the table with pg_dump or your own DDL and use --mode insert")
 	}
 	if cmd.Flags().Changed("session-var") {
 		return pgRefusal("--session-var", "SET <name>=<value> is MySQL session grammar and imex does not translate it, put PostgreSQL settings in the server or role configuration")
