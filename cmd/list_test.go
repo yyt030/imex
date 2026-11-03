@@ -72,7 +72,7 @@ func TestValidateListConfigRejectsBadValues(t *testing.T) {
 	}{
 		{"password", func(c *config.ListConfig) { c.Password = "" }, "--password is required (or set IMEX_PASSWORD)"},
 		{"user", func(c *config.ListConfig) { c.User = "" }, "--user is required"},
-		{"host and socket", func(c *config.ListConfig) { c.Host = ""; c.Socket = "" }, "--host or --socket is required"},
+		{"host", func(c *config.ListConfig) { c.Host = "" }, "--host is required"},
 		{"port", func(c *config.ListConfig) { c.Port = 0 }, "invalid --port"},
 		{"log level", func(c *config.ListConfig) { c.LogLevel = "verbose" }, "invalid --log-level"},
 		{"charset", func(c *config.ListConfig) { c.DefaultCharset = "klingon" }, "invalid --default-charset"},

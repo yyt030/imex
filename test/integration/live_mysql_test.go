@@ -69,20 +69,18 @@ func newLiveEnv(t *testing.T) *liveEnv {
 		SocketWriteTimeout: config.DefaultSocketTimeout,
 		ProgressInterval:   config.DefaultProgressInterval,
 	}
-	switch mc.Net {
-	case "unix":
-		base.Socket = mc.Addr
-	default:
-		host, port, err := net.SplitHostPort(mc.Addr)
-		if err != nil {
-			t.Fatalf("split DSN address %q: %v", mc.Addr, err)
-		}
-		p, err := strconv.Atoi(port)
-		if err != nil {
-			t.Fatalf("parse DSN port %q: %v", port, err)
-		}
-		base.Host, base.Port = host, p
+	if mc.Net != "tcp" {
+		t.Fatalf("IMEX_TEST_DSN must name a TCP address, got net %q", mc.Net)
 	}
+	host, port, err := net.SplitHostPort(mc.Addr)
+	if err != nil {
+		t.Fatalf("split DSN address %q: %v", mc.Addr, err)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("parse DSN port %q: %v", port, err)
+	}
+	base.Host, base.Port = host, p
 
 	common.InitLogger(config.LogLevelError)
 	return &liveEnv{db: db, base: base}

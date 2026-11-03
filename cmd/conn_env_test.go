@@ -13,8 +13,8 @@ import (
 	"github.com/imex/internal/config"
 )
 
-// The six connection options also read IMEX_HOST, IMEX_PORT, IMEX_USER,
-// IMEX_PASSWORD, IMEX_SOCKET and IMEX_DATABASE, so a container or CI job can set
+// The five connection options also read IMEX_HOST, IMEX_PORT, IMEX_USER,
+// IMEX_PASSWORD and IMEX_DATABASE, so a container or CI job can set
 // them once instead of repeating them on every call. The rule these tests pin is
 // "explicit flag > environment > built-in default", where "explicit" means
 // FlagSet.Changed(): what decides is whether the user typed the option, never
@@ -42,7 +42,6 @@ func TestConnEnvFillsUnsetOptions(t *testing.T) {
 	t.Setenv("IMEX_PORT", "3307")
 	t.Setenv("IMEX_USER", "svc")
 	t.Setenv("IMEX_PASSWORD", "s3cr3t")
-	t.Setenv("IMEX_SOCKET", "")
 	t.Setenv("IMEX_DATABASE", "mydb")
 
 	f, cfg := connEnvFlags(t)
@@ -51,15 +50,12 @@ func TestConnEnvFillsUnsetOptions(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.Host != "db.internal" || cfg.Port != 3307 || cfg.User != "svc" ||
-		cfg.Password != "s3cr3t" || cfg.Database != "mydb" || cfg.Socket != "" {
+		cfg.Password != "s3cr3t" || cfg.Database != "mydb" {
 		t.Errorf("environment did not fill the options: %+v", *cfg)
 	}
 	want := []string{"IMEX_HOST", "IMEX_PORT", "IMEX_USER", "IMEX_PASSWORD", "IMEX_DATABASE"}
 	if strings.Join(rep.used, ",") != strings.Join(want, ",") {
 		t.Errorf("used = %v, want %v", rep.used, want)
-	}
-	if len(rep.skipped) != 0 {
-		t.Errorf("skipped = %v, want none", rep.skipped)
 	}
 }
 
@@ -110,8 +106,8 @@ func TestConnEnvExplicitFlagBeatsEnvironment(t *testing.T) {
 		cfg.Password != "" || cfg.Database != "mydb" {
 		t.Errorf("environment overwrote explicit flags: %+v", *cfg)
 	}
-	if len(rep.used) != 0 || len(rep.skipped) != 0 {
-		t.Errorf("report = used %v, skipped %v; want both empty", rep.used, rep.skipped)
+	if len(rep.used) != 0 {
+		t.Errorf("used = %v; want empty", rep.used)
 	}
 }
 
@@ -176,99 +172,38 @@ func TestConnEnvPortMustBeValid(t *testing.T) {
 	}
 }
 
-// The host/port pair and the socket are alternative transports, so an explicit
-// address wins outright: IMEX_SOCKET is not applied and the user is told which
-// variable was skipped. A socket named on the command line is still a socket, so
-// IMEX_HOST is simply not consulted and nothing is reported as skipped.
-func TestConnEnvTransportChoice(t *testing.T) {
+// The socket transport was removed: -S is an unknown option, IMEX_SOCKET is no
+// longer read, and BuildDSN is always TCP. The leftover-variable case is the one
+// worth pinning, because a shell profile that still exports IMEX_SOCKET must not
+// quietly change where a run connects.
+func TestSocketTransportIsGone(t *testing.T) {
 	t.Setenv("IMEX_SOCKET", "/tmp/my.sock")
 
-	f, cfg := connEnvFlags(t, "-h", "10.0.0.1")
+	f, cfg := connEnvFlags(t)
 	rep, err := applyConnEnv(f, cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Socket != "" {
-		t.Errorf("explicit --host with IMEX_SOCKET set: Socket = %q, want empty", cfg.Socket)
+	if len(rep.used) != 0 {
+		t.Errorf("used = %v, want none: IMEX_SOCKET is not a source any more", rep.used)
 	}
-	if strings.Join(rep.skipped, ",") != "IMEX_SOCKET" {
-		t.Errorf("skipped = %v, want IMEX_SOCKET", rep.skipped)
-	}
-	if strings.Join(rep.used, ",") != "" {
-		t.Errorf("used = %v, want none", rep.used)
-	}
-	if dsn := common.BuildDSN(cfg); !strings.Contains(dsn, "@tcp(10.0.0.1:3306)") {
-		t.Errorf("DSN should stay on TCP: %s", dsn)
+	if dsn := common.BuildDSN(cfg); !strings.Contains(dsn, "@tcp(127.0.0.1:3306)") {
+		t.Errorf("DSN left the default TCP address: %s", dsn)
 	}
 
-	f, cfg = connEnvFlags(t, "-S", "/tmp/explicit.sock")
-	rep, err = applyConnEnv(f, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Host != "127.0.0.1" {
-		t.Errorf("explicit --socket must leave the host default alone: %q", cfg.Host)
-	}
-	if len(rep.used) != 0 || len(rep.skipped) != 0 {
-		t.Errorf("report = used %v, skipped %v; want both empty", rep.used, rep.skipped)
-	}
-	if cfg.Socket != "/tmp/explicit.sock" {
-		t.Errorf("Socket = %q", cfg.Socket)
-	}
-
-	f, cfg = connEnvFlags(t)
-	rep, err = applyConnEnv(f, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Socket != "/tmp/my.sock" {
-		t.Errorf("IMEX_SOCKET without an address must be applied: Socket = %q", cfg.Socket)
-	}
-	if strings.Join(rep.used, ",") != "IMEX_SOCKET" {
-		t.Errorf("used = %v, want IMEX_SOCKET", rep.used)
-	}
-	if dsn := common.BuildDSN(cfg); !strings.Contains(dsn, "@unix(/tmp/my.sock)") {
-		t.Errorf("DSN is not a unix connection: %s", dsn)
-	}
-
-	// Nothing named on either side: the socket from the environment still wins
-	// over the default host, because a bare "127.0.0.1" is not a user request.
-	t.Setenv("IMEX_HOST", "db.internal")
-	f, cfg = connEnvFlags(t)
+	// An explicit -P still names the address, and nothing about it is a socket.
+	f, cfg = connEnvFlags(t, "-P", "3307")
 	if _, err := applyConnEnv(f, cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Socket != "/tmp/my.sock" {
-		t.Errorf("IMEX_SOCKET must beat IMEX_HOST when neither is a flag: Socket = %q", cfg.Socket)
-	}
-	if cfg.Host != "db.internal" {
-		t.Errorf("Host = %q, want the environment value as well", cfg.Host)
+	if dsn := common.BuildDSN(cfg); !strings.Contains(dsn, "@tcp(127.0.0.1:3307)") {
+		t.Errorf("DSN = %s, want tcp(127.0.0.1:3307)", dsn)
 	}
 }
 
-// -P alone also names an address: a socket would ignore the port anyway, so the
-// port makes the run TCP.
-func TestConnEnvExplicitPortIsAlsoAnAddress(t *testing.T) {
-	t.Setenv("IMEX_SOCKET", "/tmp/my.sock")
-	f, cfg := connEnvFlags(t, "-P", "3307")
-	rep, err := applyConnEnv(f, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Socket != "" {
-		t.Errorf("Socket = %q, want the socket skipped", cfg.Socket)
-	}
-	if cfg.Port != 3307 {
-		t.Errorf("Port = %d, want 3307", cfg.Port)
-	}
-	if strings.Join(rep.skipped, ",") != "IMEX_SOCKET" {
-		t.Errorf("skipped = %v, want IMEX_SOCKET", rep.skipped)
-	}
-}
-
-// The two records are the only place a run says where its values came from, and
-// they go to the same sink as everything else, i.e. into the --messages file too.
-// So they must name variables and never carry a value.
+// The record is the only place a run says where its values came from, and it
+// goes to the same sink as everything else, i.e. into the --messages file too.
+// So it must name variables and never carry a value.
 func TestConnEnvLogRecordsNameVariablesOnly(t *testing.T) {
 	orig := common.Logger
 	t.Cleanup(func() { common.Logger = orig })
@@ -277,8 +212,7 @@ func TestConnEnvLogRecordsNameVariablesOnly(t *testing.T) {
 	common.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	logConnEnv(connEnvReport{
-		used:    []string{"IMEX_USER", "IMEX_PASSWORD"},
-		skipped: []string{"IMEX_SOCKET"},
+		used: []string{"IMEX_USER", "IMEX_PASSWORD"},
 	})
 
 	out := buf.String()
@@ -286,14 +220,13 @@ func TestConnEnvLogRecordsNameVariablesOnly(t *testing.T) {
 		!strings.Contains(out, `variables="[IMEX_USER IMEX_PASSWORD]"`) {
 		t.Errorf("INFO record missing or misordered:\n%s", out)
 	}
-	if !strings.Contains(out, "msg=\"connection variable ignored\"") ||
-		!strings.Contains(out, "variable=IMEX_SOCKET") {
-		t.Errorf("WARN record missing:\n%s", out)
+	// The address rule that used to emit a WARN went away with --socket, so this
+	// helper now writes exactly one record, on one physical line.
+	if strings.Count(out, "\n") != 1 {
+		t.Errorf("want 1 record on 1 line, got:\n%s", out)
 	}
-	// One record = one physical line, so a grep for either phrase returns a
-	// complete record rather than half of one.
-	if strings.Count(out, "\n") != 2 {
-		t.Errorf("want 2 records on 2 lines, got:\n%s", out)
+	if strings.Contains(out, "connection variable ignored") {
+		t.Errorf("a WARN record survived the socket removal:\n%s", out)
 	}
 	if strings.Contains(out, "/tmp/my.sock") || strings.Contains(out, "s3cr3t") {
 		t.Errorf("a value reached the log: %s", out)
@@ -308,7 +241,6 @@ func TestConnEnvAppliesToImportAndList(t *testing.T) {
 	t.Setenv("IMEX_USER", "svc")
 	t.Setenv("IMEX_PASSWORD", "pw")
 	t.Setenv("IMEX_DATABASE", "mydb")
-	t.Setenv("IMEX_SOCKET", "")
 
 	imp := &cobra.Command{Use: "import"}
 	*importCfg = *newImportConfigForTest()

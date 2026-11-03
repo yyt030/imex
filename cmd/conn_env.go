@@ -22,17 +22,15 @@ var connEnvSources = []struct {
 	{"port", "IMEX_PORT"},
 	{"user", "IMEX_USER"},
 	{"password", "IMEX_PASSWORD"},
-	{"socket", "IMEX_SOCKET"},
 	{"database", "IMEX_DATABASE"},
 }
 
-// connEnvReport says which environment variables took effect and which were
-// deliberately ignored. It is returned rather than logged in place because the
-// logger is only initialised after parameter validation, so a value that fails
-// validation must be reportable without needing a live logger.
+// connEnvReport says which environment variables took effect. It is returned
+// rather than logged in place because the logger is only initialised after
+// parameter validation, so a value that fails validation must be reportable
+// without needing a live logger.
 type connEnvReport struct {
-	used    []string
-	skipped []string
+	used []string
 }
 
 // applyConnEnv fills the connection fields from the environment.
@@ -53,26 +51,11 @@ type connEnvReport struct {
 // A variable set to an empty or whitespace-only value counts as unset, matching
 // how IMEX_LOG_FORMAT is read. IMEX_PORT is range-checked here so a bad value
 // names the variable that carried it instead of surfacing as "invalid --port".
-//
-// The transport is decided once rather than field by field. common.BuildDSN
-// selects the UNIX socket whenever Socket is non-empty, so an IMEX_SOCKET left
-// in a shell profile would beat an explicit -h/-P and connect somewhere else.
-// Therefore IMEX_SOCKET is ignored when -h or -P was given explicitly, and the
-// ignore is reported. When neither was given, IMEX_SOCKET still wins over
-// IMEX_HOST, which is the same preference the socket field has always had.
 func applyConnEnv(f *pflag.FlagSet, c *config.Config) (connEnvReport, error) {
 	var rep connEnvReport
-	explicitTCP := f.Changed("host") || f.Changed("port")
 
 	for _, src := range connEnvSources {
 		value := strings.TrimSpace(os.Getenv(src.env))
-
-		if src.flag == "socket" && value != "" && explicitTCP {
-			// The run named an address, so it means TCP. Keep the field empty and
-			// tell the user why their variable did not take effect.
-			rep.skipped = append(rep.skipped, src.env)
-			continue
-		}
 		if value == "" || f.Changed(src.flag) {
 			continue
 		}
@@ -90,8 +73,6 @@ func applyConnEnv(f *pflag.FlagSet, c *config.Config) (connEnvReport, error) {
 			c.User = value
 		case "password":
 			c.Password = value
-		case "socket":
-			c.Socket = value
 		case "database":
 			c.Database = value
 		}
@@ -106,11 +87,6 @@ func applyConnEnv(f *pflag.FlagSet, c *config.Config) (connEnvReport, error) {
 // The messages keep the repo's lowercase "<object> <event>" vocabulary, so the
 // variable name is an attribute rather than the first word of the message.
 func logConnEnv(rep connEnvReport) {
-	for _, name := range rep.skipped {
-		common.Logger.Warn("connection variable ignored",
-			"variable", name,
-			"reason", "this run names an address with --host or --port, so it stays on TCP")
-	}
 	if len(rep.used) > 0 {
 		common.Logger.Info("connection values supplied by environment", "variables", rep.used)
 	}

@@ -373,6 +373,21 @@
 # requirements.md (8 -- seven inside 变更记录 rows, one in 3.6's landing-status
 # note) keep theirs for the same reason: swapping a recorded sample for an id
 # that was never printed would be fabricating evidence.
+# Re-baselined note 26 (2026-11-03): `--socket` / `-S` and IMEX_SOCKET were
+# removed by user instruction, so the transport is TCP only. Exactly sixteen
+# lines left the file -- the connection-flag line in `## export`, in `## import`,
+# in each of the eight `## list <object>` bodies and in each of the six
+# `## show <kind>` bodies. Nothing else moved: no description was reworded and no
+# column shifted, because the longest flag spec is still `--socket-write-timeout
+# duration`. The three timeout options keep their names -- `--socket-read-timeout`
+# and `--socket-write-timeout` bound a single read or write on the TCP socket,
+# which is what they always did. All nineteen live bodies were re-taken from the
+# binary built from this tree and diff EMPTY; `## version` remains the frozen
+# snapshot. The file goes 1,106 -> 1,105 lines: sixteen left with the removed
+# flag, this note adds fifteen. Still 20 sections, 0 lines over 118 bytes.
+# `imex export --socket PATH` and `imex import -S PATH` are now usage errors
+# (exit 2), and an IMEX_SOCKET left in a shell profile is simply never read.
+# See requirements.md 变更记录 124.
 
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
@@ -448,7 +463,6 @@ Flags:
       --row-del string                  Row delimiter (only with --format del) (default "\n")
       --session-var stringArray         Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES
       --shard-key string                Column used to shard a parallel export; defaults to the primary key
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --statement-size int              Max bytes per merged INSERT (only with --format sql) (default 8388608)
@@ -517,7 +531,6 @@ Flags:
       --row-del string                  Row delimiter (only with --format del) (default "\n")
       --session-var stringArray         Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES
       --skip-count int                  Skip first n data rows (header is consumed separately)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --statement-size int              Byte ceiling per generated INSERT (0 = server packet budget)
@@ -591,7 +604,6 @@ Flags:
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -625,7 +637,6 @@ Flags:
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --type string                     Object type: base, view or all (default "base")
@@ -660,7 +671,6 @@ Flags:
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -693,7 +703,6 @@ Flags:
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -t, --table string                    Table to inspect (required)
@@ -727,7 +736,6 @@ Flags:
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -t, --table string                    Table to inspect (required)
@@ -762,7 +770,6 @@ Flags:
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -t, --table string                    Only list triggers of this table
@@ -797,7 +804,6 @@ Flags:
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --type string                     Routine type: procedure, function or all (default "all")
@@ -832,7 +838,6 @@ Flags:
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -899,7 +904,6 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -930,7 +934,6 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -961,7 +964,6 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -992,7 +994,6 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1023,7 +1024,6 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1054,7 +1054,6 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout, or --messages)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
-  -S, --socket string                   UNIX domain socket path (also IMEX_SOCKET)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")

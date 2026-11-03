@@ -44,8 +44,8 @@ Examples:
 		}
 
 		// Fill the connection fields the run left unset from the environment
-		// (IMEX_HOST, IMEX_PORT, IMEX_USER, IMEX_PASSWORD, IMEX_SOCKET,
-		// IMEX_DATABASE), before the required-parameter checks. See applyConnEnv
+		// (IMEX_HOST, IMEX_PORT, IMEX_USER, IMEX_PASSWORD, IMEX_DATABASE),
+		// before the required-parameter checks. See applyConnEnv
 		// for the precedence rule and why it differs from the IMEX_* switches.
 		connEnv, err := applyConnEnv(cmd.Flags(), &importCfg.Config)
 		if err != nil {
@@ -53,8 +53,8 @@ Examples:
 		}
 
 		// Required connection parameters.
-		if importCfg.Host == "" && importCfg.Socket == "" {
-			return common.Usagef("--host or --socket is required")
+		if importCfg.Host == "" {
+			return common.Usagef("--host is required")
 		}
 		if importCfg.User == "" {
 			return common.Usagef("--user is required")

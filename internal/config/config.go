@@ -107,8 +107,8 @@ type DelModifier struct {
 // Config holds all connection and common options.
 //
 // SSL/TLS and the OceanBase --tenant option are intentionally absent: the CLI
-// exposes only host/port/socket, so there is no DSN to carry driver TLS
-// settings, and --session-var rejects the driver's TLS parameters. Encrypted
+// exposes only host/port, so there is no DSN to carry driver TLS settings,
+// and --session-var rejects the driver's TLS parameters. Encrypted
 // transport must be terminated outside the tool (for example a local TLS
 // proxy). The OB tenant is still expressible through the
 // `user@tenant#cluster` username. Numeric formatting always follows the MySQL
@@ -119,7 +119,6 @@ type Config struct {
 	Port     int
 	User     string
 	Password string
-	Socket   string
 	Database string
 	LogLevel LogLevel
 

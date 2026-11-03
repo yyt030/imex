@@ -139,6 +139,18 @@ func TestCLIMatrix(t *testing.T) {
 			errSubstr: "unknown flag",
 		},
 		{
+			name:      "removed --socket is an unknown flag",
+			args:      []string{"export", "--socket", "/tmp/imex.sock", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.del", "-q", "SELECT 1"},
+			wantErr:   true,
+			errSubstr: "unknown flag: --socket",
+		},
+		{
+			name:      "removed -S shorthand is an unknown shorthand flag",
+			args:      []string{"import", "-S", "/tmp/imex.sock", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-i", "/tmp/in.del", "-t", "users"},
+			wantErr:   true,
+			errSubstr: "unknown shorthand flag: 'S' in -S",
+		},
+		{
 			name:    "valid export with extended-insert and format sql",
 			args:    []string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.sql", "-q", "SELECT 1", "-f", "sql", "--extended-insert"},
 			wantErr: false,

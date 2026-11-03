@@ -1,16 +1,16 @@
 # CONTEXT — imex 工程状态快照
 
-> 快照时间 **2026-11-02（UTC）**。这一页只回答四件事：现在在哪、已经定了什么、接下来等什么、怎么自证。
+> 快照时间 **2026-11-03（UTC）**。这一页只回答四件事：现在在哪、已经定了什么、接下来等什么、怎么自证。
 > 权威文档仍是 `README.md`（使用者视角）与 `docs/requirements.md`（设计与取证视角）。只有那两处的
 > 功能记录 / 变更记录 受 append-only 约束；**本文件不受**，状态变了就地改，不留历史。
 
 ## 一、当前坐标
 
 - **仓库**：模块 `github.com/imex`，远端 `https://github.com/yyt030/imex`，分支 `main`（工作副本 `<workspace>/imex`）。
-- **HEAD**：本轮提交（变更记录 123 轮：两份文档普通表格的结构缺陷），tag `v0.17.1` **不在这一个提交上**——它仍打在 `fc1844a`（120 轮）；其下依次是 `e1fa753`（转义轮，变更记录 122）、`ec88e9f`（变更记录 9 行结构修复，121 轮）、`fc1844a`（`Makefile` 进位 0.17.1 + 本文件状态更新，tag `v0.17.1`）、`6587ad1`（脱敏轮，变更记录 119）、`96f1f30`（cli-oracle note 25，118 轮）、`7e61e72`（变更记录 117 补注）、`29f8b25`（原 HANDOFF.md 所在，tag `v0.17.0`）。**注（2026-11-02 脱敏轮，变更记录 119）**：`HANDOFF.md` 已从仓库移除——它的八节内容被本文件第三、五节与变更记录 117 的「注（发布收尾）」逐条覆盖，118 轮对它做的 10 行改动（`4934dd2` 的处理过程）也已由 118 正文与本文件 2.3、4.4 承载，无独有信息；同一轮把本文件第五节 QA 命令里的真实测试库凭据换成占位串。
-- **已推送**：`v0.17.1`（→ `fc1844a`）之后 `main` 上又积了 121、122、123 三个纯文档提交，按三节第 2 条**不进位、不打 tag**，`v0.17.1` 就是当前最新 tag；`v0.17.0`（→ `29f8b25`）与 `v0.16.0`（→ `08ffa85`）不动、不移、不重打。推 `main` 在这套环境里要靠 `git -c http.version=HTTP/1.1` 绕开 HTTP2 framing / GnuTLS -110，clone 同理。
+- **HEAD**：本轮提交（变更记录 124 轮：移除 `--socket` / `-S` / `IMEX_SOCKET`，连接只剩 TCP），tag `v0.17.1` **不在这一个提交上**——它仍打在 `fc1844a`（120 轮）；其下依次是 `ccf2929`（变更记录 123）、`e1fa753`（转义轮，122 轮）、`ec88e9f`（变更记录 9 行结构修复，121 轮）、`fc1844a`（`Makefile` 进位 0.17.1 + 本文件状态更新，tag `v0.17.1`）、`6587ad1`（脱敏轮，变更记录 119）、`96f1f30`（cli-oracle note 25，118 轮）、`7e61e72`（变更记录 117 补注）、`29f8b25`（原 HANDOFF.md 所在，tag `v0.17.0`）。**注（2026-11-02 脱敏轮，变更记录 119）**：`HANDOFF.md` 已从仓库移除——它的八节内容被本文件第三、五节与变更记录 117 的「注（发布收尾）」逐条覆盖，118 轮对它做的 10 行改动（`4934dd2` 的处理过程）也已由 118 正文与本文件 2.3、4.4 承载，无独有信息；同一轮把本文件第五节 QA 命令里的真实测试库凭据换成占位串。
+- **已推送**：`v0.17.1`（→ `fc1844a`）之后 `main` 上又积了 121、122、123 三个纯文档提交与本轮的选项移除提交，纯文档那三个按三节第 2 条**不进位、不打 tag**；本轮是**代码 + CLI 面**的移除，按变更记录 113 的先例仍未获进位/tag 指令，`Makefile` 第 1 行仍是 **0.17.1**，`v0.17.1` 就是当前最新 tag；`v0.17.0`（→ `29f8b25`）与 `v0.16.0`（→ `08ffa85`）不动、不移、不重打。推 `main` 在这套环境里要靠 `git -c http.version=HTTP/1.1` 绕开 HTTP2 framing / GnuTLS -110，clone 同理。
 - **已发布**：最新 tag 由 `v0.17.0` 进位到 **`v0.17.1`**（纯文档轮的收口 tag，先例是 `v0.5.1` 与 `v0.5.2`；被覆盖的纪律见三节第 2 条与变更记录 120 ①）。远端 heads 只有 `main`。
-- **工作树**：干净（2026-11-02 换新沙箱后按 `https://github.com/yyt030/imex` 重新 clone，完整历史、非浅克隆）。上一沙箱本机残留的未跟踪 `scripts/export-all-tables.sh`（7,834 B）不随 clone 走，仓库里本就没有它；`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
+- **工作树**：本轮提交后只剩 `go.mod`/`go.sum` 两条未提交改动——`go get gitee.com/chunanyong/dm`（达梦评估轮）带进 `go.mod` 的三条 `// indirect`（`gitee.com/chunanyong/dm v1.8.23`、`github.com/golang/snappy v1.0.0`、`golang.org/x/text v0.36.0`）与 `go.sum` 的 7 行。仓库里还没有任何代码 import 该驱动，`go mod tidy` 会把这三条整体摘掉，所以**先不提**，等达梦 R0 代码落地时随真实引用一起进。2026-11-02 换新沙箱后按 `https://github.com/yyt030/imex` 重新 clone，完整历史、非浅克隆；`bin/`、`dist/`、`*.shard_*.tmp` 由 `.gitignore` 覆盖。
 - **本地开发库**：**当前沙箱没有 MariaDB**（`mariadbd`、`mysqld` 均不存在），需要真库的集成 QA 在此环境跑不了。上一沙箱是沙箱内 MariaDB 10.6.23，仅监听 `127.0.0.1:3306`，测试库 `imex_it`、夹具库 `imex_test` / `imex_ddl*` 等。
 
 ## 二、已完成事项
@@ -72,6 +72,16 @@
 变更记录 **121 / 122 / 123** 三行，全是 Markdown，代码零改动。121 把变更记录里 9 条违反三节第 3 条「一个物理行、恰好 4 个竖线」的历史行修好（6 行补转义、3 行补格与并格，逐行做「还原后与改前逐字节相同」的证真）；122 与 123 按用户指令「两次提交」处理 121 ④ 剩下的普通表格缺陷——判据收紧为「表格块表头定格数、其后每个以竖线开头的行都比」后实测 10 个物理行有问题，先转义 4 行里的 7 处内容竖线（122），再补格 3 行、并格 1 行、删虚格 1 行、合行 1 段（123，含把代码段里的真控制符改成可见转义串，取序依据 `docs/requirements.md` 2.5 输出契约表第 615 行与 `internal/list/render.go:15-20`，属推断已写明）。
 
 **收口后实测**：编号变更记录 **123** 条、未转义竖线不为 4 的行为 **0** 条；两份文档普通表格单元数不匹配行 **0**；表格行里裸制表符与回车 **0**；`README.md` 1,270 行、`docs/requirements.md` 1,932 行。**本轮 QA 实况**（同环境，无 MariaDB）：`gofmt -l .` 空、`go vet` 退出 0、`make build` 退出 0、`./bin/imex version` 报 `0.17.1`、工作树凭据两种形态命中 0。123 ⑤ 另记一条**已查明未改**的内容缺陷：11.1 资产表里 `internal/list` 那行宣称四个转义，`render_test.go` 实际只断言反斜杠与制表符两例，已挂进 4.1 等裁定。
+
+### 2.6 移除 socket 传输（2026-11-03，变更记录 124，未进位、未打 tag）
+
+用户指令「先把--socket去掉，用处有限。」。`--socket` / `-S` 与 `IMEX_SOCKET` 整体删除、不留兼容层（口径同 101 删 `--quiet`、102 删 `list -f/--format`、62 删 `--single-row-insert`），`internal/common/util.go:BuildDSN` 从此无条件 `cfg.Net = "tcp"`。改动规模：Go 侧 14 文件 **75 增 167 删**（含测试），文档 3 文件。`cmd/conn_env.go` **117 → 93 行**，`connEnvReport.skipped` 作为死字段一起删；三条超时选项（`--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`）**名字与默认值都不动**——它们约束的本来就是 TCP 上的单次读/写。
+
+**实测拒绝形态**：`export --socket`、`show tab --socket` 报 `unknown flag: --socket`，`import -S`、`list tab -S` 报 `unknown shorthand flag: 'S' in -S`，四条退出码全 **2**；设了 `IMEX_SOCKET` 后 INFO 记录只列五个变量、连接仍 `dial tcp 127.0.0.1:3307`；必填文案变成 `--host is required`（`-h ""` 实测退出 **2**），`connection variable ignored` 那条 WARN 整体消失。`docs/cli-oracle.txt` 走 **Re-baselined note 26**：十六行离开文件（export/import 各一、八个 `list <object>`、六个 `show <kind>`），**19 个活体与本树二进制的 help 全部 diff EMPTY**，`## version` 仍冻结，1,106 → **1,105** 行、仍 20 段、0 行超 118 字节。测试资产：`_test.go` **61** 不变、`^func Test` **378 → 377**（`cmd/conn_env_test.go` 10 → 9，新增 `TestSocketTransportIsGone` 钉住「profile 里残留的 `IMEX_SOCKET` 永不生效」）、Fuzz **6**、Benchmark **12**。
+
+**本沙箱 QA 实况**（无 MariaDB）：`gofmt -l .` 空、`CGO_ENABLED=1 go vet ./...` 退出 0、`CGO_ENABLED=1 go test -race -count=1 ./...` **九包全通过**（`cmd` 13.983 s、`internal/common` 44.211 s、`test/integration` 1.030 s = 真库用例全跳过）、`make build` 退出 0（`bin/imex` 22,368,418 B、`imex version` 报 `0.17.1`）、20 面 118 字节守卫 0 行超限、`statementCapSlack` = **3**。真库 206 用例仍未复跑。**按用户 standing 指令直接推 `main`，不打 tag**；版本号按 113 的先例留给下一次进位指令。
+
+**顺带发现、本轮未动**：变更记录的子表里有 **3** 处空行插在**同一个子表的两个数据行之间**（现 `docs/requirements.md` 第 **1816** 行分隔 32 与 33、第 **1883** 行分隔 77 与 78、第 **1908** 行分隔 101 与 102），Markdown 渲染时会把一张表断成两张。判据按「空行的上一行与下一行都以竖线开头」实测，非本轮引入，也不是 121/122/123 修的竖线数与格数问题，等裁定。
 
 ## 三、关键决策（长期有效，改动需用户点名）
 
@@ -160,7 +170,7 @@ done
 |---|---|
 | 命令怎么用、选项含义 | `README.md`（`### list`、`### show`，以及 list 那节里 list/show 共用的「输出通道」表） |
 | 设计来龙去脉、实测取证、分级理由 | `docs/requirements.md` 二节（2.3 日志 / 2.5 list / 2.6 show）、3.4.1 SQL 回显、3.6 通道与 show 定稿 |
-| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 123） |
-| 帮助文本的冻结基线 | `docs/cli-oracle.txt`（20 段 / 1,106 行，头注 note 1–25 记录了每次重基线、漂移处理与基线提交号 `4934dd2` 的取回路径） |
+| 每一轮改了什么、为什么 | `docs/requirements.md` 十四节变更记录（现行最新行 124） |
+| 帮助文本的冻结基线 | `docs/cli-oracle.txt`（20 段 / 1,105 行，头注 note 1–26 记录了每次重基线、漂移处理与基线提交号 `4934dd2` 的取回路径） |
 | 测试矩阵与资产清单 | `docs/requirements.md` 十一节（11.1 资产表、11.2 未自动化场景） |
 | 打包/tag/文档纪律 | `<workspace>/AGENTS.md`（工作区约定，不在仓库内） |

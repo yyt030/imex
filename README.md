@@ -25,7 +25,7 @@
 - **单行 SQL 布局**：`--format sql` 默认每行一条 INSERT，文件逐行可切分；攒批统一由导入侧按 `--batch-size` 完成，导出侧的 `--extended-insert` 只用于换取更小的文件体积
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
-- **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_SOCKET`/`IMEX_DATABASE` 为六个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
+- **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -157,14 +157,13 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 | `--port` | `-P` | TCP/IP 端口 | `IMEX_PORT` | `3306` |
 | `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明） | `IMEX_USER` | `root` |
 | `--password` | `-p` | 数据库密码 | `IMEX_PASSWORD` | 空 |
-| `--socket` | `-S` | UNIX 域套接字路径 | `IMEX_SOCKET` | 空 |
 | `--database` | `-D` | 数据库名 | `IMEX_DATABASE` | 空 |
 | `--session-var` | | 导出前设置的会话变量（`name=value`，可重复，见下方说明） | | 空 |
 | `--connect-timeout` | | 建连（TCP dial）超时，落到驱动的 `timeout` | | `5s` |
 | `--socket-read-timeout` | | 单次 socket 读超时，落到驱动的 `readTimeout` | | `300s` |
 | `--socket-write-timeout` | | 单次 socket 写超时，落到驱动的 `writeTimeout` | | `300s` |
 
-`--password` 与 `--database` 没有默认值，任一缺失即是用法错误、退出码 `2`；缺口令时的提示同时点名两个来源（`--password is required (or set IMEX_PASSWORD)`）。`--host`（或 `--socket`）与 `--user` 有内置默认值（`127.0.0.1`、`root`），只有把它们**显式写成空值**（`-h ""`、`-u ""`）才会被判为缺失并以退出码 `2` 拒绝，此时不会回落到 `IMEX_HOST`/`IMEX_USER`（见「连接信息来自环境变量」）。
+`--password` 与 `--database` 没有默认值，任一缺失即是用法错误、退出码 `2`；缺口令时的提示同时点名两个来源（`--password is required (or set IMEX_PASSWORD)`）。`--host` 与 `--user` 有内置默认值（`127.0.0.1`、`root`），只有把它们**显式写成空值**（`-h ""`、`-u ""`）才会被判为缺失并以退出码 `2` 拒绝，此时不会回落到 `IMEX_HOST`/`IMEX_USER`（见「连接信息来自环境变量」）。
 
 由于 `-h` 被 `--host` 占用，帮助短选项为 `-?`。
 
@@ -298,7 +297,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--host`/`--port`/`--user`/`--password`/`--socket`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），六个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host`（或 `--socket`）与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。
+连接选项与 export 子命令相同（`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。
 
 **导入选项：**
 
@@ -368,7 +367,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含六个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host`（或 `--socket`）与 `--user` 同样走内置默认值。对象名就是子命令名：
+`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。对象名就是子命令名：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -539,14 +538,12 @@ imex list tables
 | `--port` | `IMEX_PORT` | 按未设置 | 端口；非数字或超出 1–65535 是用法错误、退出码 `2` |
 | `--user` | `IMEX_USER` | 按未设置 | 用户名 |
 | `--password` | `IMEX_PASSWORD` | 按未设置 | 口令；`ENC:` 密文照常按 `IMEX_KEY` 解密 |
-| `--socket` | `IMEX_SOCKET` | 按未设置 | UNIX 套接字路径 |
 | `--database` | `IMEX_DATABASE` | 按未设置 | 数据库名 |
 
 - **优先级：命令行显式写下的选项 > 环境变量 > 选项的内置默认值。** 判据是这个选项在命令行上被写过没有，不看取值，因此 `IMEX_USER=svc` 时 `imex export -u root` 用的仍是 `root`，`IMEX_PASSWORD=pass` 时 `imex export -p ""` 用的仍是空口令。
 - **空白等于没设**：变量不存在、为空、或去掉首尾空白后为空，都退回内置默认值；供值的变量两端空白会被去掉。
 - **缺值提示点名两个来源**：`--password` 是唯一既没有默认值、又最常被放进环境的必填项，缺失时的用法错误文案为 `--password is required (or set IMEX_PASSWORD)`，export、import、`list` 三条命令一字不差。它是一句静态文案，只说明「这个值有两个来源」：写了 `-p ""` 而 `IMEX_PASSWORD` 有值时，按优先级用的仍是那个空值、打出的仍是这句提示，此时该改的是命令行上的空值而不是环境变量。
-- **socket 与 TCP 二选一时同样按优先级**：显式给了 `--socket` 就走 socket；显式给了 `--host` 或 `--port` 就走 TCP，此时 `IMEX_SOCKET` **被忽略**并记一条 WARN；两者都没写时 `IMEX_SOCKET` 优先于 `IMEX_HOST`（默认的 `127.0.0.1` 不代表用户要求 TCP）。
-- **日志只出现变量名，绝不出现值**：有变量供值时记 INFO `connection values supplied by environment variables="[IMEX_USER IMEX_PASSWORD]"`；被上面那条地址规则跳过时记 WARN `connection variable ignored variable=IMEX_SOCKET reason="…"`。这些记录同样进 `--messages` 文件，所以口令（含 `ENC:` 密文）不会落到任何产物里。
+- **日志只出现变量名，绝不出现值**：有变量供值时记 INFO `connection values supplied by environment variables="[IMEX_USER IMEX_PASSWORD]"`。这条记录同样进 `--messages` 文件，所以口令（含 `ENC:` 密文）不会落到任何产物里。
 - 这与四个全局开关的语义**相反**，是刻意的：`IMEX_ERROR_STACK`/`IMEX_ECHO_SQL_VALUES`/`IMEX_NO_SQL_TAG`/`IMEX_LOG_FORMAT` 是**覆盖**（布尔与布局只有「打开/选一个」这一维），连接变量是**默认值的来源**（让 env 压过命令行写下的地址，同一条命令就会连到操作者没写的那个库）。
 
 ### 并行导出

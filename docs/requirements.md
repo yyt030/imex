@@ -65,7 +65,6 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 | `--port` | `-P` | TCP/IP 端口（范围 1–65535） | `IMEX_PORT` | `3306` |
 | `--user` | `-u` | 数据库用户名 | `IMEX_USER` | `root` |
 | `--password` | `-p` | 数据库密码 | `IMEX_PASSWORD` | 空 |
-| `--socket` | `-S` | UNIX 域套接字路径 | `IMEX_SOCKET` | 空 |
 | `--database` | `-D` | 数据库名 | `IMEX_DATABASE` | 无 |
 | `--connect-timeout` | | 建连（TCP dial）超时，落到驱动的 `timeout` 字段 | | `5s` |
 | `--socket-read-timeout` | | 单次 socket 读超时，落到驱动的 `readTimeout` 字段（`internal/common/util.go` 直接设 `cfg.ReadTimeout`，不是换算来的）| | `5m` |
@@ -73,13 +72,13 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 | `--default-charset` | | 连接与输出文件字符集（utf8mb4 默认；还支持 utf8、latin1、ascii、gbk、gb18030 及其别名） | | `utf8mb4` |
 | `--session-var` | | 在每条数据库连接上设置的会话变量，`name=value` 格式，可重复传入多个 | | 空 |
 
-**连接选项的环境变量（`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_SOCKET`/`IMEX_DATABASE`）说明见 2.1.10。**
+**连接选项的环境变量（`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE`）说明见 2.1.10。**
 
-**六个连接选项里真正「不给就报错」的只有 `--password` 与 `--database`**（export、import、`list` 三条命令同口径），其余四条的必填语义与内置默认值纠缠，说清边界如下：
+**五个连接选项里真正「不给就报错」的只有 `--password` 与 `--database`**（export、import、`list` 三条命令同口径），其余三条的必填语义与内置默认值纠缠，说清边界如下：
 
 - `--password`、`--database` 默认值为空，缺任一即用法错误、退出码 `2`。缺口令的文案为 `--password is required (or set IMEX_PASSWORD)`——它是全套必填提示里唯一原先不点名任何来源的一条（原先只写 `password is required`），而口令恰恰最常被放进环境，改名后三条命令一字不差，由 `cmd/conn_env_test.go:TestMissingPasswordMessageNamesBothSources` 钉住。
-- `--host` 与 `--user` 有内置默认值（`127.0.0.1`、`root`），因此 `--host or --socket is required`、`--user is required` 只有一种触发方式：将对应选项**显式写成空值**（`-h ""`、`-u ""`）。此时按 2.1.10 的优先级，显式空值赢，命令不会回落到 `IMEX_HOST`/`IMEX_USER`，直接退出 `2`。同理 `-p ""` 在 `IMEX_PASSWORD` 有值时也会退出 `2`，文案仍点名两个来源（它陈述的是「这个值有两个来源」，不判断具体是哪一侧没供上值）。
-- `--socket`、`--port` 无必填语义：`--socket` 只是与 `--host` 二选一的传输方式，`--port` 有默认 `3306`（范围校验见 2.1.10）。
+- `--host` 与 `--user` 有内置默认值（`127.0.0.1`、`root`），因此 `--host is required`、`--user is required` 只有一种触发方式：将对应选项**显式写成空值**（`-h ""`、`-u ""`）。此时按 2.1.10 的优先级，显式空值赢，命令不会回落到 `IMEX_HOST`/`IMEX_USER`，直接退出 `2`。同理 `-p ""` 在 `IMEX_PASSWORD` 有值时也会退出 `2`，文案仍点名两个来源（它陈述的是「这个值有两个来源」，不判断具体是哪一侧没供上值）。
+- `--port` 无必填语义：它有默认 `3306`，范围校验见 2.1.10。
 
 **会话变量选项（`--session-var`）说明：**
 
@@ -308,7 +307,7 @@ imex list tab -D <db> -u <user> -p <pass> 2>/dev/null | awk 'NR > 1 { print $2 }
 
 - `imex list tab` 默认只枚举**基础表**（`--type base`），`--pattern` 可直接下推做名字过滤；它的日志与错误走 stderr、stdout 只有对齐结果且首行为表头，所以管道里 `2>/dev/null` 是必需的。按「两个及以上空格」切列，名称本身含连续空格时无法与列分隔区分——这是 `list` 对齐输出的固有性质，与移除前那条已知限制同源；换成 `--no-col-names` 则首行即数据。
 - 每条 `imex export` 各开一次 `START TRANSACTION WITH CONSISTENT SNAPSHOT`，**表与表的时点不一致**（语句流取证见变更记录 112 ⑦）。要整库一致快照属于尚未实现的数据库级批量导出，见变更记录 111 之后与 `mysqldump`/`mydumper` 的功能差距讨论。
-- 2.1.10 的六个连接变量对循环里的每一次调用原样生效（`-p` 与 `IMEX_PASSWORD` 同样可互换）。此前那句「脚本把命令行上**实际写出**的 `-h`/`-P`/`-u`/`-S` 拼进每次调用、没写的不写」描述的是移除前脚本自身的转发规则，现在这件事由调用方的循环决定。
+- 2.1.10 的五个连接变量对循环里的每一次调用原样生效（`-p` 与 `IMEX_PASSWORD` 同样可互换）。此前那句「脚本把命令行上**实际写出**的 `-h`/`-P`/`-u`/`-S` 拼进每次调用、没写的不写」描述的是移除前脚本自身的转发规则，现在这件事由调用方的循环决定。
 
 需要历史实现可直接取回：`git show b64b8eb:scripts/export-all-tables.sh`（327 行，`v0.14.0` 及更早的 tag 里都在）。
 
@@ -329,8 +328,7 @@ imex list tables
 - **缺口令的提示点名两个来源**：`--password is required (or set IMEX_PASSWORD)`，export、import、`list` 一字不差（用法错误、退出码 `2`）。全套必填提示原先只有这一条不点名任何来源（写作 `password is required`），而口令恰恰是最常被放进环境的一项——读到这句话的人需要知道的是「`-p` 没写还是 `IMEX_PASSWORD` 没设」，点名两处比让人猜要省一步。这句话是静态的，陈述的是「该值有两个来源」，不判断具体哪一侧没供上：`-p ""` 与 `IMEX_PASSWORD=pass` 同时存在时按优先级用空口令，打的仍是同一句。
 - **`IMEX_PORT` 非数字或超出 1–65535 是用法错误**，退出码 `2`，文案点名变量本身：`invalid IMEX_PORT "abc": must be a port number between 1 and 65535`，与 `invalid --port 0: must be between 1 and 65535` 一样在建连之前短路。
 - **`IMEX_PASSWORD` 里的 `ENC:` 密文照常解密**，变量只是把 `-p` 的取值换了个来源，`IMEX_KEY` 那套规则不变。
-- **传输方式（socket 还是 TCP）按同样的优先级决定**：显式写了 `-S` 就走 socket，socket 侧其余变量不再读取；显式写了 `-h` 或 `-P` 就走 TCP，此时 `IMEX_SOCKET` **被忽略**（地址与端口 socket 都无意义，一个显式写下的地址不会被环境变量悄悄改掉），运行记一条 WARN 点名被跳过的变量；两者都没写时看环境变量，`IMEX_SOCKET` 优先于 `IMEX_HOST`——`127.0.0.1` 只是默认值，不代表用户要求 TCP。
-- **只记录变量名，绝不记录值**：有变量供值时运行记一条 INFO `connection values supplied by environment variables="[IMEX_USER IMEX_PASSWORD]"`；`IMEX_SOCKET` 因上面那条地址规则被跳过时记 WARN `connection variable ignored variable=IMEX_SOCKET reason="…"`。口令可能是 `ENC:` 密文，值一旦进日志就同时进 `--messages` 文件，因此日志里只出现名字。
+- **只记录变量名，绝不记录值**：有变量供值时运行记一条 INFO `connection values supplied by environment variables="[IMEX_USER IMEX_PASSWORD]"`。口令可能是 `ENC:` 密文，值一旦进日志就同时进 `--messages` 文件，因此日志里只出现名字。
 
 `IMEX_*` 在这套工具里有两种角色，本组变量属于后者，注意区分：**四个全局开关**（`IMEX_ERROR_STACK`/`IMEX_ECHO_SQL_VALUES`/`IMEX_NO_SQL_TAG`/`IMEX_LOG_FORMAT`）是**覆盖**——它们是布尔或布局选择，env 一侧永远有效（见 3.3.2）；**本组连接变量**是**默认值的来源**——命令行写下的值始终赢。
 
@@ -346,7 +344,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 
 #### 2.2.2 连接选项
 
-与 export 子命令相同，包括 2.1.10 的六个 `IMEX_*` 连接变量与「显式选项 > 环境变量 > 内置默认值」的优先级。
+与 export 子命令相同，包括 2.1.10 的五个 `IMEX_*` 连接变量与「显式选项 > 环境变量 > 内置默认值」的优先级。
 
 #### 2.2.3 导入选项
 
@@ -604,7 +602,7 @@ imex list <object> [连接选项] [查询选项]
 
 **范围与过滤**：不给 `-D` 时，除 `databases` 外的对象排除 `information_schema`、`mysql`、`performance_schema`、`sys`；`--all` 把它们纳入。显式 `-D mysql` 优先于 `--all`，只列 `mysql`。`--pattern` 绑定到各对象的名称列（数据库名、表名、列名、索引名、触发器名、例程名、事件名），使用 `LIKE ? ESCAPE '\\'`，`%`/`_` 是通配符。所有用户输入都以占位符传递，查询语句不拼接字符串。
 
-**连接选项**：与 export 相同（含 2.1.10 的六个 `IMEX_*` 连接变量与优先级）。`-D` 对 `columns`/`indexes` 必填，`IMEX_DATABASE` 同样可以供上这个值。
+**连接选项**：与 export 相同（含 2.1.10 的五个 `IMEX_*` 连接变量与优先级）。`-D` 对 `columns`/`indexes` 必填，`IMEX_DATABASE` 同样可以供上这个值。
 
 **对象简写**：每个对象注册**恰好一个三字母别名**，由 Cobra 在命令解析阶段直接换成全名，因此别名与全名共享同一套 flag、帮助、校验与退出码：`databases` → `dbs`，`tables` → `tab`，`views` → `vws`，`columns` → `col`，`indexes` → `idx`，`triggers` → `trg`，`routines` → `rtn`，`events` → `evt`。别名大小写敏感、长度固定为 3，且必须与对象名及其他别名互不冲突；`TestObjectAliasesAreUnique` 同时断言「恰好一个、长度为 3、不撞名、不重复」。
 
@@ -739,7 +737,7 @@ imex export -h 127.0.0.1 -u root -p pass -D mydb -o /backup/users.del \
 
 值名只接受这两个（变更记录 74）：旧名 `java` 只描述了一个实现语言而不是格式，已作废且**不留别名**——`--log-format java` 与 `IMEX_LOG_FORMAT=java` 都是用法错误（退出码 2，`invalid --log-format "java": must be one of console/text`）。
 
-**注（2026-11-01，变更记录 112）：本段说的「env 覆盖 flag」只属于四个全局开关。六个连接变量（`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_SOCKET`/`IMEX_DATABASE`，见 2.1.10）是反过来的——显式命令行选项赢，env 只是默认值的来源。两类语义不同是刻意的：布尔开关与日志布局只有「打开/选一个」这一维，env 有效就等于用户想要它；连接值一旦让 env 压过命令行写下的地址，同一条命令就会连到操作者没写的那个库。**
+**注（2026-11-01，变更记录 112）：本段说的「env 覆盖 flag」只属于四个全局开关。六个连接变量（`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_SOCKET`/`IMEX_DATABASE`，见 2.1.10；2026-11-03 注：`--socket` 与 `IMEX_SOCKET` 已按用户指令移除，本组现为五个，见变更记录 124）是反过来的——显式命令行选项赢，env 只是默认值的来源。两类语义不同是刻意的：布尔开关与日志布局只有「打开/选一个」这一维，env 有效就等于用户想要它；连接值一旦让 env 压过命令行写下的地址，同一条命令就会连到操作者没写的那个库。**
 
 ```bash
 imex export --log-format text -h 127.0.0.1 -u root -p pass -D mydb -o /backup/users.del -q "SELECT * FROM users"
@@ -759,8 +757,7 @@ IMEX_LOG_FORMAT=text imex import -h 127.0.0.1 -u root -p pass -D mydb -i /backup
 | `imex starting` | 每次真实运行的首行（version/build_time/git_commit/go_version/command）；`version` 子命令本身不产生任何日志记录 |
 | `export config` / `import config` | 生效参数快照，**只打印所选 `--format` 真正读取的字段**：判据取自 `internal/config/formatscope.go` 这张登记表，与用法错误的拒绝逻辑、`--help` 里的范围标记同源（`-f del` 不打 `statement_size`/`no_create`/`extended_insert`，`-f sql` 不打 DEL 定界符与文本修饰，`-f parquet` 两类都不打；实测 export 为 25/20/15 个字段、import 为 29/20/20）。其余字段按「连接 → 输入输出 → 行流控制 → 并行与流水线 → 字符集 → 该格式专属布局 → 日志」排列，含 DEL 定界符与文本修饰（`date_fmt`/`no_escape`/`no_char_del` 三项此前漏打，现已补齐）、`hex_blob`（导出侧打印**生效值**而非 `--hex-blob` 标志位，与写入器共用 `effectiveHexBlob()`）、`progress_interval`；导入侧的 `statement_size` 与格式无关（它约束本命令生成的语句，不约束输入文件），故三种输入格式都打印。由 `NewExporter`/`NewImporter` 在**建连接之前**打印，因此连接失败时也看得到参数；紧随横幅之后（原先重复它的 `export started`/`import started` 已删除） |
 | `session variables will be set on every connection` | 传入了 `--session-var` |
-| `connection values supplied by environment` | INFO，每次运行至多一条：六个连接变量里有变量为本次运行供值时出现，带 `variables`（供值的**变量名**列表，按 host→port→user→password→socket→database 的固定顺序）。**只有名字、没有值**（2.1.10） |
-| `connection variable ignored` | WARN：命令行显式写了 `--host` 或 `--port`、同时环境里又设了 `IMEX_SOCKET` 时出现，带 `variable`（被跳过的变量名，即 `IMEX_SOCKET`）与 `reason`（`this run names an address with --host or --port, so it stays on TCP`）。socket 与 TCP 是两种传输方式，写下的地址不会被 env 改掉（2.1.10）；变量名作属性而不是消息首词，以守住「消息是小写 `<对象> <事件>`」的词表约定 |
+| `connection values supplied by environment` | INFO，每次运行至多一条：五个连接变量里有变量为本次运行供值时出现，带 `variables`（供值的**变量名**列表，按 host→port→user→password→database 的固定顺序）。**只有名字、没有值**（2.1.10） |
 | `export progress` / `import progress` | 每 `--progress-interval`（默认 5 秒）一条定时进度（运行短于间隔时一条也不打印） |
 | `parallel export detected` / `parallel export ignores pipeline options` / `shard export completed` / `parallel export completed` | 并行导出：分片计划、被忽略的管道选项（CLI 上已改为用法错误，因此该 info 只可能由直接驱动库的调用方触发；级别 `info`，带 `batch_size`/`pipeline_buffer`/`look_ahead_per_shard`/`applies_to`）、每个分片、汇总 |
 | `single-threaded export ignores --shard-key` | `warn`：单线程导出从不采样分片键，而它此前是唯一"看得见"的地方——显式给出 `--shard-key` 的 `--threads 1` 运行照样在配置记录里回显 `shard_key=...`，读起来像被采纳，且列名是否存在都不检查（只有分片路径校验）。现在两条进入单线程的路由都出声：`--threads 1`，以及并行请求因复杂查询、表名解析失败或只切出一段而回落。带 `shard_key`（取值）、`threads`（请求值）、`fallback`（`threads>1` 即 true，说明这是一次回落）、`hint`（改用单表查询并 `--threads>1`，或去掉该选项）。配置记录侧：写记录时若 `threads<=1` 且给了键，紧随 `shard_key` 追加 `shard_key_ignored=true`——回落路径写记录时 `threads>1` 仍看着可用，故不带该字段，由本条 `warn` 负责（实测 `--threads 4` + JOIN 的运行只出现 `warn`，`--threads 1` 的两条都在）。退出码与产物不变（同一 5000 行夹具在 `--threads 1` 带键、不带键、以及 `--threads 4` 并行三条路径下产物 md5 均为 `bc78091aa71ef39b73a65268a78fadc8`；回落那条跑的是另一个查询，不参与比对） |
@@ -1421,7 +1418,7 @@ DEL 与 SQL 导入不再使用 `bufio.Scanner`（有 token 长度上限 10 MB）
 |------|------|
 | 密码安全 | 不记录到日志，因而也不记录到 `--messages` 文件 |
 | 权限最小化 | export 只需 SELECT；import 需要 INSERT/UPDATE/DELETE/CREATE |
-| 传输安全 | 当前版本不提供 TLS 配置：`--ssl-*` 等选项已移除，连接只使用明文 TCP 或 Unix socket，`--session-var tls` 也会被拒绝。需要加密链路时请在工具之外终结（如本机 TLS 代理/隧道），或仅在可信网络内使用 |
+| 传输安全 | 当前版本不提供 TLS 配置：`--ssl-*` 等选项已移除，连接只使用明文 TCP，`--session-var tls` 也会被拒绝。需要加密链路时请在工具之外终结（如本机 TLS 代理/隧道），或仅在可信网络内使用 |
 | 密码加密 | AES-256-GCM 加密密码，避免在 ps 命令中泄露 |
 
 ### 8.5 部署
@@ -1449,7 +1446,7 @@ imex/
 │   ├── list.go                # list 父命令与八个对象叶子（RunE：校验 → 建连 → 查询 → resultSink）
 │   ├── show.go                # show 父命令与六个 kind 叶子（RunE：校验 → 建连 → SHOW CREATE → resultSink）
 │   ├── output_channel.go      # list/show 共享的结果通道 resultSink（缓冲 + Flush 选路）与 -o/-m 同路径守卫
-│   ├── conn_env.go            # 六个连接变量的读取、优先级与 `connection values supplied by environment` 记录
+│   ├── conn_env.go            # 五个连接变量的读取、优先级与 `connection values supplied by environment` 记录
 │   ├── validate.go            # 参数校验：数值边界、字符集冲突、格式适用性（SQL 专属/DEL 专属/parquet 专属选项）
 │   ├── option_scope.go        # 把登记表里的格式适用范围追加进各 flag 的帮助文本
 │   ├── cli_matrix_test.go     # 参数组合矩阵与退出码契约测试
@@ -1700,7 +1697,7 @@ imex import -h 127.0.0.1 -u root -p pass -D mydb \
 
 ### 11.1 测试资产清单
 
-上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 61 个 `_test.go`、378 个 `Test*`（含 1 个 `TestMain`，负责一次性构建被 CLI 测试调用的二进制）、6 个 `Fuzz*`、12 个 `Benchmark*`；计数按 `git grep -c '^func Test'` 与 `find . -name '*_test.go' | wc -l` 于变更记录 117 当轮逐目录复核。本表此前长期缺 `cmd/list_test.go`、`cmd/conn_env_test.go` 与 `internal/list` 的三个测试文件（它们分别在变更记录 92 与 112 的轮次落地），本轮一并补行；0.17.0 新增的五个文件（`cmd/show_test.go`、`cmd/output_channel_test.go`、`internal/show/show_test.go`、`test/integration/show_test.go`、`test/integration/channel_test.go`）同表列出。
+上表按"场景"组织，这里按"文件"给出对应的落地位置与规模（当前共 61 个 `_test.go`、377 个 `Test*`（含 1 个 `TestMain`，负责一次性构建被 CLI 测试调用的二进制）、6 个 `Fuzz*`、12 个 `Benchmark*`；本行计数于 2026-11-03 变更记录 124 当轮复测（378 → 377，socket 传输的两条用例删除、新增一条「传输已移除」的钉住用例），此前按 `git grep -c '^func Test'` 与 `find . -name '*_test.go' | wc -l` 于变更记录 117 当轮逐目录复核。本表此前长期缺 `cmd/list_test.go`、`cmd/conn_env_test.go` 与 `internal/list` 的三个测试文件（它们分别在变更记录 92 与 112 的轮次落地），本轮一并补行；0.17.0 新增的五个文件（`cmd/show_test.go`、`cmd/output_channel_test.go`、`internal/show/show_test.go`、`test/integration/show_test.go`、`test/integration/channel_test.go`）同表列出。
 
 | 文件 | 用例数 | 覆盖点 | 运行方式 |
 |------|--------|--------|----------|
@@ -1712,7 +1709,7 @@ imex import -h 127.0.0.1 -u root -p pass -D mydb \
 | `cmd/list_test.go` | 10 | `list` 命令树与参数校验的包内测试：`validateListConfig` 接受八个对象与两种名字形式、缺范围（`columns`/`indexes` 无 `-D`/`-t`）与九组非法取值各自退出 2；命令树（父命令 + 八叶 + 别名解析到同一命令）、`-f/--format` 必须不存在、无对象与未知对象的用法错误文案；`TestListHelpLinesStayWithinTheLimit` 静态断言帮助行 ≤118 字节 | `make test` |
 | `cmd/show_test.go` | 12 | `show` 命令树与参数校验：六个 kind 主名唯一、父命令 + 六叶注册、每叶必须带 `output`（短名 `o`）/`no-overwrite`/`messages`（`m`）/`database`（`D`）/`help`（`?`）且不得出现 `--pattern`；`-m` 的描述与 `list` 逐字相同（同一常量）；无 kind 时文案恰为 `show requires a kind: tab, vws, trg, evt, prc, fcn`、未知 kind 与参数个数错误均为用法错误；`validateShowConfig` 接受 `db.name` 与 `-D name` 两种形式、拒绝九组非法取值、拒绝 `-o` 与 `-m` 同路径；帮助行 ≤118 字节 | `make test` |
 | `cmd/output_channel_test.go` | 11 | `resultSink` 在 `Flush` 之前一个字节都不写、四格通道矩阵（stdout / `-o` / `-o`+`-m` / 追加到 `-m`）逐格断言目的地、追加发生在既有日志记录之后、`-o` 覆盖写而 `--no-overwrite` 拒绝已存在文件且**不是**用法错误（是运行时错误）、`--no-overwrite` 对缺失文件照常创建、空结果不产出、目标不可写为运行时错误；`validateDistinctPaths` 认路径不认写法（同路径、`.` 段、`..` 拼法、`os.Chdir` 后的相对与绝对），并钉住必填侧（export/import）没有退路文案 | `make test` |
-| `cmd/conn_env_test.go` | 10 | 六个连接变量的读取与优先级：env 填充未给的选项、显式 flag 压过 env、空串视为未给并去空格、`IMEX_PORT` 非法值报错、socket 与 TCP 的取舍与 `connection variable ignored` 告警、该套作用面覆盖 import 与 list（0.17.0 起同一入口也服务 `show`）、缺失密码的文案点名两个来源 | `make test` |
+| `cmd/conn_env_test.go` | 9 | 五个连接变量的读取与优先级：env 填充未给的选项、来源顺序与报告只含名字、显式 flag 压过 env、空串视为未给并去空格、`IMEX_PORT` 非法值报错、该套作用面覆盖 import 与 list（0.17.0 起同一入口也服务 `show`）、缺失密码的文案点名两个来源；另有 `TestSocketTransportIsGone` 钉住 socket 传输已移除——设了 `IMEX_SOCKET` 也不改变任何生效值与 `used`，`BuildDSN` 在默认 `-P` 与显式 `-P 3307` 下都仍是 `@tcp(...)` | `make test` |
 | `internal/common/*_test.go`（11 个文件）| 48 | **开局建连的重试判据（`ping_test.go`：进程内假连接器 `pingFake` 按脚本回答 `db.Ping()` 并计数，钉住 `1045`/`1049`/`1193`/`1064` 四类服务端拒绝各只发一次 ping、不产生 retrying 记录、文案写 `after 1 attempt`，瞬态故障重连两次后恢复且告警数等于重试数，退避耗尽为三次尝试两条告警配 `after 3 attempts`，`MaxAttempts=0` 的退化上界仍然诚实计数）**；耗时字段固定以秒、三位小数呈现（`logsql_test.go`：`Seconds` 六组边界，交互 SQL 在默认 info 级即回显、提到 warn 完全静默且 `InfoEnabled` 与实际写出一致、回显脱敏不含真实值）、瞬态错误判定、日志单行与切布局保持级别、日志文件 sink（挂载后接管 stderr、关闭后归还、并发写入不交叉、替换与失败路径）、进度计时器 stop 排空在飞的记录且二次 stop 不死锁、间隔未到不产出任何进度记录且 stop 不空等一个间隔、重试退避与取消、会话变量解析与 DSN 注入、失败 SQL 脱敏回显、DSN 构建、口令加解密（往返含空串/前缀串/CJK/控制字符、布局长度恰为 salt+nonce+明文+标签、盐与 nonce 每次不同、不同盐派生出不同密钥、错密钥与篡改盐/密文/截断/非法 base64 全部拒绝、旧布局密文必须失败、空密钥拒绝、`ResolvePassword` 四种分支）| `make test` |
 | `internal/config/config_test.go` | 2 | `--progress-interval` 的解析结果：导出与导入两侧默认恒为 5 秒，显式取值原样生效，零值与负值回落默认值（`time.NewTicker` 对非正间隔会 panic，库调用方不许把它传进来）| `make test` |
 | `internal/config/formatscope_test.go` | 4 | 格式适用范围登记表本身：`AppliesTo` 的格式×选项矩阵（含未登记选项恒等于"与格式无关"、导入侧 `statement-size` 刻意不登记）；`Violation` 的文案与首条命中顺序必须与既有的用法错误逐字相同（把拒绝逻辑合并到一个函数不能改变用户读到的内容）；登记表自洽性（无重复、无"列出全部格式"的伪范围、每个未覆盖格式都拿得到点名该选项的文案）；导出与导入两侧的 DEL 组必须是同一批九个选项，且含此前回显漏掉的 `date-fmt`/`no-escape`/`no-char-del` | `make test` |
@@ -1930,3 +1927,4 @@ imex import -h 127.0.0.1 -u root -p pass -D mydb \
 | 121 | 用户指令「继续」，接上轮报告点明的遗留项：变更记录有 9 条违反三节第 4 条「每行一个物理行、恰好 4 个竖线」，是上轮复核时实测出来的（行号 1877、1884、1889、1890、1891、1892、1905、1911、1923） | **变更记录表格结构修复（纯文档轮，版本仍 0.17.1、不打 tag）。只动渲染结构，不动一个字的内容，做法沿用 59 ④ 的先例——那轮也顺手修过一条被裸竖线切断的行。** ① **缺陷分三类，修法各不同**。其一是**内容里的裸竖线**，5 条行共 **16** 处：75 行的 `--parquet-compression` 取值枚举 2 处、82 行的三行产物示例 6 处、95 行的 `-f` 三种格式枚举 2 处、101 行引用的 Go 布尔或运算 2 处、112 行的两处代码或运算加一个 shell 管道加一个分隔符字面量共 4 处；一律改为反斜杠转义，与本节已有的 13 处转义写法同构（GFM 表格里的竖线只能在行解析阶段转义，代码段内也走同一写法，59 记录的 `--col-del` 那处就是先例）。其二是**少了单元分隔符**，79、80、81 三条整行只有编号列加一个巨型单元列，而本节其余各行的第三列一律以加粗动作标题开头（75 的 `**① 实现**`、82 的 `**① 修法**`、95 的 `**新增 scripts...**`、101 的 `**删除 --quiet...**`、112 的 `**六个连接选项的环境变量形式...**` 都在同一位置），故在这三条的「`。**① 修法**`」处插入一个分隔符，把已经写好的现象列与处理列分开——这是按本节既有排版归位，不是替作者重写内容。其三是**行尾闭合竖线缺失**，68 行整行没有结尾竖线，补上。② **内容守恒证明**：逐行比对，79/80/81 每行长度恰好加 3 个字符（一个空格加竖线加空格），68 行加 2，其余 5 行只多了反斜杠；把插入的分隔符去掉、把转义还原，与改前逐字节相同，九行全部核对为真。③ **复核口径**：沿用 59 收紧后的「只数未转义竖线」判据（脚本随本轮提交信息附上，命令行里含竖线不便入表）——本轮实测编号行 **121** 条，未转义竖线不为 4 的行为 **0** 条；改前是 9 条，竖线数分布从 3 到 10 不等。④ **发现但刻意未动的另一类缺陷（等点名）**：同一套单元数比对暴露出 `README.md` 与 `docs/requirements.md` 的普通表格里还有 14 行单元数与表头对不上——`README.md` 第 162 至 165 行是 export 连接选项表，表头五列而这四行只有四列，缺的正是 112 轮给该表新增的「环境变量」那一格；第 1023、1024、1080 行疑似内容裸竖线；第 1089、1090、1155、1156 行更可能是比对脚本把两列行按邻近表头误判；`docs/requirements.md` 第 579、580 行是 8.4 安全表里首格留空的续行，第 1719、1720 行是 11.1 资产表的内容裸竖线。纪律 3 只约束变更记录，这些不在其条文范围内，且每处都要判断「是缺列还是缺转义」，其中至少四行疑似工具误报，一并修的风险大于收益，留待裁定。⑤ **五面契约**：全部不变——无 flag 与 help 改动、无产物格式改动、无退出码与错误文案改动、`IMEX_*` 集合不变、服务端可见语句不变；本轮只改 `docs/requirements.md` 的 9 行结构加本行，外加 `CONTEXT.md` 的索引计数一处。⑥ **验证**：`gofmt -l .` 输出空、`CGO_ENABLED=1 go vet ./...` 退出 **0**、`make build` 退出 **0**、`imex version` 报 **0.17.1**；没有任何测试读取 `docs/requirements.md`（`cmd/version_log_test.go` 断的是 `imex version` 的标准输出，不是变更记录），结构修复不影响用例；工作树凭据两种形态命中仍为 **0**。本轮为纯文档轮，按三节第 2 条不打 tag——上轮的 `v0.17.1` 是用户点名覆盖该条，本轮没有新的覆盖指令。 |
 | 122 | 用户指令「两次提交」：把上条 ④ 点名的普通表格缺陷按「改法唯一」与「要先定夺」拆成两轮，本轮只做前者——内容里裸着的竖线补上转义即可，不动任何结构 | ① **改的四处共 7 个竖线**：`README.md` 第 1024 行 2 个（变更记录 75 轮那行的 `--parquet-compression` 三值并列）、第 1080 行 1 个（112 轮那行里校验和函数的分隔实参）、第 1156 行 2 个（95 轮那行里脚本 `-f` 的三值并列），加 `docs/requirements.md` 第 1720 行 2 个（11.1 资产表导入侧测试行里对语料的描述）。② **保内容证明**：四行改后把「反斜杠竖线」还原成裸竖线，与 `HEAD` 版本逐字节相同（4 行全部命中）；两份文件行数不变；合计多 7 字节。未转义竖线计数 README 第 1024 行 5 到 3、第 1080 行 4 到 3、第 1156 行 5 到 3，`docs/requirements.md` 第 1720 行 7 到 5——收敛值都是所在表格的表头列数加一。③ **渲染口径**：GFM 表格单元内的「反斜杠竖线」显示为一根裸竖线，代码段内同样成立，所以读者看到的字符一字不变，变的只是解析器读到的单元数。④ **复核**：编号行含本行共 **122** 条，未转义竖线不为 4 的行为 **0** 条。同一套单元数比对在两份文档的普通表格里还剩 **6** 行与表头对不上，且每处都要判断「是缺格还是缺转义」：README 第 163、164、165 行是 export 连接选项表里缺「环境变量」那一格（112 轮给表头加了第五列，这三行没跟上）；README 第 1090 行整行只有一个单元，比两列表头少一个分隔符；requirements 第 580 行首格留空、多出第三格；requirements 第 1721 行的代码段里含真实控制符（一个制表符与两个换行），一行被拆成三个物理行。修法唯一的是前三类里的补格与补分隔符，最需要定夺的是第 1721 行——那两个换行本该是可见的两字符转义串还是留一个空格，取哪种都要写明依据，留下条。⑤ **五面契约**：全部不变，本轮只动两份 Markdown。⑥ **验证**：`gofmt -l .` 输出空、`CGO_ENABLED=1 go vet ./...` 退出 **0**、`make build` 退出 **0**、`./bin/imex version` 报 **0.17.1**；工作树裸口令与 DSN 形态命中均为 **0**。本轮为纯文档轮，按三节第 2 条不打 tag。 |
 | 123 | 用户指令「两次提交」的第二轮：上条 ④ 剩下的 6 行结构缺陷——补格、并格、合行，每处都得先判「是缺格还是缺转义」 | ① **`README.md` 第 163、164、165 行（export 连接选项表，表头五格）**：三行各只有四格，缺的正是 112 轮给这张表新增的「环境变量」那一格——`--connect-timeout`、`--socket-read-timeout`、`--socket-write-timeout` 三个超时选项本就没有对应环境变量，该格该留空而不是整格消失。改法沿用同一张表第 162 行的空格子写法，在默认值前补一个空格子：三行各多 2 字符，把新行最后那个空格子删掉后与 `HEAD` 版本逐字节相同（3/3 命中），未转义竖线 5 到 6（表头格数加一）。② **`README.md` 第 1090 行（v0.13.0 修复记录表，表头两格）**：整行只有一个单元，内容是档位判定与 QA 追加说明，「缺陷」那一侧从写入时就没开格子。改法同 ①——行首补一个空格子，新行等于原行前加两字符，未转义竖线 2 到 3。③ **本文件第 580 行（8.4 encrypt 安全表，表头两格）**：行首多出一个空格子，把「工作因子」挤到第二格，单元数 3 对表头 2；删掉行首那 2 个字符后「工作因子」升为项目名，与相邻的密文非确定性、兼容性、输出三行同一体例，未转义竖线 4 到 3，新行等于原行去掉前 2 字符。④ **本文件 11.1 资产表 `internal/list/*_test.go` 那行（原第 1721、1722、1723 三个物理行）**：三个代码段里装的是真控制符——一个制表符与两个换行，两个换行把一条表格行切成三行（`c03f2c9` 引入起就是这个字节形态，全文件历史里回车字节为 0）。改法是合成一个物理行、把控制符写成可见的两字符转义串，取序为制表符、回车、换行，依据是本文件 2.5 输出契约表第 615 行「值中的反斜杠、制表符、CR、LF 转义为 …」与 `internal/list/render.go:15-20` 的 escaper 同序。**这是推断不是还原**：原文件那两个字节都是换行，无从分辨哪个本该是回车；若要取反序，只改这一格。还原证明：把新行里三个转义串换回控制符、再按原位补回两个换行，与 `HEAD` 的第 1721 至 1723 行拼接结果逐字节相同（294 对 297 字符，差的 3 个正是转义串多出的字符）；未转义竖线 3 到 5。⑤ **顺带查明、刻意不改**：这行宣称的四个转义里 `internal/list/render_test.go` 实际只断言了反斜杠与制表符两例（表对齐用例喂的是 `tab\there`），CR 与 LF 只存在于 escaper——属「覆盖点写多了」的内容问题，不是结构问题，本轮不动，等你裁定。⑥ **复核（含本行）**：编号变更记录 **123** 条、未转义竖线不为 4 的行为 **0** 条；两份文档普通表格的单元数比对不匹配行数 **0**。判据本轮收紧为「表格块表头定格数、其后每个以竖线开头的行都比」，按此实测 121 ④ 那份清单里真正不匹配的是 **10** 个物理行（`README.md` 7 行、本文件 3 行），另 4 行是当时按最邻近表头错配所致，转义或合行之后自行消失。两份文档表格行里的裸制表符与回车 **0** 处；`README.md` 仍 **1270** 行，本文件 **1933 到 1932** 行（④ 三行合一少 2、本行加 1）。`CONTEXT.md` 4.1 节那条「普通表格 14 行待裁定」就地删除并换成 ⑤ 那条新发现，一节 HEAD 与已推送两条指针、七节索引（改指本行）同步更新，另加 2.5 节收口说明。⑦ **五面契约**：全部不变——无 flag 与 help 改动、无产物格式改动、无退出码与错误文案改动、`IMEX_*` 集合不变、服务端可见语句不变；两轮合计只动 10 个被点名的物理行（④ 那行实际占 3 个物理行）与 `CONTEXT.md` 状态页。⑧ **验证**：`gofmt -l .` 输出空、`CGO_ENABLED=1 go vet ./...` 退出 **0**、`make build` 退出 **0**、`./bin/imex version` 报 **0.17.1**；工作树凭据两种形态命中 **0**。本轮与上轮都是纯文档轮，按三节第 2 条不打 tag。 |
+| 124 | 用户指令「先把--socket去掉，用处有限。」：`--socket` / `-S` 与 `IMEX_SOCKET` 整体移除、不留兼容层，连接从此只有 TCP | ① **落点（非测试代码 9 处）**：`internal/config/config.go` 删 `Config.Socket` 字段（`SocketReadTimeout`/`SocketWriteTimeout` 两名保留——它们约束的是单次 socket 读与写，在 TCP 上本来就是这层意思，选项名与默认值一字未动）；`internal/common/util.go:BuildDSN` 的 unix 分支整体删除，改为无条件 `cfg.Net = "tcp"` 与 `host:port`；四个注册点各删一行 `f.StringVarP(&….Socket, "socket", "S", "", "UNIX domain socket path (also IMEX_SOCKET)")`（`cmd/export_flags.go`、`cmd/import_flags.go`、`cmd/list.go`、`cmd/show.go`）；四条命令的必填判定各由 `Host == "" && Socket == ""` 改为 `Host == ""`，文案 `--host or --socket is required` → `--host is required`（`cmd/export.go`、`cmd/import.go`、`cmd/list.go`、`cmd/show.go`）；`cmd/conn_env.go` **117 → 93 行**——`connEnvSources` 六对减五对、`connEnvReport.skipped` 随唯一使用者一起删（该字段已无可读来源）、`applyConnEnv` 不再算 `explicitTCP`、`logConnEnv` 的 WARN 循环整体删除；`cmd/export.go`/`cmd/import.go` 的环境变量注释同步为五个名字。② **不留兼容层**（与变更记录 101 删 `--quiet`+`IMEX_QUIET`、102 删 `list -f/--format` 与 `--query-file`、62 删 `--single-row-insert` 同一条策略）：四条命令的拒绝形态逐条实测——`imex export --socket /tmp/x.sock …` 与 `imex show tab … --socket /tmp/x.sock` 均 `unknown flag: --socket`，`imex import -S …` 与 `imex list tab -S …` 均 `unknown shorthand flag: 'S' in -S`，四条退出码全 **2**；`IMEX_SOCKET` 不再被读取，实测设了它之后 INFO 记录仍是 `connection values supplied by environment variables="[IMEX_HOST IMEX_PORT IMEX_USER IMEX_PASSWORD IMEX_DATABASE]"`（五名、无 socket），连接按 `dial tcp 127.0.0.1:3307` 走出（本沙箱无 MariaDB，止于 connection refused）。③ **面③ 的两处文案变化**：`--host is required`（新，实测 `-h ""` 退出 **2**）；`connection variable ignored` 这条 WARN 随跳过逻辑一起消失（3.3.2 记录表删该行）。`--password is required (or set IMEX_PASSWORD)` 未动。配置回显里本来就没有 socket 字段——实测 `-f del` 仍打 **25** 个字段，与 2.5 那行记载逐字吻合，本轮无漂移。④ **列对齐未变**：最长选项名仍是 `--socket-write-timeout duration`（`--socket` 从来不是最长名），重基线只是十六行离开文件——`## export` 一行、`## import` 一行、八个 `## list <object>` 各一行、六个 `## show <kind>` 各一行，描述文本与列位一字未动。`docs/cli-oracle.txt` 新增 **Re-baselined note 26**：本树构建的二进制逐段重取，**19 个活体全部 diff EMPTY**（`## version` 仍是冻结快照），文件 **1,106 → 1,105 行**（走掉十六行、note 自身加十五行），仍 **20** 段，全文件 0 行超 118 字节。⑤ **测试**：`cmd/conn_env_test.go` **10 → 9** 用例（392 → 324 行；删 `TestConnEnvTransportChoice`、`TestConnEnvExplicitPortIsAlsoAnAddress`，新增 `TestSocketTransportIsGone`——设了 `IMEX_SOCKET` 后 `rep.used` 仍为空、`BuildDSN` 在默认 `-P` 与显式 `-P 3307` 下都仍是 `@tcp(127.0.0.1:…)`；留这条不是给已删功能补测试，而是钉住「shell profile 里残留的 `IMEX_SOCKET` 永不生效」）；日志用例改为断言 INFO **恰好一行** 且输出里没有 `connection variable ignored`；`cmd/cli_matrix_test.go` 新增两条未知选项用例（长名与短名各一条，按第 62 行的先例进矩阵）；`cmd/list_test.go:75`、`cmd/show_test.go:196` 的必填期望串换新文案；`test/integration/live_mysql_test.go` 去掉 `switch mc.Net` 的 unix 分支，非 TCP 直接 `t.Fatalf("IMEX_TEST_DSN must name a TCP address, got net %q", mc.Net)`。QA 计数：`_test.go` **61** 不变、`^func Test` **378 → 377**、`Fuzz` **6**、`Benchmark` **12**、`grep -c statementCapSlack test/integration/option_matrix_test.go` = **3**。⑥ **文档**：README 的六个连接选项口径全部改五个（特性清单、export 标志表、import 与 list 两处指回、环境变量表删 `IMEX_SOCKET` 行、socket 与 TCP 的优先级整条 bullet 删除、缺值提示段改写为单条 INFO 记录）；requirements.md 2.1.2 表删一行并将「其余四条」改「其余三条」、2.1.10 删「传输方式（socket 还是 TCP）按同样的优先级决定」整条并把 WARN 从句从「只记录变量名」那条里摘掉、2.1.9 与 2.2.2 与 2.5 的名字计数改五、3.3.2 那条 2026-11-01 的注按「记录不改写历史」原文保留并在括号内加带日期的新注、记录表删 `connection variable ignored` 行、`connection values supplied by environment` 行的来源顺序改 host→port→user→password→database、九节结构树 `conn_env.go` 注释改五个、8.4 传输安全行改「连接只使用明文 TCP」、十一节 11.1 头行计数与 `cmd/conn_env_test.go` 行覆盖点重写。历史文本全部原样保留（README 功能记录 2 行、requirements.md 变更记录 112/113、oracle note 23 里的 `--socket`/`IMEX_SOCKET`），依据三节第 3 条。⑦ **五面契约（逐面）**：① **CLI 变**——选项集合少 `--socket`/`-S`，一种既有调用形态自此被拒绝（无别名、无 deprecation 期），帮助面少十六行；② 产物格式 **不变**；③ 退出码取值范围 **不变**（仍 0/1/2），一条必填文案改写、一条 WARN 记录消失，错误文本集合变小；④ `IMEX_*` **变**——少一个变量，且读它的路径整体不存在；⑤ 服务端可见 SQL **不变**——被删的分支只决定驱动 `cfg.Net`/`cfg.Addr`，发出的语句文本与条数一字未动，本轮未新增或删除任何语句。⑧ **档位**：面①④ 按字面是不兼容，但按 101/102/116/117 的先例（0.x 期移除 CLI 选项只进第二位）记 **Y**；`Makefile` 第 1 行仍 **0.17.1**，按变更记录 113 的先例本轮不进位、不打 tag，待用户下令进位时与 tag 名同一次提交同步。⑨ **本轮 QA 实况（无 MariaDB 的沙箱）**：`gofmt -l .` 空、`CGO_ENABLED=1 go vet ./...` 退出 0、`CGO_ENABLED=1 go test -race -count=1 ./...` **九包全通过**（`github.com/imex/cmd` 13.983 s、`internal/common` 44.211 s 为 PBKDF2 用例真跑 600000 次派生、`test/integration` 1.030 s = 真库用例全跳过）、`make build` 退出 0（`bin/imex` 22,368,418 B，`imex version` 报 `0.17.1`）、20 个帮助面 118 字节守卫 0 行超限、`statementCapSlack` = **3**；真库用例在此环境仍不可复跑（见一节）。改动规模：Go 侧 14 文件 75 增 167 删（含测试），文档 3 文件。⑩ **未做与遗留**：未提交、未打 tag、未 push、未打包；`go.mod`/`go.sum` 里 `go get gitee.com/chunanyong/dm` 带来的三条 indirect（`gitee.com/chunanyong/dm v1.8.23`、`github.com/golang/snappy v1.0.0`、`golang.org/x/text v0.36.0`）仍留在工作树未提交——达梦一轮的 R0 代码尚未 import 该驱动，`go mod tidy` 会把这三条整体摘掉，留到实现轮随真实引用一起落；顺带实测到变更记录的子表里有 **3** 处空行插在同一个子表的两个数据行之间（现第 **1816** 行分隔 32 与 33、第 **1883** 行分隔 77 与 78、第 **1908** 行分隔 101 与 102，判据是「空行的上一行与下一行都以竖线开头」），渲染时会把一张表断成两张——非本轮引入，也不属于 121/122/123 处理的竖线与格数两类，本轮未动，等裁定。 |

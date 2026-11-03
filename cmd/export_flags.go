@@ -28,7 +28,6 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.IntVarP(&exportCfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
 	f.StringVarP(&exportCfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
 	f.StringVarP(&exportCfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
-	f.StringVarP(&exportCfg.Socket, "socket", "S", "", "UNIX domain socket path (also IMEX_SOCKET)")
 	f.StringVarP(&exportCfg.Database, "database", "D", "", "Database name (also IMEX_DATABASE)")
 
 	// Timeouts

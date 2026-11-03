@@ -103,7 +103,6 @@ func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
 	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
 	f.StringVarP(&cfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
-	f.StringVarP(&cfg.Socket, "socket", "S", "", "UNIX domain socket path (also IMEX_SOCKET)")
 	f.StringVarP(&cfg.Database, "database", "D", "",
 		"Database to inspect (required for columns and indexes; also IMEX_DATABASE)")
 
@@ -179,8 +178,8 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 }
 
 func validateListConfig(cfg *config.ListConfig) error {
-	if cfg.Host == "" && cfg.Socket == "" {
-		return common.Usagef("--host or --socket is required")
+	if cfg.Host == "" {
+		return common.Usagef("--host is required")
 	}
 	if cfg.User == "" {
 		return common.Usagef("--user is required")

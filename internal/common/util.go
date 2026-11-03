@@ -128,13 +128,8 @@ func BuildDSN(c *config.Config) string {
 	cfg.Params["multiStatements"] = "false"
 	cfg.Params["clientFoundRows"] = "false"
 
-	if c.Socket != "" {
-		cfg.Net = "unix"
-		cfg.Addr = c.Socket
-	} else {
-		cfg.Net = "tcp"
-		cfg.Addr = fmt.Sprintf("%s:%d", c.Host, c.Port)
-	}
+	cfg.Net = "tcp"
+	cfg.Addr = fmt.Sprintf("%s:%d", c.Host, c.Port)
 
 	// Timeouts are expressed with the driver's own fields so they survive
 	// FormatDSN/ParseDSN round-tripping. connectTimeout is a dial deadline;

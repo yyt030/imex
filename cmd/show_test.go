@@ -193,7 +193,7 @@ func TestValidateShowConfigRejectsBadValues(t *testing.T) {
 	}{
 		{"password", func(c *config.ShowConfig) { c.Password = "" }, "--password is required (or set IMEX_PASSWORD)"},
 		{"user", func(c *config.ShowConfig) { c.User = "" }, "--user is required"},
-		{"host and socket", func(c *config.ShowConfig) { c.Host = ""; c.Socket = "" }, "--host or --socket is required"},
+		{"host", func(c *config.ShowConfig) { c.Host = "" }, "--host is required"},
 		{"port", func(c *config.ShowConfig) { c.Port = 0 }, "invalid --port"},
 		{"log level", func(c *config.ShowConfig) { c.LogLevel = "verbose" }, "invalid --log-level"},
 		{"charset", func(c *config.ShowConfig) { c.DefaultCharset = "klingon" }, "invalid --default-charset"},
