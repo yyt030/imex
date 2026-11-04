@@ -305,11 +305,19 @@ type Backend interface {
 	// is the part that is genuinely the engine's.
 	Refusals(c Command) []Refusal
 
-	// ValidateCharset reports whether --default-charset has a meaning on this engine.
-	// The error text is the message the CLI prints (relabelled as a usage error by
-	// cmd), so it is contract face ③ and travels with the dialect that owns the
-	// encoding names. An engine that accepts everything validateCharset already
-	// accepted returns nil.
+	// KnownCharset reports whether name is one of the values this engine's
+	// --default-charset accepts, aliases included. It is the vocabulary half:
+	// cmd's "unrecognized charset" gate asks it at the same point in validation it
+	// always has, so the rejection message and its order are unchanged (face ③).
+	// MySQL's list is the 16 SET NAMES names in charset_mysql.go; PostgreSQL's is
+	// the client_encoding map.
+	KnownCharset(name string) bool
+
+	// ValidateCharset reports whether this engine accepts --default-charset in
+	// principle. MySQL accepts every spelling (the server reports an unknown name
+	// under SET NAMES); PostgreSQL resolves it to a client_encoding and rejects a
+	// name it cannot send. This check runs before cmd's generic gate, so the
+	// engine-specific rejection wins when both would fire.
 	ValidateCharset(charset string) error
 
 	// CellFixups returns one rewriter per result column, or nil for a column

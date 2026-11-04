@@ -113,9 +113,8 @@ func (postgresBackend) Refusals(c Command) []Refusal {
 
 // ValidateCharset resolves --default-charset against this engine. MySQL sends
 // SET NAMES with it; PostgreSQL takes it as the connection's client_encoding, which
-// has fewer names available. validateCharset has already accepted the value by the
-// time this runs, so what is reported here is a charset that exists but has no
-// counterpart on this side.
+// has fewer names available. This check runs before cmd's format rules, so the
+// engine reports a name it cannot honour even when that name is in MySQL's list.
 func (postgresBackend) ValidateCharset(charset string) error {
 	_, err := ClientEncoding(charset)
 	return err

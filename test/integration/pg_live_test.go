@@ -19,6 +19,7 @@ package integration
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -30,6 +31,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/imex/internal/backend"
 	"github.com/imex/internal/config"
@@ -483,6 +486,47 @@ func TestPGLive_EngineSpellingIsNormalised(t *testing.T) {
 // TestPGLive_EventAndShowRefusalsReachExit2 repeats the two refusals that need a
 // resolved engine and a real flag set, so the exit code is read from the process
 // rather than from the error value a validator returns.
+// TestPGLive_AdminShutdownIsATransientCode proves the SQLSTATE table on the wire:
+// a backend terminated by an administrator reaches the retry decision as
+// *pgconn.PgError 57P01, which dberr_postgres.go now calls transient. The measured
+// type matters — if pgx switched to a bare io.EOF the table would never see it.
+func TestPGLive_AdminShutdownIsATransientCode(t *testing.T) {
+	e := newPGLive(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn, err := e.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("pin a connection: %v", err)
+	}
+	defer conn.Close()
+
+	var pid int
+	if err := conn.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+		t.Fatalf("read backend pid: %v", err)
+	}
+	if _, err := e.db.ExecContext(ctx, "SELECT pg_terminate_backend($1)", pid); err != nil {
+		t.Fatalf("terminate backend %d: %v", pid, err)
+	}
+
+	var one int
+	err = conn.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+	if err == nil {
+		t.Fatal("query after pg_terminate_backend succeeded")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("termination surfaced as %T (%v), want *pgconn.PgError", err, err)
+	}
+	if pgErr.Code != "57P01" {
+		t.Fatalf("SQLSTATE = %q, want 57P01 (%v)", pgErr.Code, err)
+	}
+	transient, decided := backend.Must(backend.EnginePG).TransientError(err)
+	if !transient || !decided {
+		t.Fatalf("TransientError(%v) = (%v, %v), want (true, true)", err, transient, decided)
+	}
+}
+
 func TestPGLive_EventAndShowRefusalsReachExit2(t *testing.T) {
 	env := newPGLive(t)
 

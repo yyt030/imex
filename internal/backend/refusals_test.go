@@ -114,24 +114,29 @@ func TestRefusalPredicatesFireOnValueNotDefault(t *testing.T) {
 	}
 }
 
-// TestValidateCharsetPinsThePostgresMessage pins the rejection sentence a pg run
-// reads for a charset the server cannot name, byte for byte, and that every charset
-// the option accepts on this engine passes. MySQL has no opinion here at all: the
-// error text an unknown name produces is the server's, not the tool's.
-func TestValidateCharsetPinsThePostgresMessage(t *testing.T) {
-	want := `invalid --default-charset "nonsense" with --engine pg: PostgreSQL has no such client encoding (supported: utf8mb4, latin1, gbk, gb18030, ascii)`
-	err := Must(EnginePG).ValidateCharset("nonsense")
-	if err == nil || err.Error() != want {
-		t.Fatalf("pg charset rejection = %v, want %q", err, want)
+// TestValidateCharsetPinsBothMessages pins the pg rejection sentence byte for byte
+// and the split between the two dialect methods: MySQL accepts every spelling
+// (SET NAMES lets the server name it) but KnownCharset carries the 16-name list
+// cmd's gate asks about; pg resolves the option to a client_encoding up front.
+func TestValidateCharsetPinsBothMessages(t *testing.T) {
+	wantPG := `invalid --default-charset "nonsense" with --engine pg: PostgreSQL has no such client encoding (supported: utf8mb4, latin1, gbk, gb18030, ascii)`
+	if err := Must(EnginePG).ValidateCharset("nonsense"); err == nil || err.Error() != wantPG {
+		t.Fatalf("pg charset rejection = %v, want %q", err, wantPG)
 	}
 	for _, charset := range []string{"utf8mb4", "UTF8MB4", " utf8 ", "latin1", "iso-8859-1", "gbk", "gb18030", "ascii", "us-ascii", "819", "936", "5488", "384", "utf8mb3", "utf-8", "1386", "1392"} {
 		if err := Must(EnginePG).ValidateCharset(charset); err != nil {
 			t.Errorf("pg must accept %q, got %v", charset, err)
 		}
+		if !Must(EnginePG).KnownCharset(charset) || !Must(EngineMySQL).KnownCharset(charset) {
+			t.Errorf("both engines must know %q", charset)
+		}
 	}
-	for _, charset := range []string{"utf8mb4", "nonsense", "", "gb2312"} {
+	for _, charset := range []string{"nonsense", "", "gb2312"} {
 		if err := Must(EngineMySQL).ValidateCharset(charset); err != nil {
-			t.Errorf("MySQL must not reject %q, got %v", charset, err)
+			t.Errorf("MySQL ValidateCharset(%q) = %v, want nil", charset, err)
+		}
+		if Must(EngineMySQL).KnownCharset(charset) {
+			t.Errorf("MySQL KnownCharset(%q) = true, want false", charset)
 		}
 	}
 }

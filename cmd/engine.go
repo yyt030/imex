@@ -95,17 +95,16 @@ func checkEngineRefusals(e backend.Engine, c backend.Command, o backend.RunOptio
 	return nil
 }
 
-// checkCharsetForEngine asks the engine whether --default-charset means anything
-// there. The name list and the message are the dialect's (Backend.ValidateCharset,
-// which is where the per-engine spelling lives); the error is relabelled just below
-// so a bad option value still exits 2. validateCharset has already accepted the
-// value by the time this runs, so what can be reported here is a charset that
-// exists but has no counterpart on this engine.
+// checkCharsetForEngine asks the engine whether it accepts --default-charset.
+// The accepted names and the rejection message are the dialect's
+// (Backend.ValidateCharset): MySQL owns its 16-name SET NAMES vocabulary, pg
+// resolves the same option to a client_encoding. This check runs before cmd's
+// format rules, so the engine gets to name an unknown charset even when the
+// format would also reject it.
 func checkCharsetForEngine(e backend.Engine, charset string) error {
 	if err := backend.Must(e).ValidateCharset(charset); err != nil {
 		// Re-labelled as a usage error: the name lives in the backend's vocabulary,
-		// but a bad option value has to exit 2 like every other parameter problem,
-		// and this check runs before validateCharset.
+		// but a bad option value has to exit 2 like every other parameter problem.
 		return common.Usagef("%v", err)
 	}
 	return nil

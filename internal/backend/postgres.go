@@ -53,16 +53,25 @@ func (postgresBackend) DefaultPort() int { return pgPortDefault }
 // --no-hex-blob on this engine rather than overriding the operator silently.
 func (postgresBackend) HexBlobMandatory() bool { return true }
 
-// pgClientEncoding maps the --default-charset values cmd/validate.go accepts onto
-// PostgreSQL encoding names. A charset with no PostgreSQL counterpart is refused
-// here, before the connection is dialled, rather than as a SET that would fail on
-// every new physical connection.
+// pgClientEncoding maps the --default-charset vocabulary (the 16 names cmd's gate
+// asks each dialect about) onto PostgreSQL encoding names. A charset with no
+// PostgreSQL counterpart is refused in ValidateCharset, before the connection is
+// dialled, rather than as a SET that would fail on every new physical connection.
 var pgClientEncoding = map[string]string{
 	"utf8mb4": "UTF8", "utf8": "UTF8", "utf-8": "UTF8", "utf8mb3": "UTF8",
 	"latin1": "LATIN1", "iso-8859-1": "LATIN1", "819": "LATIN1",
 	"gbk": "GBK", "936": "GBK", "1386": "GBK",
 	"gb18030": "GB18030", "5488": "GB18030", "1392": "GB18030",
 	"ascii": "SQL_ASCII", "us-ascii": "SQL_ASCII", "384": "SQL_ASCII",
+}
+
+// KnownCharset reports whether name maps to a PostgreSQL encoding. The engine
+// check (ValidateCharset) already rejected an unknown name by the time cmd's
+// generic gate asks, so this exists to answer the same question the MySQL side
+// does with the same 16 names.
+func (postgresBackend) KnownCharset(name string) bool {
+	_, ok := pgClientEncoding[strings.ToLower(strings.TrimSpace(name))]
+	return ok
 }
 
 // ClientEncoding resolves --default-charset to a PostgreSQL client_encoding.
@@ -156,20 +165,6 @@ func connectURL(cfg *config.Config) (string, error) {
 // (cmd/engine.go). Answering honestly here rather than reusing MySQL's list is
 // the point — a third engine must not inherit this dialect's vocabulary.
 func (postgresBackend) IsReservedConnParam(string) bool { return false }
-
-// TransientError deliberately has no table yet.
-//
-// PostgreSQL reports SQLSTATE strings rather than MySQL's numbers, and naming
-// which of them a reconnect can heal (53300 too many clients, 57P01 admin
-// shutdown, 58030 internal error) is a decision about this engine's failure
-// model that has not been measured against a server here. Inventing the table
-// would turn failures that end a run today into silent retries — that is a new
-// capability on contract faces ③ and ⑤, not a move, and it is recorded as a
-// pending item in CONTEXT.md. Answering (false, false) keeps the decision exactly
-// where it was before this method existed: the neutral rules in
-// internal/common/dberr.go (sockets, EOF, connection-flavoured text) decide, and
-// a real connection loss on pgx arrives through those as *net.OpError or io.EOF.
-func (postgresBackend) TransientError(error) (bool, bool) { return false, false }
 
 // QuoteIdent double-quotes one identifier, doubling any double quote inside it.
 // Unlike MySQL, PostgreSQL is case-sensitive once the name is quoted and folds an

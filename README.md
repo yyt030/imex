@@ -227,6 +227,8 @@ imex export ... --threads 4 \
 | `gbk` / `936` / `1386` | GBK |
 | `gb18030` / `5488` / `1392` | GB18030 |
 
+这 16 个名字是 **MySQL 方言自己的词表**（`internal/backend/charset_mysql.go`，134 轮自 `cmd/validate.go` 下沉），`cmd` 只保留「不认识的字符集」那句文案与它在校验顺序里的位置；`--engine pg` 用的是另一张表，映射到 `client_encoding` 的五个名字（见下方「PostgreSQL 引擎」一节）。
+
 一旦 `--default-charset` 不是 `utf8mb4`，**二进制列（BLOB/BINARY/VARBINARY/BIT 等）自动以 `0x` 十六进制字面量写出**（等价 mysqldump `--hex-blob`）：十六进制为纯 ASCII，既**字符集免疫**（不被连接转码破坏），又**自描述**（读取端凭 `0x` 前缀识别）。DEL 与 SQL 两种文本格式都采用同一 `0x` 表示。可用 `--hex-blob` 强制开启、`--no-hex-blob` 强制关闭（非 utf8mb4 关闭时会打印告警，提示原始字节可能被转码损坏）。默认（utf8mb4、hex 关）下输出与旧行为逐字节一致。
 
 导入侧会把 `0x` 还原成字节，但判定条件不同：**SQL** 格式中字符串一律带引号，因此只有**不带引号**的 `0x…` 令牌才被解码（引号内是普通文本）；**DEL** 格式多一层歧义（`--no-char-del` 时全是裸字段），因此要求**同时满足**「该字段无引号 + 目标列是二进制类型（导入前用 `information_schema` 查得）+ 令牌是合法偶数长度十六进制」。任一条件不满足就按原文处理——例如写入 varchar 列的 `"0xdead"` 仍是这 6 个字符。孤立 `0x` 解码为**空字节串**（与 NULL 区分）。
@@ -734,7 +736,7 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 - **驱动层 socket 超时**（go-sql-driver 的 `timeout`/`readTimeout`/`writeTimeout` 三个字段）：`--connect-timeout`（默认 5s）、`--socket-read-timeout`/`--socket-write-timeout`（默认 300s）。这三个参数以 DSN 字段（`timeout` / `readTimeout` / `writeTimeout`）形式传入 go-sql-driver，作用于**每次 socket 读/写**；由于是 DSN 级参数，`--session-var` 无法覆盖（同名会被拒绝）。
 - **连接池 TTL**：导入连接池（主连接与每个并行 worker）设置 `SetConnMaxIdleTime(1m)` + `SetConnMaxLifetime(5m)`，让连接在 LB 空闲阈值前主动老化重建；并行 worker 另设 `SetMaxOpenConns(1)`。导出连接池**不**做老化（`ConnMaxIdleTime=0`、`ConnMaxLifetime=0`）：它用裸 `START TRANSACTION ... WITH CONSISTENT SNAPSHOT` 建立快照，连接在语句之间会归还空闲池，一旦被当作空闲连接关闭，快照就被静默回滚、后续读取失去一致性。
 - **事务空闲提交**：导入的写入端（单线程管线与每个并行 worker）在 30s 内没有收到新批次时，主动 `COMMIT` 当前已写入的部分事务并开启下一个，缩短未提交窗口和重放集合；`--commit-count` 到期或重放缓冲达到 64 MiB 字节预算时同样提交。
-- **瞬断自动重试**：对 `driver.ErrBadConn` / `invalid connection` / `io.EOF` / 网络超时 / `broken pipe` / `connection reset` / `server has gone away`(2006) / `lost connection`(2013) 等连接级错误，默认最多 3 次尝试，指数退避约 1s→2s（上限 4s，带 20% 向下抖动，避免多个 worker 同时重连）。重连后**先回放当前事务内所有已执行但未提交的批次，再重试失败批次**——连接断开时 MySQL 已回滚整个事务，只重试单批会静默丢掉同事务中先前的行。回放缓冲同时受 `--commit-count`（1000 行）与 64 MiB 字节预算约束，任一触顶即提交，避免宽 BLOB/TEXT 行撑爆内存。`COMMIT` 本身不重试（响应丢失时无法判断是否已生效，重放可能重复写入），直接报错。`context.Canceled`、语法/约束类错误以及 `1213` 死锁 / `1205` 锁等待超时不重试。 能挺过的停机窗口是**有量值的**：三次尝试之间只有两次退避（1s、2s，各带最多 20% 向下抖动），所以**从第一次失败到放弃实测约 2.4–3 秒**（`-P 3399` 无人听那次整跑 2.675 s），目标库重启或 LB 切换只要在这个窗口内恢复，本次运行就自行接上，超过则整跑失败、退出 1；两个退避参数是编译期常量，**不做成选项**——每次重试都要回放未提交事务，窗口越长重复写入的风险面越大。实测：停 1.5 s 后拉起的一次 10 万行并行导入 exit 0、8 条 retrying、最高只到 attempt 2、落库 10 万行且不重不漏。 同一条判据也管住**开局建连的那次 ping**（`common.PingWithRetry`，导出与导入共用）：以前是两个构造器里各写一遍的 `for i := 0; i < 3`，不看错误性质，于是密码写错（1045）、库不存在（1049）、`--session-var` 写了服务端不认识的变量（1193）都要跑满三次尝试、固定等 6.0 s，末条还写成 `failed to ping database after 3 attempts`，把服务端给的真实原因挤到句尾。现在永久拒绝一次即返回（实测 5–6 ms）、文案按实际尝试次数写（`after 1 attempt`），连接级故障照旧重试到三次，而 `database ping failed, retrying` 只在还有重试时出现（三次尝试配两条告警，最后一次失败不再谎称 retrying）。上面那些 `2006`/`2013` 一类的服务端错误码表属于 MySQL 方言（`internal/backend/dberr_mysql.go`，132 轮自 `internal/common` 下沉），由连接建立时选出的方言以函数值交给重试层；`--engine pg` 一侧目前不附加任何服务端码表，判定只用上面那些连接级形态与网络超时
+- **瞬断自动重试**：对 `driver.ErrBadConn` / `invalid connection` / `io.EOF` / 网络超时 / `broken pipe` / `connection reset` / `server has gone away`(2006) / `lost connection`(2013) 等连接级错误，默认最多 3 次尝试，指数退避约 1s→2s（上限 4s，带 20% 向下抖动，避免多个 worker 同时重连）。重连后**先回放当前事务内所有已执行但未提交的批次，再重试失败批次**——连接断开时 MySQL 已回滚整个事务，只重试单批会静默丢掉同事务中先前的行。回放缓冲同时受 `--commit-count`（1000 行）与 64 MiB 字节预算约束，任一触顶即提交，避免宽 BLOB/TEXT 行撑爆内存。`COMMIT` 本身不重试（响应丢失时无法判断是否已生效，重放可能重复写入），直接报错。`context.Canceled`、语法/约束类错误以及 `1213` 死锁 / `1205` 锁等待超时不重试。 能挺过的停机窗口是**有量值的**：三次尝试之间只有两次退避（1s、2s，各带最多 20% 向下抖动），所以**从第一次失败到放弃实测约 2.4–3 秒**（`-P 3399` 无人听那次整跑 2.675 s），目标库重启或 LB 切换只要在这个窗口内恢复，本次运行就自行接上，超过则整跑失败、退出 1；两个退避参数是编译期常量，**不做成选项**——每次重试都要回放未提交事务，窗口越长重复写入的风险面越大。实测：停 1.5 s 后拉起的一次 10 万行并行导入 exit 0、8 条 retrying、最高只到 attempt 2、落库 10 万行且不重不漏。 同一条判据也管住**开局建连的那次 ping**（`common.PingWithRetry`，导出与导入共用）：以前是两个构造器里各写一遍的 `for i := 0; i < 3`，不看错误性质，于是密码写错（1045）、库不存在（1049）、`--session-var` 写了服务端不认识的变量（1193）都要跑满三次尝试、固定等 6.0 s，末条还写成 `failed to ping database after 3 attempts`，把服务端给的真实原因挤到句尾。现在永久拒绝一次即返回（实测 5–6 ms）、文案按实际尝试次数写（`after 1 attempt`），连接级故障照旧重试到三次，而 `database ping failed, retrying` 只在还有重试时出现（三次尝试配两条告警，最后一次失败不再谎称 retrying）。上面那些 `2006`/`2013` 一类的服务端错误码表属于 MySQL 方言（`internal/backend/dberr_mysql.go`，132 轮自 `internal/common` 下沉），由连接建立时选出的方言以函数值交给重试层；`--engine pg` 自 134 轮起也有一张 SQLSTATE 表（`internal/backend/dberr_postgres.go`）：`08001`/`08003`/`08006`/`08P01`/`53300`/`57P01`/`57P02`/`57P03`/`57P05` 判为瞬态，`08007`（提交结果未知）、`08004`（服务端拒绝建连）、`57P04`（库被删）、`58030`（服务端 I/O）、`57014`/`40001`/`40P01`（取消与并发争用）以及 `28xxx`（认证）刻意不重试——理由与 MySQL 侧 `1213`/`1205` 相同：盲目重放可能重复写入。实测：`ALTER ROLE … CONNECTION LIMIT 2` 下第三条连接报 `SQLSTATE 53300`，旧行为 1 次尝试 0.01 s 失败，新行为 3 次尝试 2.68 s 后失败；导入 50 万行途中 `pg_terminate_backend` 回报 `SQLSTATE 57P01`，旧行为退出 1（27.9 万行已落库），新行为重连回放后 3.011 s 完成 50 万行、退出 0。
 
 对导出而言，主连接与分片连接都保留 `SetConnMaxLifetime(0)` 且 `SetConnMaxIdleTime(0)`（不因 TTL 关闭，保证一致性快照期间连接稳定）；读写超时对每条连接独立生效，长时间零字节的响应（如大 result set 起始阶段）会命中 `socket-read-timeout`，请按需调大。
 
@@ -1215,9 +1217,11 @@ imex/
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
 │   ├── backend/
-│   │   ├── backend.go         # 方言接口（33 个方法）、`--engine` 取值解析与折叠（`Parse`/`Normalize`）与 `backends` 注册表
+│   │   ├── backend.go         # 方言接口（34 个方法）、`--engine` 取值解析与折叠（`Parse`/`Normalize`）与 `backends` 注册表
 │   │   ├── dsn_mysql.go       # MySQL 连接串构造与 29 个驱动保留参数
 │   │   ├── dberr_mysql.go     # MySQL 瞬态错误码表（7 个码）与取码方式
+│   │   ├── dberr_postgres.go  # PostgreSQL 瞬态 SQLSTATE 表（9 个码）与 `*pgconn.PgError` 取码（134 轮）
+│   │   ├── charset_mysql.go   # MySQL 的 16 个 `--default-charset` 名字与 `KnownCharset`（134 轮自 `cmd` 下沉）
 │   │   ├── show_mysql.go      # MySQL 的六条 `SHOW CREATE …` 与定义结果列名（133 轮自 `internal/show` 下沉）
 │   │   ├── refusals.go        # 选项拒绝表的数据形状（`Command`/`RunOptions`/`Refusal`，不含引擎名）
 │   │   ├── refusals_mysql.go  # MySQL 的拒绝表为空、字符集校验恒通过
@@ -1228,6 +1232,8 @@ imex/
 │   │   ├── backend_test.go    # 两方言逐字节对照与注册表测试
 │   │   ├── types_test.go      # 类型词表分类断言
 │   │   ├── dberr_test.go      # 码表归属与两方言瞬态判据断言
+│   │   ├── dberr_postgres_test.go # pg 的 9 个瞬态 SQLSTATE、缺席码与 `*pgconn.PgError` 拆包
+│   │   ├── charset_mysql_test.go # MySQL 16 个字符集名字与 `KnownCharset` 的裁空白/折叠
 │   │   ├── dsn_mysql_test.go  # 连接串 golden 与保留参数清单
 │   │   ├── refusals_test.go   # 拒绝表的顺序、触发条件与文案取值
 │   │   └── show_mysql_test.go # 六条定义语句与结果列名的逐字断言、pg 侧空回答（133 轮）

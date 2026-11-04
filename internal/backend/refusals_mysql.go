@@ -8,10 +8,7 @@ package backend
 // refuse", and it is what makes the cmd-side loop engine-blind.
 //
 // The one MySQL-specific thing in the chain is not a refusal but a value: the
-// charset check below passes everything that cmd/validate.go's own
-// validateCharset accepted, because SET NAMES takes the server's own spelling and
-// the server is the one that reports a name it does not have.
+// 16-name --default-charset vocabulary in charset_mysql.go (KnownCharset). SET
+// NAMES takes the server's own spelling, so the accepted set is the engine's, not
+// cmd's.
 func (mysqlBackend) Refusals(Command) []Refusal { return nil }
-
-// ValidateCharset is nil for every charset this engine's option accepts.
-func (mysqlBackend) ValidateCharset(string) error { return nil }

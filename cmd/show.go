@@ -187,7 +187,7 @@ func validateShowConfig(cfg *config.ShowConfig) error {
 	if err := validatePositiveDuration("socket-write-timeout", cfg.SocketWriteTimeout); err != nil {
 		return err
 	}
-	if err := validateCharset(cfg.DefaultCharset, "show"); err != nil {
+	if err := validateCharset(cfg.DefaultCharset, "show", backend.Must(e)); err != nil {
 		return err
 	}
 	if err := validateLogLevel(string(cfg.LogLevel)); err != nil {

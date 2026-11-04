@@ -213,7 +213,7 @@ func validateListConfig(cfg *config.ListConfig) error {
 	if err := validatePositiveDuration("socket-write-timeout", cfg.SocketWriteTimeout); err != nil {
 		return err
 	}
-	if err := validateCharset(cfg.DefaultCharset, "list"); err != nil {
+	if err := validateCharset(cfg.DefaultCharset, "list", backend.Must(e)); err != nil {
 		return err
 	}
 	if err := validateLogLevel(string(cfg.LogLevel)); err != nil {

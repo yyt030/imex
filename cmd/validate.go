@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 	"github.com/spf13/cobra"
@@ -139,15 +140,6 @@ func normalizeCharset(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
 }
 
-// knownCharsets is the full set of accepted --default-charset values (aliases included).
-var knownCharsets = map[string]bool{
-	"utf8mb4": true, "utf8": true, "utf-8": true, "utf8mb3": true,
-	"ascii": true, "us-ascii": true, "384": true,
-	"latin1": true, "iso-8859-1": true, "819": true,
-	"gbk": true, "936": true, "1386": true,
-	"gb18030": true, "5488": true, "1392": true,
-}
-
 // sqlSafeCharsets are byte-escape-safe for SQL format.
 var sqlSafeCharsets = map[string]bool{
 	"utf8mb4": true, "utf8": true, "utf-8": true, "utf8mb3": true,
@@ -155,11 +147,15 @@ var sqlSafeCharsets = map[string]bool{
 	"latin1": true, "iso-8859-1": true, "819": true,
 }
 
-// validateCharset checks that the charset is recognized and compatible with the format.
-func validateCharset(charset string, format string) error {
+// validateCharset checks that the charset is one this engine names and is
+// compatible with the output format. The vocabulary is the dialect's
+// (Backend.KnownCharset); the position of this check — after the required
+// connection options, before the output-specific rules — is the CLI's, so a run
+// that is wrong in two ways still reports the same one first.
+func validateCharset(charset string, format string, be backend.Backend) error {
 	cs := normalizeCharset(charset)
 
-	if !knownCharsets[cs] {
+	if !be.KnownCharset(cs) {
 		return common.Usagef("invalid --default-charset %q: unrecognized charset", charset)
 	}
 
@@ -362,7 +358,7 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 	if err := validateParquetCompression(cfg.ParquetCompression); err != nil {
 		return err
 	}
-	if err := validateCharset(cfg.DefaultCharset, cfg.Format); err != nil {
+	if err := validateCharset(cfg.DefaultCharset, cfg.Format, backend.Must(e)); err != nil {
 		return err
 	}
 	if err := validateStatementSize(cfg.StatementSize); err != nil {
@@ -425,7 +421,7 @@ func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
 	if err := validateFormat(cfg.Format); err != nil {
 		return err
 	}
-	if err := validateCharset(cfg.DefaultCharset, cfg.Format); err != nil {
+	if err := validateCharset(cfg.DefaultCharset, cfg.Format, backend.Must(e)); err != nil {
 		return err
 	}
 	if err := validateMode(string(cfg.Mode), cfg.Format); err != nil {

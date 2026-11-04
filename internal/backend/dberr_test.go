@@ -79,28 +79,6 @@ func TestMySQLTransientError(t *testing.T) {
 	}
 }
 
-// TestPostgresTransientErrorHasNoTable records the deliberate gap left by the audit
-// stage that moved this decision: pg has no code table, so it abstains on every
-// error and the neutral rules in common decide exactly as they did before. Filling
-// this in is a new capability (53300, 57P01, 08006 would turn ended runs into
-// retries), not a move, and is tracked as a pending item in CONTEXT.md.
-func TestPostgresTransientErrorHasNoTable(t *testing.T) {
-	be := Must(EnginePG)
-	for _, err := range []error{
-		&pgconn.PgError{Severity: "FATAL", Code: "57P01", Message: "terminating connection due to administrator command"},
-		&pgconn.PgError{Severity: "FATAL", Code: "08006", Message: "database system is shut down"},
-		&pgconn.PgError{Severity: "ERROR", Code: "53300", Message: "too many clients already"},
-		&pgconn.PgError{Severity: "ERROR", Code: "42601", Message: "syntax error at or near \"FROM\""},
-		&mysql.MySQLError{Number: 2006, Message: "server has gone away"},
-		mysql.ErrInvalidConn,
-		context.Canceled,
-	} {
-		if transient, decided := be.TransientError(err); transient || decided {
-			t.Errorf("pg TransientError(%v) = (%v, %v), want (false, false)", err, transient, decided)
-		}
-	}
-}
-
 // TestIsTransientWithTheShippedVerdicts is the end-to-end pin for the retry
 // decision on both engines: it runs common's neutral chain with each dialect's
 // method, which is exactly what the export, import, list and show paths wire
@@ -121,9 +99,13 @@ func TestIsTransientWithTheShippedVerdicts(t *testing.T) {
 		{"sentinel retried", EngineMySQL, mysql.ErrInvalidConn, true, "the driver's own dropped-connection error"},
 		{"text-only outage retried", EngineMySQL, errors.New("write tcp 10.0.0.1:3306: broken pipe"), true, "neutral table"},
 		{"canceled never retried", EngineMySQL, context.Canceled, false, "the caller asked to stop"},
-		{"pg shutdown retried by text", EnginePG, &pgconn.PgError{Severity: "FATAL", Code: "08006", Message: "could not receive data from server: Connection reset by peer"}, true, "the neutral text table still catches resets"},
-		{"pg admin shutdown ends the run", EnginePG, &pgconn.PgError{Severity: "FATAL", Code: "57P01", Message: "terminating connection due to administrator command"}, false, "no pg code table yet"},
+		{"pg 08006 retried by code", EnginePG, &pgconn.PgError{Severity: "FATAL", Code: "08006", Message: "could not receive data from server: Connection reset by peer"}, true, "the code table decides before the text table"},
+		{"pg admin shutdown retried", EnginePG, &pgconn.PgError{Severity: "FATAL", Code: "57P01", Message: "terminating connection due to administrator command"}, true, "the server rolled back and closed"},
+		{"pg too many connections retried", EnginePG, &pgconn.PgError{Severity: "FATAL", Code: "53300", Message: "too many connections for role \"pgprobe\""}, true, "connect-time backoff can heal"},
 		{"pg syntax error ends the run", EnginePG, &pgconn.PgError{Severity: "ERROR", Code: "42601", Message: "syntax error at or near \"FROM\""}, false, "statement errors are not connection errors"},
+		{"pg serialization failure ends the run", EnginePG, &pgconn.PgError{Severity: "ERROR", Code: "40001", Message: "could not serialize access"}, false, "contention is surfaced, not replayed"},
+		{"pg unknown commit outcome ends the run", EnginePG, &pgconn.PgError{Severity: "ERROR", Code: "08007", Message: "transaction resolution unknown"}, false, "replay could duplicate a committed batch"},
+		{"pg io error ends the run", EnginePG, &pgconn.PgError{Severity: "ERROR", Code: "58030", Message: "could not write to file"}, false, "a server file error is not a dead connection"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
