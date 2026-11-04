@@ -618,7 +618,9 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 | `--session-var` | `SET <name>=<value>` 是 MySQL 会话语法，本工具不翻译，请写进服务器或角色的配置 |
 | `--no-hex-blob` | 达梦拒绝文本值里出现 NUL 字节，二进制列恒以 `0x` 十六进制写出，关不掉 |
 
-**取值写法**：Oracle 模式的 `DATE` 带时分秒，因此它按时间戳处理、写成 `2026-01-31 09:26:15`（否则导出会把时间部分丢掉）；`TIMESTAMP` 家族同形后跟最多六位小数、尾零不印，并且**不折成 UTC**——服务器给 `2024-05-06T07:08:09+08:00`，文件里就是 `2024-05-06 07:08:09`。二进制列（`BLOB`/`RAW`/`LONG RAW`/`BINARY`/`VARBINARY`）恒为 `0x…`。NULL 是一个空字段，与 MySQL 侧同一套 DEL 布局规则。
+**取值写法**：驱动对每一个日期时间类型都交回 Go 的 `time.Time`，工具把它重排成达梦自己打印的样子——Oracle 模式的 `DATE` 带时分秒，写成 `2026-01-31 09:26:15`（按日期处理就会把时间部分丢掉）；`TIMESTAMP`/`DATETIME`/`DATETIME2` 同形后跟最多六位小数、尾零不印；`TIME` 写成 `15:04:05`；四个 `WITH TIME ZONE` 类型在各自形态后**保留偏移、不折成 UTC**，服务器给 `2024-05-06T07:08:09.123456+08:00`，文件里就是 `2024-05-06 07:08:09.123456+08:00`。`BIT`/`BOOLEAN` 一律写成一个数字（`1`/`0`）。二进制列（`BLOB`/`RAW`/`LONG RAW`/`BINARY`/`VARBINARY`/`LONGVARBINARY`/`IMAGE`）恒为 `0x…`。`+Inf`/`-Inf`/`NaN` 照达梦存的样子写出，不做归一。NULL 是一个空字段、空串是 `""`，与 MySQL 侧同一套 DEL 布局规则。
+
+**把这份文件导进 MySQL/PostgreSQL 时怎么建列**（现测，MariaDB 10.6.23 严格模式与 PostgreSQL 14.24）：`DATE`/`TIMESTAMP`/`DATETIME` → `DATETIME`/`DATETIME(6)`（pg `timestamp`），**不要**建 `DATE`——那一列会把时分秒静默截掉，导入退出码仍是 `0`；带 `WITH TIME ZONE` 的列 pg 建 `timestamptz` 直接可用，MySQL 没有任何日期时间列能接 `'…+08:00'`（一律 `Error 1292`），要么建 `VARCHAR`/`TEXT`，要么在导出语句里由服务端先剥掉偏移；`BIT`/`BOOLEAN` → MySQL 建 `TINYINT(1)`，**不要** `BIT(1)`（`'1'` 进 `BIT(1)` 报 `Error 1406`），pg 的 `bit(1)`/`boolean`/`smallint` 都可用；`FLOAT`/`DOUBLE` 若可能存 `±Inf`/`NaN`，MySQL 侧建 `TEXT`/`VARCHAR`（`DOUBLE` 报 `Error 1366`），pg 侧 `double precision` 认这三种拼法；零值时间 `0001-01-01 00:00:00` 超出 MySQL `TIMESTAMP` 的范围，用 `DATETIME`；`VARCHAR2` 里的长数字串照字符落库，别默认建 `BIGINT`（26 位就 `Error 1264`）。逐列细节见 `docs/requirements.md` 的 2.1.12 与 11.2。
 
 **批次与超时**：占位符是位置 `?`，与 MySQL 同形，攒批 INSERT 每行重复 `(?,?)`；单条语句参数上限 65535。批次字节预算这一维在达梦没有可证的等价物（Oracle 模式没有 `max_allowed_packet` 那种会话可见的语句字节上限），因此取刻意保守的 **4 MiB** 回退值，日志直说按 4 MiB 估——宁可批次小，也不赌服务端会收下更大的语句。超时按驱动自己的单位换算：`--connect-timeout` 进 `connectTimeout`（**毫秒**），`--socket-read-timeout` 向上进位进 `socketTimeout`（**秒**）；`--socket-write-timeout` 在驱动侧没有对应参数，它不改变达梦连接的写超时。
 
@@ -1279,7 +1281,7 @@ imex/
 │   │   ├── types_test.go      # 类型词表分类断言
 │   │   ├── dberr_test.go      # 码表归属与三方言瞬态判据断言
 │   │   ├── dberr_postgres_test.go # pg 的 9 个瞬态 SQLSTATE、缺席码与 `*pgconn.PgError` 拆包
-│   │   ├── dameng_test.go     # 达梦的时间文本、瞬态码表与 16 位截断防护、upsert 未实现（135 轮）
+│   │   ├── dameng_test.go     # 达梦的时间文本、瞬态码表与 16 位截断防护、upsert 未实现，以及单一类型表「分类即改写」的五条防漂移断言（135 轮、137 轮）
 │   │   ├── charset_mysql_test.go # MySQL 16 个字符集名字与 `KnownCharset` 的裁空白/折叠
 │   │   ├── dsn_mysql_test.go  # 连接串 golden 与保留参数清单
 │   │   ├── refusals_test.go   # 拒绝表的顺序、触发条件与文案取值

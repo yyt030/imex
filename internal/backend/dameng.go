@@ -215,32 +215,19 @@ func (damengBackend) KnownCharset(name string) bool {
 // report an invalid name at connect time.
 func (damengBackend) ValidateCharset(string) error { return nil }
 
-// CellFixups re-renders date and timestamp values because the DM driver hands
-// back time.Time values that database/sql serialises as RFC3339Nano text, not
-// the server's own date/timestamp literals.
+// CellFixups re-renders the values the DM driver hands back as Go types whose
+// database/sql text is not what a dump should carry: every date/time type comes
+// as a time.Time (RFC3339Nano: an ISO "T", a zone offset, nanoseconds no
+// Oracle-mode literal uses) and BOOLEAN comes as a Go bool ("true"). The
+// per-type layouts and the boolean normalisation live in the one Dameng type
+// table (types_dameng.go) that also answers ColumnKind and binary questions, so
+// a name cannot be classified without being rewritten.
 func (damengBackend) CellFixups(colTypes []*sql.ColumnType) []func([]byte) []byte {
 	fixups := make([]func([]byte) []byte, len(colTypes))
 	for i, ct := range colTypes {
-		switch normalizeDamengTypeName(ct.DatabaseTypeName()) {
-		case "DATE":
-			fixups[i] = dmTimeText("2006-01-02 15:04:05")
-		case "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP WITH LOCAL TIME ZONE":
-			fixups[i] = dmTimeText("2006-01-02 15:04:05.999999")
-		}
+		fixups[i] = damengCellFixup(ct.DatabaseTypeName())
 	}
 	return fixups
-}
-
-// dmTimeText parses the RFC3339 text database/sql produces for a time.Time and
-// re-emits it in the layout the dump should carry.
-func dmTimeText(layout string) func([]byte) []byte {
-	return func(v []byte) []byte {
-		t, err := time.Parse(time.RFC3339Nano, string(v))
-		if err != nil {
-			return v
-		}
-		return []byte(t.Format(layout))
-	}
 }
 
 // buildDamengDSN renders a dm:// DSN with Oracle-compatible mode always on.
