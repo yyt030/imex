@@ -77,6 +77,10 @@ func openPingDB(results ...error) (*sql.DB, *pingFake) {
 	return sql.OpenDB(pingConnector{f: f}), f
 }
 
+// The verdict passed below is the fixture table from dberr_test.go. Production
+// callers hand PingWithRetry the backend's own method, and common cannot import
+// backend; internal/backend/dberr_test.go pins the shipped numbers.
+
 // withFastPingPolicy shortens the backoff so the retry paths run in milliseconds.
 // The bound itself is left at the shipped value: the number of attempts is exactly
 // what these tests pin.
@@ -94,7 +98,7 @@ func TestPingSucceedsFirstTry(t *testing.T) {
 	defer db.Close()
 
 	var err error
-	out := captureStderr(t, func() { err = PingWithRetry(db) })
+	out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
 	if err != nil {
 		t.Fatalf("healthy connection returned %v", err)
 	}
@@ -121,6 +125,10 @@ func TestPingDoesNotRetryServerRejections(t *testing.T) {
 		{"unknown database", &mysql.MySQLError{Number: 1049, Message: "Unknown database 'nodb'"}, "1049"},
 		{"unknown variable", &mysql.MySQLError{Number: 1193, Message: "Unknown system variable 'not_a_variable'"}, "1193"},
 		{"syntax in query", &mysql.MySQLError{Number: 1064, Message: "You have an error in your SQL syntax"}, "1064"},
+		// Only the dialect verdict can produce this one-ping outcome: the message
+		// contains "lost connection", so without the short-circuit this would be
+		// treated as an outage and retried to the bound.
+		{"server error worded like an outage", &mysql.MySQLError{Number: 1205, Message: "lost connection during prepare"}, "1205"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,7 +136,7 @@ func TestPingDoesNotRetryServerRejections(t *testing.T) {
 			defer db.Close()
 
 			var err error
-			out := captureStderr(t, func() { err = PingWithRetry(db) })
+			out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
 			if err == nil {
 				t.Fatal("a rejection must be reported")
 			}
@@ -158,7 +166,7 @@ func TestPingRetriesAnOutageThenSucceeds(t *testing.T) {
 	defer db.Close()
 
 	var err error
-	out := captureStderr(t, func() { err = PingWithRetry(db) })
+	out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
 	if err != nil {
 		t.Fatalf("recovered outage reported %v", err)
 	}
@@ -181,7 +189,7 @@ func TestPingGivesUpAtTheBound(t *testing.T) {
 	defer db.Close()
 
 	var err error
-	out := captureStderr(t, func() { err = PingWithRetry(db) })
+	out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
 	if err == nil {
 		t.Fatal("an outage longer than the bound must be reported")
 	}
@@ -207,7 +215,7 @@ func TestPingPolicyWithNoRetryLeft(t *testing.T) {
 	defer db.Close()
 
 	var err error
-	out := captureStderr(t, func() { err = PingWithRetry(db) })
+	out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
 	if err == nil {
 		t.Fatal("an unreachable server must be reported")
 	}

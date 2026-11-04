@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
@@ -98,15 +99,25 @@ func newScriptedDB(t *testing.T) (*sql.DB, *scriptedDriver) {
 func newTestImporter() *Importer {
 	return &Importer{
 		cfg:   &config.ImportConfig{Mode: config.ImportModeInsert},
+		be:    backend.Must(backend.EngineMySQL),
 		stats: common.NewStats(),
 	}
+}
+
+// fastPolicy keeps the retry judge the shipped one — the MySQL dialect's verdict —
+// and shortens only the backoff. Leaving Verdict out would let the scripted tests
+// decide retries on error text alone, which is not what a session does: the tests
+// would then pass on a code the table names and a bare message, while a real run
+// would not.
+func fastPolicy() common.RetryPolicy {
+	return common.RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond, Verdict: backend.Must(backend.EngineMySQL).TransientError}
 }
 
 func newTestSession(t *testing.T, commitCount int64) (*writeSession, *scriptedDriver) {
 	t.Helper()
 	db, drv := newScriptedDB(t)
 	sess := newWriteSession(newTestImporter(), db, context.Background(), commitCount, "test")
-	sess.policy = common.RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond}
+	sess.policy = fastPolicy()
 	if err := sess.begin(); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
@@ -336,7 +347,7 @@ func newTestSessionThreads(t *testing.T, commitCount int64, threads int) (*write
 	imp := newTestImporter()
 	imp.cfg.ImportThreads = threads
 	sess := newWriteSession(imp, db, context.Background(), commitCount, "test")
-	sess.policy = common.RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond}
+	sess.policy = fastPolicy()
 	if err := sess.begin(); err != nil {
 		t.Fatalf("begin: %v", err)
 	}

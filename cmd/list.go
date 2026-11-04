@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 	"github.com/imex/internal/list"
@@ -160,7 +161,7 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 	}
 	defer db.Close()
 
-	if err := common.PingWithRetry(db); err != nil {
+	if err := common.PingWithRetry(db, backend.Must(e).TransientError); err != nil {
 		return err
 	}
 

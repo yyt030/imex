@@ -108,7 +108,7 @@ Examples:
 		logConnEnv(connEnv)
 
 		// Parse session variables.
-		vars, err := common.ParseSessionVars(exportCfg.SessionVars)
+		vars, err := parseSessionVars(exportCfg.Engine, exportCfg.SessionVars)
 		if err != nil {
 			// Malformed --session-var values are parameter errors: report them
 			// as usage errors so they exit 2 like every other validation.

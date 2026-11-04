@@ -14,8 +14,6 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
-
 	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
@@ -106,7 +104,7 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 	// Test the connection. Only a failure a reconnect can heal is retried; a
 	// server rejection (bad credentials, unknown database, unknown session
 	// variable) returns on the first try — see common.PingWithRetry.
-	if pingErr := common.PingWithRetry(db); pingErr != nil {
+	if pingErr := common.PingWithRetry(db, be.TransientError); pingErr != nil {
 		db.Close()
 		return nil, pingErr
 	}

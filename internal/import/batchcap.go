@@ -45,7 +45,7 @@ const maxQueuedBatchBytes int64 = 1 << 30
 // margin as the server budget, so the statement skeleton and the row separators
 // are absorbed the same way. For MySQL that ceiling is go-sql-driver's own
 // Config.MaxAllowedPacket, which defaults to 64 MiB and which imex does not
-// override (internal/common.BuildDSN): once the interpolated text passes it the
+// override (internal/backend/dsn_mysql.go): once the interpolated text passes it the
 // driver returns driver.ErrSkip (connection.go: "if len(buf)+4 >
 // mc.maxAllowedPacket"), which makes database/sql fall back to server-side
 // prepared statements — a different protocol path than the one the batching

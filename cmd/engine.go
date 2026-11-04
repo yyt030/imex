@@ -10,7 +10,6 @@ import (
 	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
-	"github.com/imex/internal/list"
 )
 
 // This file is the whole of imex's --engine contract at the command line: the
@@ -24,11 +23,17 @@ import (
 // flag to drop is the honest version of the same run, and it keeps contract face ③
 // (exit codes and messages) in the tool's own words instead of the server's.
 //
-// Each check fires on the *value*, not on `Changed`, where the value itself is
-// wrong (--format sql, --threads 4, --mode replace): a run configured by any
-// means cannot escape it. Options whose value is fine and whose *presence* is the
-// problem (--session-var) fire on Changed, exactly like the format-scoped options
-// cmd/validate.go rejects, so the shipped default stays usable.
+// Which options an engine refuses is no longer spelled here: the rule
+// tables belong to the dialect (internal/backend/refusals_postgres.go and
+// refusals_mysql.go), and this file folds a run's flag values into a
+// backend.RunOptions, asks for the command's table, and reports the first rule the
+// run trips in the CLI's own sentence. Each rule fires on the *value*, not on
+// `Changed`, where the value itself is wrong (--format sql, --threads 4, --mode
+// replace): a run configured by any means cannot escape it. Options whose value is
+// fine and whose *presence* is the problem (--session-var) fire on Changed, folded
+// into a bool here because backend cannot import cobra — exactly like the
+// format-scoped options cmd/validate.go rejects, so the shipped default stays
+// usable.
 
 // resolveEngine validates --engine and applies what follows from it.
 //
@@ -54,24 +59,40 @@ func parseEngine(value string) (backend.Engine, error) {
 	return e, nil
 }
 
-// applyEnginePort gives --engine pg its port default. It runs after the
+// applyEnginePort gives an engine its own port default. It runs after the
 // IMEX_* fill-in (cmd/conn_env.go) so an environment-supplied port wins, and
 // before validation so the range check sees the number actually used.
 func applyEnginePort(cmd *cobra.Command, cfg *config.Config, e backend.Engine) {
-	if e != backend.EnginePG || cmd.Flags().Changed("port") {
+	if cmd.Flags().Changed("port") {
 		return
 	}
 	if strings.TrimSpace(os.Getenv("IMEX_PORT")) != "" {
 		return
 	}
-	cfg.Port = backend.Must(e).DefaultPort()
+	// The comparison is with the dialect's own default rather than with an engine
+	// name, which is what keeps this engine-blind: MySQL answers 3306, the number
+	// --port was registered with, so a MySQL run writes back what it already holds
+	// and changes nothing, while PostgreSQL moves the run to 5432.
+	if p := backend.Must(e).DefaultPort(); cfg.Port != p {
+		cfg.Port = p
+	}
 }
 
-// pgRefusal is the one shape every engine rejection shares: the option, the
-// reason, and the alternative. Keeping it in one function is what makes the
-// messages grep-able for a user who has several of them.
-func pgRefusal(option, reason string) error {
-	return common.Usagef("%s is not supported with --engine pg: %s", option, reason)
+// checkEngineRefusals asks the engine which of this command's options it cannot
+// serve and reports the first one the run trips.
+//
+// The template and the engine name inside it are here rather than in the dialect
+// because the message is the CLI's own voice (face ③), and the rule tables only
+// carry an option label and a reason. Reporting order is the dialect's, so the
+// loop stops at the first match: `--engine pg --format sql --threads 4` says the
+// format, as it always did.
+func checkEngineRefusals(e backend.Engine, c backend.Command, o backend.RunOptions) error {
+	for _, r := range backend.Must(e).Refusals(c) {
+		if r.Applies(o) {
+			return common.Usagef("%s is not supported with --engine %s: %s", r.Option(o), e, r.Reason)
+		}
+	}
+	return nil
 }
 
 // checkCharsetForEngine resolves --default-charset against the engine. MySQL
@@ -80,10 +101,7 @@ func pgRefusal(option, reason string) error {
 // accepted the value by the time this runs, so what is reported here is a charset
 // that exists but has no counterpart on the other side.
 func checkCharsetForEngine(e backend.Engine, charset string) error {
-	if e != backend.EnginePG {
-		return nil
-	}
-	if _, err := backend.ClientEncoding(charset); err != nil {
+	if err := backend.Must(e).ValidateCharset(charset); err != nil {
 		// Re-labelled as a usage error: the name lives in the backend's vocabulary,
 		// but a bad option value has to exit 2 like every other parameter problem,
 		// and this check runs before validateCharset.
@@ -100,20 +118,14 @@ func checkCharsetForEngine(e backend.Engine, charset string) error {
 // Parquet dump of any SELECT, with the tool's own delimiters, escaping and NULL
 // spelling, read through the same sql.RawBytes pipeline MySQL uses.
 func checkExportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.ExportConfig) error {
-	if e != backend.EnginePG {
-		return nil
+	o := backend.RunOptions{
+		Format:     cfg.Format,
+		Threads:    cfg.Threads,
+		NoHexBlob:  cfg.NoHexBlob,
+		SessionVar: cmd.Flags().Changed("session-var"),
 	}
-	if cfg.Format == "sql" {
-		return pgRefusal("--format sql", "the SQL writer emits MySQL INSERT text (backquoted names and MySQL escaping) that no PostgreSQL server accepts, use --format del or --format parquet")
-	}
-	if cfg.Threads > 1 {
-		return pgRefusal("--threads", "parallel export shards the query with MySQL-only statements and has not been measured against PostgreSQL, use --threads 1")
-	}
-	if cfg.NoHexBlob {
-		return pgRefusal("--no-hex-blob", "a PostgreSQL server rejects a NUL inside any text value (SQLSTATE 22021), so bytea columns must go out as 0x hex; imex always does it on this engine")
-	}
-	if cmd.Flags().Changed("session-var") {
-		return pgRefusal("--session-var", "SET <name>=<value> is MySQL session grammar and imex does not translate it, put PostgreSQL settings in the server or role configuration")
+	if err := checkEngineRefusals(e, backend.CmdExport, o); err != nil {
+		return err
 	}
 	return checkCharsetForEngine(e, cfg.DefaultCharset)
 }
@@ -129,17 +141,13 @@ func checkExportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.
 // --mode insert_update builds an ON CONFLICT whose target the importer reads out
 // of the catalogue instead of guessing.
 func checkImportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.ImportConfig) error {
-	if e != backend.EnginePG {
-		return nil
+	o := backend.RunOptions{
+		Format:     cfg.Format,
+		Mode:       string(cfg.Mode),
+		SessionVar: cmd.Flags().Changed("session-var"),
 	}
-	if cfg.Format == "sql" {
-		return pgRefusal("--format sql", "a SQL dump is parsed with the MySQL statement grammar and carries MySQL INSERT text, import a --format del or --format parquet file instead")
-	}
-	if cfg.Mode == config.ImportModeCreate {
-		return pgRefusal("--mode create", "it runs CREATE TABLE text out of a MySQL dump, which PostgreSQL does not accept, and imex cannot export that DDL on this engine either; create the table with pg_dump or your own DDL and use --mode insert")
-	}
-	if cmd.Flags().Changed("session-var") {
-		return pgRefusal("--session-var", "SET <name>=<value> is MySQL session grammar and imex does not translate it, put PostgreSQL settings in the server or role configuration")
+	if err := checkEngineRefusals(e, backend.CmdImport, o); err != nil {
+		return err
 	}
 	return checkCharsetForEngine(e, cfg.DefaultCharset)
 }
@@ -152,11 +160,9 @@ func checkImportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.
 // PostgreSQL does not have at all, so there is nothing to report rather than an
 // empty list that reads like a database without schedules.
 func checkListEngineOptions(e backend.Engine, cfg *config.ListConfig) error {
-	if e != backend.EnginePG {
-		return nil
-	}
-	if cfg.Object == list.ObjectEvents {
-		return pgRefusal("list events", "PostgreSQL has no event scheduler, so there is nothing to list; scheduled work lives in cron or pgAgent")
+	o := backend.RunOptions{Object: cfg.Object}
+	if err := checkEngineRefusals(e, backend.CmdList, o); err != nil {
+		return err
 	}
 	return checkCharsetForEngine(e, cfg.DefaultCharset)
 }
@@ -168,11 +174,21 @@ func checkListEngineOptions(e backend.Engine, cfg *config.ListConfig) error {
 // would have to be re-imported by --mode create through the SQL reader this engine
 // also refuses. Until both halves exist, the honest answer is that the tool does
 // not do it, and pg_dump does.
+//
+// The charset is not checked here: `show` validates it in validateShowConfig, after
+// this refusal, and moving it would change which message a doubly-invalid run gets.
 func checkShowEngineOptions(e backend.Engine, kind string) error {
-	if e != backend.EnginePG {
-		return nil
-	}
-	return pgRefusal("show "+kind, "definitions are read with SHOW CREATE, which PostgreSQL does not have, and imex cannot import the DDL it would produce; use pg_dump")
+	return checkEngineRefusals(e, backend.CmdShow, backend.RunOptions{ShowKind: kind})
+}
+
+// parseSessionVars runs --session-var values through the shared parser with the
+// reserved-name list of the engine this run resolved. The list belongs to the
+// dialect: those names are the MySQL driver's own DSN parameters, and an engine
+// whose connection string carries none of them reserves none
+// (Backend.IsReservedConnParam). internal/common cannot import backend, so the
+// predicate travels as a value.
+func parseSessionVars(engine string, pairs []string) (map[string]string, error) {
+	return common.ParseSessionVars(pairs, backend.Lookup(engine).IsReservedConnParam)
 }
 
 // openDatabase dials the engine the run named, for the commands that hold a

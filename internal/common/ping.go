@@ -18,15 +18,18 @@ var pingRetryPolicy = DefaultRetryPolicy()
 // connection-level failure (server gone away, refused dial, reset socket) gets
 // up to MaxAttempts tries with the shared backoff, while a server rejection
 // returns after the first try. A rejection carries a number the server decided —
-// 1045 credentials, 1049 unknown database, 1193 unknown system variable — and
-// dberr.go already documents 1045 as one that "will not heal themselves".
+// 1045 credentials, 1049 unknown database, 1193 unknown system variable — and the
+// dialect's verdict is what names those numbers, so every caller passes the
+// backend it dialled with (verdict nil means the neutral rules alone decide).
+// internal/backend/dberr_mysql.go documents 1045 as one that "will not heal
+// themselves".
 // Retrying those three times cost a fixed 6 seconds per run and put a
 // connectivity story in front of the operator's actual typo.
 //
 // The attempt count in the returned message is the number of tries actually
 // made, so the wording stays true on both paths: "after 1 attempt" for a
 // rejection, "after 3 attempts" for an outage that outlasts the backoff.
-func PingWithRetry(db *sql.DB) error {
+func PingWithRetry(db *sql.DB, verdict TransientVerdict) error {
 	p := pingRetryPolicy
 	if p.MaxAttempts < 1 {
 		p.MaxAttempts = 1
@@ -39,7 +42,7 @@ func PingWithRetry(db *sql.DB) error {
 		if err = db.Ping(); err == nil {
 			return nil
 		}
-		if !IsTransient(err) || attempt == p.MaxAttempts {
+		if !IsTransient(err, verdict) || attempt == p.MaxAttempts {
 			// Either a retry cannot help, or there is no retry left. The error
 			// itself is the last thing the run reports, so it does not also get a
 			// "retrying" record: that record promises another try, and there is

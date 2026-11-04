@@ -134,6 +134,15 @@ type Backend interface {
 	// PingWithRetry stays the single place a connectivity failure is decided.
 	Open(cfg *config.Config) (*sql.DB, error)
 
+	// IsReservedConnParam reports whether a --session-var name is already owned by
+	// this engine's connection string — either the tool sets it itself or the driver
+	// parses it as a connection setting — so the value would never reach the server
+	// as a session variable. The question is engine vocabulary: these are the MySQL
+	// driver's parameter names, and a DSN-less dialect has nothing to reserve. cmd
+	// asks it before the parser in internal/common, which cannot import this
+	// package, rejects the name.
+	IsReservedConnParam(name string) bool
+
 	// QuoteIdent quotes one identifier (a table or column name) the way this
 	// engine spells it.
 	QuoteIdent(name string) string
@@ -270,12 +279,46 @@ type Backend interface {
 	// IMEX_PORT named one.
 	DefaultPort() int
 
+	// Refusals returns, in reporting order, the options of one command this engine
+	// cannot serve. cmd folds the run's flag values and the two presence-only facts
+	// into a RunOptions and returns the first rule the run trips; an engine with an
+	// empty table refuses nothing. Order matters as much as content: the output
+	// format is reported before the options that belong to that writer, and which
+	// message a doubly-invalid run gets is a contract (face ③).
+	//
+	// The rules are data rather than a Validate(cfg) method because the argument
+	// types belong to cmd and config while the flag state belongs to cobra, which
+	// this package must not import; a table of predicates over a plain value struct
+	// is the part that is genuinely the engine's.
+	Refusals(c Command) []Refusal
+
+	// ValidateCharset reports whether --default-charset has a meaning on this engine.
+	// The error text is the message the CLI prints (relabelled as a usage error by
+	// cmd), so it is contract face ③ and travels with the dialect that owns the
+	// encoding names. An engine that accepts everything validateCharset already
+	// accepted returns nil.
+	ValidateCharset(charset string) error
+
 	// CellFixups returns one rewriter per result column, or nil for a column
 	// whose driver text is already what the dump should carry. The MySQL
 	// implementation returns only nils: its text protocol hands over the bytes
 	// the server stores, which is the whole basis of the sql.RawBytes read path
 	// (see exporter.go's parseTime comment).
 	CellFixups(colTypes []*sql.ColumnType) []func([]byte) []byte
+
+	// TransientError is the dialect half of "can a reconnect heal this?".
+	//
+	// decided is true when err is one of this engine's own typed server errors,
+	// and then transient is the final answer — the caller's neutral rules about
+	// sockets, EOF and connection-flavoured text must not get a vote, because a
+	// server that answered a statement has a working connection. Engines with no
+	// code table answer (false, false), which leaves today's neutral decision
+	// untouched: giving one an opinion about its error codes is a capability, not
+	// a move (see the PostgreSQL implementation).
+	//
+	// The value is handed out as common.TransientVerdict-shaped function so
+	// internal/common can retry on it without importing this package.
+	TransientError(err error) (transient bool, decided bool)
 }
 
 // backends maps each accepted --engine value to its implementation. Both values

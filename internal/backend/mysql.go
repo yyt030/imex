@@ -21,10 +21,17 @@ type mysqlBackend struct{}
 
 func (mysqlBackend) Engine() Engine { return EngineMySQL }
 
-// Open keeps using common.BuildDSN, which is where the --default-charset,
-// parseTime, interpolateParams, session-variable and timeout decisions live.
+// Open uses the dialect's own builder (dsn_mysql.go), which is where the
+// --default-charset, parseTime, interpolateParams, session-variable and timeout
+// decisions live.
+//
+// The driver registers itself in this package and nowhere else: dsn_mysql.go is the
+// only file that imports go-sql-driver/mysql, and postgres.go does the same with
+// pgx's database/sql wrapper (a blank import). That symmetry is why internal/export
+// and internal/import carry no driver import of their own — a command that opens a
+// connection must name an engine, never a driver.
 func (mysqlBackend) Open(cfg *config.Config) (*sql.DB, error) {
-	return sql.Open("mysql", common.BuildDSN(cfg))
+	return sql.Open("mysql", buildMySQLDSN(cfg))
 }
 
 // QuoteIdent backquotes one identifier, doubling any backquote inside it so a
@@ -136,7 +143,7 @@ const MySQLPacketCeilingFallback int64 = 4 << 20
 // MySQLDriverInterpolationCap is the client-side ceiling the MySQL driver applies
 // to an interpolated statement. go-sql-driver/mysql defaults
 // Config.MaxAllowedPacket to 64 MiB, imex does not override it
-// (internal/common.BuildDSN), and once the interpolated text passes that ceiling
+// (internal/backend/dsn_mysql.go), and once the interpolated text passes that ceiling
 // the driver returns driver.ErrSkip (connection.go: "if len(buf)+4 >
 // mc.maxAllowedPacket"), which makes database/sql fall back to server-side
 // prepared statements — a different protocol path than the one the batching

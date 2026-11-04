@@ -149,6 +149,28 @@ func connectURL(cfg *config.Config) (string, error) {
 	return u.String(), nil
 }
 
+// IsReservedConnParam is false for every name, because this engine's connection
+// string has no parameter the tool owns under a MySQL-shaped name: connectURL
+// writes sslmode, client_encoding, statement_timeout and connect_timeout, and
+// --session-var is refused on this engine before the CLI ever parses a name
+// (cmd/engine.go). Answering honestly here rather than reusing MySQL's list is
+// the point — a third engine must not inherit this dialect's vocabulary.
+func (postgresBackend) IsReservedConnParam(string) bool { return false }
+
+// TransientError deliberately has no table yet.
+//
+// PostgreSQL reports SQLSTATE strings rather than MySQL's numbers, and naming
+// which of them a reconnect can heal (53300 too many clients, 57P01 admin
+// shutdown, 58030 internal error) is a decision about this engine's failure
+// model that has not been measured against a server here. Inventing the table
+// would turn failures that end a run today into silent retries — that is a new
+// capability on contract faces ③ and ⑤, not a move, and it is recorded as a
+// pending item in CONTEXT.md. Answering (false, false) keeps the decision exactly
+// where it was before this method existed: the neutral rules in
+// internal/common/dberr.go (sockets, EOF, connection-flavoured text) decide, and
+// a real connection loss on pgx arrives through those as *net.OpError or io.EOF.
+func (postgresBackend) TransientError(error) (bool, bool) { return false, false }
+
 // QuoteIdent double-quotes one identifier, doubling any double quote inside it.
 // Unlike MySQL, PostgreSQL is case-sensitive once the name is quoted and folds an
 // unquoted name to lower case, so quoting is not cosmetic here: it is the only

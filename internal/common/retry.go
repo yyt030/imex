@@ -17,6 +17,12 @@ type RetryPolicy struct {
 	BaseDelay   time.Duration
 	MaxDelay    time.Duration
 	Jitter      float64
+
+	// Verdict is the dialect half of the transient decision (see IsTransient).
+	// Callers that know the engine wire their backend's TransientError in here;
+	// the zero value means "neutral rules only", which is what a library caller
+	// with no engine in hand gets.
+	Verdict TransientVerdict
 }
 
 // DefaultRetryPolicy is tuned for LB/NAT half-open connections on cloud
@@ -57,8 +63,9 @@ func (p RetryPolicy) Delay(attempt int) time.Duration {
 // MaxAttempts, or ctx is done. fn receives the 1-based attempt number so it can
 // perform reconnect/replay work before retrying; it is called at least once.
 //
-// IsTransient decides what may be retried. Context cancellation is checked
-// before every attempt and interrupts any pending backoff, returning ctx.Err().
+// IsTransient decides what may be retried, with p.Verdict supplying the engine's
+// own error codes. Context cancellation is checked before every attempt and
+// interrupts any pending backoff, returning ctx.Err().
 func Retry(ctx context.Context, p RetryPolicy, fn func(attempt int) error) error {
 	if p.MaxAttempts < 1 {
 		p.MaxAttempts = 1
@@ -72,7 +79,7 @@ func Retry(ctx context.Context, p RetryPolicy, fn func(attempt int) error) error
 		if err == nil {
 			return nil
 		}
-		if !IsTransient(err) || attempt == p.MaxAttempts {
+		if !IsTransient(err, p.Verdict) || attempt == p.MaxAttempts {
 			return err
 		}
 

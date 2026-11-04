@@ -11,8 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
-
 	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
@@ -84,7 +82,7 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	// variable) returns on the first try — see common.PingWithRetry. Before this,
 	// a typo in --session-var or a wrong password waited a fixed 6 seconds and was
 	// reported as a connectivity failure.
-	if pingErr := common.PingWithRetry(db); pingErr != nil {
+	if pingErr := common.PingWithRetry(db, be.TransientError); pingErr != nil {
 		db.Close()
 		return nil, pingErr
 	}

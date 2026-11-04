@@ -8,34 +8,16 @@ import (
 	"net"
 	"strings"
 	"syscall"
-
-	"github.com/go-sql-driver/mysql"
 )
-
-// transientMySQLCodes lists server/client error numbers that indicate a
-// connection-level failure rather than a problem with the statement itself.
-// After one of these the connection is unusable and the server has rolled back
-// any open transaction, so the caller may reconnect and replay.
-//
-// Deliberately absent:
-//   - 1213 (deadlock) and 1205 (lock wait timeout): these are contention
-//     errors. With innodb_rollback_on_timeout=OFF only the statement is rolled
-//     back, so blindly replaying the surrounding transaction could duplicate
-//     rows; they are surfaced to the operator instead.
-//   - 1153 (packet too large): retrying cannot succeed, the batch must shrink.
-//   - 1045 (access denied): credentials will not heal themselves.
-var transientMySQLCodes = map[uint16]string{
-	1040: "too many connections",
-	1053: "server shutdown in progress",
-	1152: "aborted connection",
-	1927: "connection was killed",
-	2006: "server has gone away",
-	2013: "lost connection during query",
-	2055: "lost connection at reading authorization packet",
-}
 
 // transientSubstrings catches connection errors that reach us as plain text,
 // e.g. from a proxy layer that never produced a typed error.
+//
+// The list is engine-neutral on purpose. Several phrases are MySQL's own wording
+// ("server has gone away", "lost connection"), and a future dialect that spells a
+// connection loss differently is served by its typed codes (see TransientVerdict),
+// not by editing this table — removing a phrase here would silently stop retrying
+// errors that are retried today, on every engine.
 var transientSubstrings = []string{
 	"invalid connection",
 	"bad connection",
@@ -49,19 +31,58 @@ var transientSubstrings = []string{
 	"i/o timeout",
 }
 
+// TransientVerdict is a dialect's answer about one error.
+//
+// decided reports whether err is one of this engine's own typed server errors;
+// when it is, transient is the final verdict and the neutral fallbacks in
+// IsTransient below are not consulted. That short-circuit is not decoration: a
+// server that answered "syntax error" has a working connection, and letting such
+// an error reach the text table would let a message that happens to contain
+// "lost connection" be retried.
+//
+// An engine with no code table yet returns (false, false) for everything, which is
+// exactly the neutral decision it had before any table existed. Adding codes to it
+// is a new capability, not a refactor, because it turns failures that end a run
+// today into retries.
+type TransientVerdict func(err error) (transient bool, decided bool)
+
+// CodeVerdict builds the dialect half of the decision from one table of numeric
+// server codes. numberOf pulls the code out of the engine's own error type and
+// reports whether err is such an error at all; table maps the codes that mean a
+// dead connection — after one of these the connection is unusable and the server
+// has rolled back any open transaction, so the caller may reconnect and replay.
+//
+// It lives here because common cannot import internal/backend (the backend already
+// depends on common, and the cycle would close), and the shape of the decision is
+// the same for every engine that numbers its errors.
+func CodeVerdict(numberOf func(error) (code uint16, ok bool), table map[uint16]string) TransientVerdict {
+	return func(err error) (bool, bool) {
+		code, ok := numberOf(err)
+		if !ok {
+			return false, false
+		}
+		return table[code] != "", true
+	}
+}
+
 // IsTransient reports whether err is worth retrying after reconnecting.
 //
 // Context errors are never transient: the caller asked to stop, or a deadline
 // expired and retrying would just burn the remaining budget. Statement-level
-// errors (syntax, constraint, packet size) are also not transient.
-func IsTransient(err error) bool {
+// errors (syntax, constraint, packet size) are not transient either — and when the
+// dialect recognises the error, its verdict closes the case.
+//
+// verdict may be nil, which means "no dialect was wired in": the typed-code
+// short-circuit is skipped and only the neutral rules below decide. Every command
+// path passes the backend it resolved, so a CLI run never takes that route.
+func IsTransient(err error, verdict TransientVerdict) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if errors.Is(err, driver.ErrBadConn) || errors.Is(err, mysql.ErrInvalidConn) {
+	if errors.Is(err, driver.ErrBadConn) {
 		return true
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
@@ -71,9 +92,10 @@ func IsTransient(err error) bool {
 		return true
 	}
 
-	var mysqlErr *mysql.MySQLError
-	if errors.As(err, &mysqlErr) {
-		return transientMySQLCodes[mysqlErr.Number] != ""
+	if verdict != nil {
+		if transient, decided := verdict(err); decided {
+			return transient
+		}
 	}
 
 	// A socket read/write timeout surfaces as a net.Error; any other net.OpError
@@ -94,14 +116,4 @@ func IsTransient(err error) bool {
 		}
 	}
 	return false
-}
-
-// TransientErrorCode returns the MySQL error number carried by err, or 0 when
-// err did not come from the server. It is used for log context.
-func TransientErrorCode(err error) uint16 {
-	var mysqlErr *mysql.MySQLError
-	if errors.As(err, &mysqlErr) {
-		return mysqlErr.Number
-	}
-	return 0
 }

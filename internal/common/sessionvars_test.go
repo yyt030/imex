@@ -1,13 +1,22 @@
 package common
 
 import (
-	"strings"
 	"testing"
-
-	"github.com/go-sql-driver/mysql"
-
-	"github.com/imex/internal/config"
 )
+
+// reservedFixture is the shape of the predicate production callers pass: the real
+// list lives with the dialect that owns it (internal/backend/dsn_mysql.go), and
+// common cannot import backend. Copying the shipped list here would let the table
+// and this suite drift together while the CLI still rejected something else;
+// internal/backend/dsn_mysql_test.go pins the names themselves.
+var reservedFixture = map[string]bool{
+	"charset":   true,
+	"parseTime": true,
+	"timeout":   true,
+	"strict":    true,
+}
+
+func fixtureReserved(name string) bool { return reservedFixture[name] }
 
 func TestParseSessionVars(t *testing.T) {
 	vars, err := ParseSessionVars([]string{
@@ -16,7 +25,7 @@ func TestParseSessionVars(t *testing.T) {
 		"wait_timeout = 28800",
 		`character_set_results=gbk`,
 		"msg=it's fine", // single quote inside is doubled into a safe literal
-	})
+	}, fixtureReserved)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -34,7 +43,7 @@ func TestParseSessionVars(t *testing.T) {
 	}
 
 	// empty input yields nil map (no behavioural change)
-	if got, err := ParseSessionVars(nil); got != nil || err != nil {
+	if got, err := ParseSessionVars(nil, fixtureReserved); got != nil || err != nil {
 		t.Errorf("nil input: got %v, err %v", got, err)
 	}
 }
@@ -55,88 +64,28 @@ func TestParseSessionVarsErrors(t *testing.T) {
 		"",               // empty entry
 	}
 	for _, p := range bad {
-		if _, err := ParseSessionVars([]string{p}); err == nil {
+		if _, err := ParseSessionVars([]string{p}, fixtureReserved); err == nil {
 			t.Errorf("expected error for %q", p)
 		}
 	}
 }
 
-// dsnCfg builds the Config used by the DSN tests. The values are arbitrary; what
-// matters is that every field the builder reads is populated.
-func dsnCfg(vars map[string]string) *config.Config {
-	c := config.NewExportConfig()
-	c.Vars = vars
-	return &c.Config
-}
-
-func TestBuildDSNWithVars(t *testing.T) {
-	vars, err := ParseSessionVars([]string{"foreign_key_checks=0", "sql_mode=STRICT_ALL_TABLES"})
+// TestParseSessionVarsReservedNameIsTheEnginesOwn pins that the rejection comes from
+// the injected predicate and not from a table in here: a name the caller's engine
+// does not reserve is accepted, and a nil predicate reserves nothing. cmd passes the
+// resolved backend either way, so no CLI run sees the nil case.
+func TestParseSessionVarsReservedNameIsTheEnginesOwn(t *testing.T) {
+	if _, err := ParseSessionVars([]string{"charset=utf8"}, fixtureReserved); err == nil {
+		t.Error("a reserved name must be rejected")
+	}
+	vars, err := ParseSessionVars([]string{"charset=utf8"}, func(string) bool { return false })
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("an engine that reserves nothing must accept the name: %v", err)
 	}
-	dsn := BuildDSN(dsnCfg(vars))
-
-	// The driver must accept the DSN and keep the vars as Params, which it
-	// replays as "SET ..." on every new physical connection.
-	cfg, err := mysql.ParseDSN(dsn)
-	if err != nil {
-		t.Fatalf("driver rejected DSN: %v", err)
+	if vars["charset"] != "'utf8'" {
+		t.Errorf("charset = %q, want the quoted value", vars["charset"])
 	}
-	if cfg.Params["foreign_key_checks"] != "0" {
-		t.Errorf("foreign_key_checks missing from Params: %v", cfg.Params)
-	}
-	if got := cfg.Params["sql_mode"]; got != `'STRICT_ALL_TABLES'` {
-		t.Errorf("sql_mode = %q, want quoted literal", got)
-	}
-	// internal settings must survive untouched (charset/parseTime/... are
-	// consumed into typed Config fields by the driver, not kept in Params)
-	if cfg.ParseTime || !cfg.InterpolateParams || cfg.MultiStatements {
-		t.Errorf("internal driver settings altered: %+v", cfg.Params)
-	}
-	if !strings.Contains(dsn, "charset=utf8mb4") {
-		t.Errorf("charset lost from DSN: %s", dsn)
-	}
-
-	// no vars -> identical to BuildDSN
-	base := BuildDSN(dsnCfg(nil))
-	if got := BuildDSN(dsnCfg(nil)); got != base {
-		t.Errorf("nil vars changed DSN:\n got %s\nwant %s", got, base)
-	}
-
-	// defensive path: reserved name injected directly is refused, DSN unchanged
-	reserved := map[string]string{"charset": "'; DROP"}
-	if got := BuildDSN(dsnCfg(reserved)); got != base {
-		t.Errorf("reserved override must be refused, got %s", got)
-	}
-}
-
-func TestSetStatementShape(t *testing.T) {
-	// Mirror the driver's handleParams concatenation to assert the final SET
-	// statement is well-formed for typical inputs.
-	vars, err := ParseSessionVars([]string{"sql_mode=STRICT_TRANS_TABLES,NO_ZERO_DATE", "max_parallel_degree=4"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	dsn := BuildDSN(dsnCfg(vars))
-	cfg, err := mysql.ParseDSN(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var parts []string
-	for name, value := range cfg.Params {
-		if name == "sql_mode" || name == "max_parallel_degree" {
-			parts = append(parts, "SET "+name+" = "+value)
-		}
-	}
-	joined := strings.Join(parts, "; ")
-	if !strings.Contains(joined, "SET sql_mode = 'STRICT_TRANS_TABLES,NO_ZERO_DATE'") {
-		t.Errorf("unexpected SET statement: %s", joined)
-	}
-	if !strings.Contains(joined, "SET max_parallel_degree = 4") {
-		t.Errorf("unexpected SET statement: %s", joined)
-	}
-	// values are url-escaped in the DSN, so commas/quotes cannot break parsing
-	if strings.ContainsRune(dsn, '\n') {
-		t.Errorf("newline leaked into DSN: %s", dsn)
+	if vars, err := ParseSessionVars([]string{"charset=utf8"}, nil); err != nil || vars["charset"] != "'utf8'" {
+		t.Errorf("nil predicate: vars=%v err=%v", vars, err)
 	}
 }

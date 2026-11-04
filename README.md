@@ -204,7 +204,7 @@ imex export ... --threads 4 \
 
 - 变量以 DSN 附加参数方式注入，驱动会在**每一条新建物理连接**上自动执行对应 `SET`，因此主连接、并行导出的每个分片连接、并行导入的每个工作线程连接都一致生效，不受连接池复用影响。
 - 值按 SQL 字面量自动处理：纯数字与 `ON/OFF/TRUE/FALSE/DEFAULT/NULL` 原样传入，其余加单引号（内部单引号双写）。值中禁止反引号、注释序列（`/*`、`--`）与反斜杠，防止破坏或注入 SET 语句。
-- 变量名须匹配 `[A-Za-z][A-Za-z0-9_]*`；与工具/驱动内部 DSN 参数同名（`charset`、`parseTime`、`tls`、`timeout` 等）会被拒绝。连接/文件字符集由 `--default-charset` 统一掌管，会话级字符集变量 `character_set_client` / `character_set_connection` / `character_set_results` 同样被拒绝——否则会以会话变量绕过该不变量（如 `character_set_results=gbk` 会转码二进制列造成损坏）。未知变量名会在连接阶段由服务端报错，便于尽早发现拼写错误。
+- 变量名须匹配 `[A-Za-z][A-Za-z0-9_]*`；与工具/驱动内部 DSN 参数同名（`charset`、`parseTime`、`tls`、`timeout` 等 29 个）会被拒绝——这份保留清单属于 MySQL 驱动的连接串词汇，由方言层交出（`internal/backend/dsn_mysql.go`），`--engine pg` 下 `--session-var` 整个被拒绝（见下方 PG 一节），因此解析器本身不认识引擎。连接/文件字符集由 `--default-charset` 统一掌管，会话级字符集变量 `character_set_client` / `character_set_connection` / `character_set_results` 同样被拒绝——否则会以会话变量绕过该不变量（如 `character_set_results=gbk` 会转码二进制列造成损坏）。未知变量名会在连接阶段由服务端报错，便于尽早发现拼写错误。
 - 运行日志只打印变量**名**（`names=[sql_mode foreign_key_checks]`），**不打印值**——值可能包含密码/密钥等敏感信息，与失败 SQL 默认脱敏的原则一致。
 
 **字符集与二进制编码（`--default-charset` / `--hex-blob`）：**
@@ -567,7 +567,7 @@ imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 
 `--mode insert_update` 的冲突键由目录表读出而不是猜：有主键用主键（其余唯一键另记一条 warn，因为 `ON CONFLICT (a)` 不会在 `b` 的冲突上触发而 MySQL 会）；无主键但只有一把唯一键就用它；无主键且有**两把以上**唯一键则退出 `1`，并且发生在写入任何数据之前。没有主键也没有任何唯一键时语句退回普通 `INSERT` 并给出 warn（重复导入会翻倍），与 MySQL 侧同口径。PostgreSQL 对新行和被改行都记 1 行受影响，`RowsAffected` 分不出插入与更新，所以这条语句带 `RETURNING (xmax = 0)` 逐行回执，`inserted`/`updated` 按回执计数、`unchanged` 由「文件行数 − 回执行数」得出；子句末尾另有 `IS DISTINCT FROM` 守卫，值已经完全相同的行不改写，实测那一行的 `xmin` 与 `ctid` 都不动，与 MySQL 记 0 受影响行的口径一致。文件里**同一个冲突键出现两次**时两引擎不同：这些行落进同一条语句时 PostgreSQL 拒绝执行（`ON CONFLICT DO UPDATE command cannot affect row a second time`，`SQLSTATE 21000`）、整个导入回滚并退出 `1`，MySQL 则按文件顺序逐行应用、最后一条生效；给同一份文件加 `--batch-size 1` 后两侧结果与计数一致，工具不替你重排或去掉文件里的行。
 
-**不能用的**（连库之前就被拦下，退出码 `2`，文案点名原因）：
+**不能用的**（连库之前就被拦下，退出码 `2`，文案点名原因；这张表就是方言层的数据，见 `internal/backend/refusals_postgres.go`——按 export / import / list / show 四条命令各存一份有序规则，MySQL 那份为空，`cmd` 只负责把命中的规则套进同一句模板）：
 
 | 命令 / 选项 | 拒绝理由 |
 |-------------|----------|
@@ -734,7 +734,7 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 - **驱动层 socket 超时**（go-sql-driver 的 `timeout`/`readTimeout`/`writeTimeout` 三个字段）：`--connect-timeout`（默认 5s）、`--socket-read-timeout`/`--socket-write-timeout`（默认 300s）。这三个参数以 DSN 字段（`timeout` / `readTimeout` / `writeTimeout`）形式传入 go-sql-driver，作用于**每次 socket 读/写**；由于是 DSN 级参数，`--session-var` 无法覆盖（同名会被拒绝）。
 - **连接池 TTL**：导入连接池（主连接与每个并行 worker）设置 `SetConnMaxIdleTime(1m)` + `SetConnMaxLifetime(5m)`，让连接在 LB 空闲阈值前主动老化重建；并行 worker 另设 `SetMaxOpenConns(1)`。导出连接池**不**做老化（`ConnMaxIdleTime=0`、`ConnMaxLifetime=0`）：它用裸 `START TRANSACTION ... WITH CONSISTENT SNAPSHOT` 建立快照，连接在语句之间会归还空闲池，一旦被当作空闲连接关闭，快照就被静默回滚、后续读取失去一致性。
 - **事务空闲提交**：导入的写入端（单线程管线与每个并行 worker）在 30s 内没有收到新批次时，主动 `COMMIT` 当前已写入的部分事务并开启下一个，缩短未提交窗口和重放集合；`--commit-count` 到期或重放缓冲达到 64 MiB 字节预算时同样提交。
-- **瞬断自动重试**：对 `driver.ErrBadConn` / `invalid connection` / `io.EOF` / 网络超时 / `broken pipe` / `connection reset` / `server has gone away`(2006) / `lost connection`(2013) 等连接级错误，默认最多 3 次尝试，指数退避约 1s→2s（上限 4s，带 20% 向下抖动，避免多个 worker 同时重连）。重连后**先回放当前事务内所有已执行但未提交的批次，再重试失败批次**——连接断开时 MySQL 已回滚整个事务，只重试单批会静默丢掉同事务中先前的行。回放缓冲同时受 `--commit-count`（1000 行）与 64 MiB 字节预算约束，任一触顶即提交，避免宽 BLOB/TEXT 行撑爆内存。`COMMIT` 本身不重试（响应丢失时无法判断是否已生效，重放可能重复写入），直接报错。`context.Canceled`、语法/约束类错误以及 `1213` 死锁 / `1205` 锁等待超时不重试。 能挺过的停机窗口是**有量值的**：三次尝试之间只有两次退避（1s、2s，各带最多 20% 向下抖动），所以**从第一次失败到放弃实测约 2.4–3 秒**（`-P 3399` 无人听那次整跑 2.675 s），目标库重启或 LB 切换只要在这个窗口内恢复，本次运行就自行接上，超过则整跑失败、退出 1；两个退避参数是编译期常量，**不做成选项**——每次重试都要回放未提交事务，窗口越长重复写入的风险面越大。实测：停 1.5 s 后拉起的一次 10 万行并行导入 exit 0、8 条 retrying、最高只到 attempt 2、落库 10 万行且不重不漏。 同一条判据也管住**开局建连的那次 ping**（`common.PingWithRetry`，导出与导入共用）：以前是两个构造器里各写一遍的 `for i := 0; i < 3`，不看错误性质，于是密码写错（1045）、库不存在（1049）、`--session-var` 写了服务端不认识的变量（1193）都要跑满三次尝试、固定等 6.0 s，末条还写成 `failed to ping database after 3 attempts`，把服务端给的真实原因挤到句尾。现在永久拒绝一次即返回（实测 5–6 ms）、文案按实际尝试次数写（`after 1 attempt`），连接级故障照旧重试到三次，而 `database ping failed, retrying` 只在还有重试时出现（三次尝试配两条告警，最后一次失败不再谎称 retrying）。
+- **瞬断自动重试**：对 `driver.ErrBadConn` / `invalid connection` / `io.EOF` / 网络超时 / `broken pipe` / `connection reset` / `server has gone away`(2006) / `lost connection`(2013) 等连接级错误，默认最多 3 次尝试，指数退避约 1s→2s（上限 4s，带 20% 向下抖动，避免多个 worker 同时重连）。重连后**先回放当前事务内所有已执行但未提交的批次，再重试失败批次**——连接断开时 MySQL 已回滚整个事务，只重试单批会静默丢掉同事务中先前的行。回放缓冲同时受 `--commit-count`（1000 行）与 64 MiB 字节预算约束，任一触顶即提交，避免宽 BLOB/TEXT 行撑爆内存。`COMMIT` 本身不重试（响应丢失时无法判断是否已生效，重放可能重复写入），直接报错。`context.Canceled`、语法/约束类错误以及 `1213` 死锁 / `1205` 锁等待超时不重试。 能挺过的停机窗口是**有量值的**：三次尝试之间只有两次退避（1s、2s，各带最多 20% 向下抖动），所以**从第一次失败到放弃实测约 2.4–3 秒**（`-P 3399` 无人听那次整跑 2.675 s），目标库重启或 LB 切换只要在这个窗口内恢复，本次运行就自行接上，超过则整跑失败、退出 1；两个退避参数是编译期常量，**不做成选项**——每次重试都要回放未提交事务，窗口越长重复写入的风险面越大。实测：停 1.5 s 后拉起的一次 10 万行并行导入 exit 0、8 条 retrying、最高只到 attempt 2、落库 10 万行且不重不漏。 同一条判据也管住**开局建连的那次 ping**（`common.PingWithRetry`，导出与导入共用）：以前是两个构造器里各写一遍的 `for i := 0; i < 3`，不看错误性质，于是密码写错（1045）、库不存在（1049）、`--session-var` 写了服务端不认识的变量（1193）都要跑满三次尝试、固定等 6.0 s，末条还写成 `failed to ping database after 3 attempts`，把服务端给的真实原因挤到句尾。现在永久拒绝一次即返回（实测 5–6 ms）、文案按实际尝试次数写（`after 1 attempt`），连接级故障照旧重试到三次，而 `database ping failed, retrying` 只在还有重试时出现（三次尝试配两条告警，最后一次失败不再谎称 retrying）。上面那些 `2006`/`2013` 一类的服务端错误码表属于 MySQL 方言（`internal/backend/dberr_mysql.go`，132 轮自 `internal/common` 下沉），由连接建立时选出的方言以函数值交给重试层；`--engine pg` 一侧目前不附加任何服务端码表，判定只用上面那些连接级形态与网络超时
 
 对导出而言，主连接与分片连接都保留 `SetConnMaxLifetime(0)` 且 `SetConnMaxIdleTime(0)`（不因 TTL 关闭，保证一致性快照期间连接稳定）；读写超时对每条连接独立生效，长时间零字节的响应（如大 result set 起始阶段）会命中 `socket-read-timeout`，请按需调大。
 
@@ -1215,24 +1215,32 @@ imex/
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
 │   ├── backend/
-│   │   ├── backend.go         # 方言接口（28 个方法）、`--engine` 取值解析与折叠（`Parse`/`Normalize`）与 `backends` 注册表
+│   │   ├── backend.go         # 方言接口（32 个方法）、`--engine` 取值解析与折叠（`Parse`/`Normalize`）与 `backends` 注册表
+│   │   ├── dsn_mysql.go       # MySQL 连接串构造与 29 个驱动保留参数
+│   │   ├── dberr_mysql.go     # MySQL 瞬态错误码表（7 个码）与取码方式
+│   │   ├── refusals.go        # 选项拒绝表的数据形状（`Command`/`RunOptions`/`Refusal`，不含引擎名）
+│   │   ├── refusals_mysql.go  # MySQL 的拒绝表为空、字符集校验恒通过
+│   │   ├── refusals_postgres.go # pg 的选项拒绝表（export 4 / import 3 / list 1 / show 1）与 `client_encoding` 校验
 │   │   ├── types.go           # 类型词 → `common.ColumnKind` 的共享词表与二进制列判定（不含引擎名）
 │   │   ├── mysql.go           # MySQL/MariaDB/OceanBase 方言
 │   │   ├── postgres.go        # PostgreSQL 方言（`$n`、`client_encoding` 表、类型与二进制词表、单元格文本规则）
 │   │   ├── backend_test.go    # 两方言逐字节对照与注册表测试
-│   │   └── types_test.go      # 类型词表分类断言
+│   │   ├── types_test.go      # 类型词表分类断言
+│   │   ├── dberr_test.go      # 码表归属与两方言瞬态判据断言
+│   │   ├── dsn_mysql_test.go  # 连接串 golden 与保留参数清单
+│   │   └── refusals_test.go   # 拒绝表的顺序、触发条件与文案取值
 │   ├── config/
 │   │   ├── config.go            # 配置定义与默认值（连接/超时/字符集/DelModifier/导出导入选项）
 │   │   ├── list.go              # list 配置与输出格式枚举
 │   │   ├── show.go              # show 配置（对象名、库限定、结果通道选项）
 │   │   └── formatscope.go       # 格式适用范围登记表（校验拒绝文案、帮助文本标记、配置回显字段三处共用）
 │   ├── common/
-│   │   ├── util.go              # DSN 构建（超时/字符集/会话变量注入）与工具函数
+│   │   ├── util.go              # 工具函数（定界符解析、文件大小）；DSN 构建在 internal/backend/dsn_mysql.go
 │   │   ├── colkind.go           # `ColumnKind` 输出词汇（writer/reader 共用，词表在 internal/backend/types.go）
-│   │   ├── sessionvars.go       # 会话变量解析与 DSN 注入（--session-var）
+│   │   ├── sessionvars.go       # 会话变量解析与 DSN 注入（--session-var；保留名由引擎以谓词交出）
 │   │   ├── sqlpreview.go        # 失败 SQL 脱敏回显（--echo-sql-values）
 │   │   ├── sqltag.go            # 运行时 SQL 归因注释 /* imex:<commit> */（--no-sql-tag）
-│   │   ├── dberr.go             # 瞬态错误判定（连接级 MySQL 错误码/网络错误/文本兜底）
+│   │   ├── dberr.go             # 瞬态错误判定的中性链（网络错误/文本兜底）+ 判据注入口；MySQL 码表在 internal/backend/dberr_mysql.go
 │   │   ├── retry.go             # 重试策略（次数、指数退避、抖动、ctx 取消）
 │   │   ├── pool.go              # 连接池老化（ConnMaxIdleTime / ConnMaxLifetime）
 │   │   ├── usage.go             # 用法错误分类（退出码 2）

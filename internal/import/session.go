@@ -105,6 +105,12 @@ type writeSession struct {
 }
 
 func newWriteSession(imp *Importer, db *sql.DB, ctx context.Context, commitCount int64, label string) *writeSession {
+	// The retry judge is the dialect's: which server numbers mean "the connection
+	// died, replay the batch" is engine vocabulary, and the session's backoff
+	// would otherwise be guessing. The bounds stay the shared default.
+	policy := common.DefaultRetryPolicy()
+	policy.Verdict = imp.be.TransientError
+
 	return &writeSession{
 		imp:             imp,
 		db:              db,
@@ -112,7 +118,7 @@ func newWriteSession(imp *Importer, db *sql.DB, ctx context.Context, commitCount
 		commitCount:     commitCount,
 		maxPendingBytes: replayBudget(imp.cfg.ImportThreads),
 		label:           label,
-		policy:          common.DefaultRetryPolicy(),
+		policy:          policy,
 	}
 }
 

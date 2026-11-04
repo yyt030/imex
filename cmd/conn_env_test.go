@@ -173,9 +173,12 @@ func TestConnEnvPortMustBeValid(t *testing.T) {
 }
 
 // The socket transport was removed: -S is an unknown option, IMEX_SOCKET is no
-// longer read, and BuildDSN is always TCP. The leftover-variable case is the one
-// worth pinning, because a shell profile that still exports IMEX_SOCKET must not
-// quietly change where a run connects.
+// longer read, and the address a run dials is always host:port. The connection
+// string itself is the dialect's to build and is pinned byte-for-byte in
+// internal/backend/dsn_mysql_test.go; what belongs to cmd is the port it resolves,
+// so that is what is asserted here. The leftover-variable case is the one worth
+// pinning, because a shell profile that still exports IMEX_SOCKET must not quietly
+// change where a run connects.
 func TestSocketTransportIsGone(t *testing.T) {
 	t.Setenv("IMEX_SOCKET", "/tmp/my.sock")
 
@@ -187,8 +190,8 @@ func TestSocketTransportIsGone(t *testing.T) {
 	if len(rep.used) != 0 {
 		t.Errorf("used = %v, want none: IMEX_SOCKET is not a source any more", rep.used)
 	}
-	if dsn := common.BuildDSN(cfg); !strings.Contains(dsn, "@tcp(127.0.0.1:3306)") {
-		t.Errorf("DSN left the default TCP address: %s", dsn)
+	if cfg.Port != 3306 {
+		t.Errorf("Port = %d, want the --port default 3306", cfg.Port)
 	}
 
 	// An explicit -P still names the address, and nothing about it is a socket.
@@ -196,8 +199,8 @@ func TestSocketTransportIsGone(t *testing.T) {
 	if _, err := applyConnEnv(f, cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if dsn := common.BuildDSN(cfg); !strings.Contains(dsn, "@tcp(127.0.0.1:3307)") {
-		t.Errorf("DSN = %s, want tcp(127.0.0.1:3307)", dsn)
+	if cfg.Port != 3307 {
+		t.Errorf("Port = %d, want 3307", cfg.Port)
 	}
 }
 

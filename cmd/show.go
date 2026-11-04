@@ -6,6 +6,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 	"github.com/imex/internal/show"
@@ -137,7 +138,7 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 	}
 	defer db.Close()
 
-	if err := common.PingWithRetry(db); err != nil {
+	if err := common.PingWithRetry(db, backend.Must(e).TransientError); err != nil {
 		return err
 	}
 
