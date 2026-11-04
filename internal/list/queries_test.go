@@ -1,6 +1,7 @@
 package list
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -275,16 +276,47 @@ func TestBuildQueryDispatchesOnEngine(t *testing.T) {
 	}
 }
 
-// TestBuildQueryEngineKeyIsMatchedExactly pins the rule the dispatch has always
-// applied: the catalog builder is chosen by an exact match on the raw engine
-// string, so any other spelling builds MySQL statements. cmd parses --engine
-// case-insensitively, which means `list tables --engine PG` today connects
-// through the PostgreSQL driver and asks information_schema for the rows. The
-// refactor kept the comparison rather than normalising it, because normalising
-// changes the statement a server sees (contract face ⑤) — this test is the
-// evidence that the gap exists, and closing it is a separate ruling.
-func TestBuildQueryEngineKeyIsMatchedExactly(t *testing.T) {
-	for _, engine := range []string{"PG", "Pg", "pg ", "postgres", "postgresql", "mysql", ""} {
+// TestBuildQueryNormalisesTheEngineSpelling pins the 131 ruling: the catalog is
+// chosen by the parsed engine, not by the exact text typed after --engine. Every
+// spelling of pg must produce the byte-identical statement and argument list of
+// "pg", and the default (empty, mysql, or a value cmd would have rejected) must
+// still land on the MySQL catalog.
+func TestBuildQueryNormalisesTheEngineSpelling(t *testing.T) {
+	ref := listCfg(ObjectColumns)
+	ref.Engine = "pg"
+	ref.Database = "mydb"
+	ref.Table = "t"
+	refQuery, refArgs, refCols, err := BuildQuery(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, engine := range []string{"PG", "Pg", " pg ", "pg\t", "PG\t"} {
+		cfg := listCfg(ObjectColumns)
+		cfg.Engine = engine
+		cfg.Database = "mydb"
+		cfg.Table = "t"
+		query, args, cols, err := BuildQuery(cfg)
+		if err != nil {
+			t.Fatalf("engine %q: %v", engine, err)
+		}
+		if query != refQuery {
+			t.Errorf("engine %q built a different statement than \"pg\":\n%s\nvs\n%s", engine, query, refQuery)
+		}
+		if !strings.Contains(query, "current_schema()") {
+			// PostgreSQL has an information_schema of its own, so the catalog name
+			// alone cannot tell the two statements apart; the schema function can.
+			t.Errorf("engine %q did not build the PostgreSQL statement: %s", engine, query)
+		}
+		if fmt.Sprint(args) != fmt.Sprint(refArgs) {
+			t.Errorf("engine %q bound %v, want %v", engine, args, refArgs)
+		}
+		if strings.Join(cols, ",") != strings.Join(refCols, ",") {
+			t.Errorf("engine %q column names %v, want %v", engine, cols, refCols)
+		}
+	}
+
+	for _, engine := range []string{"", "mysql", "MYSQL", "oracle"} {
 		cfg := listCfg(ObjectTables)
 		cfg.Engine = engine
 		query, _, _, err := BuildQuery(cfg)

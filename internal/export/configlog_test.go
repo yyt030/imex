@@ -149,10 +149,10 @@ func TestExportConfigRecordReportsHexBlobAsApplied(t *testing.T) {
 // configuration record now share.
 //
 // The engine rows are the ones the answer moved out of: which engine must dump
-// binary columns as 0x hex is now the backend's fact (HexBlobMandatory), and the
-// last row keeps the case-sensitivity gap visible — `--engine PG` parses as
-// PostgreSQL at the connection but resolves through the MySQL backend here, the
-// same gap internal/list documents at TestBuildQueryEngineKeyIsMatchedExactly.
+// binary columns as 0x hex is the backend's fact (HexBlobMandatory), and the
+// lookup that resolves it normalises the spelling — the last two rows are the
+// 131 ruling, `--engine PG` and `--engine "  Pg  "` get the same answer as
+// `--engine pg` instead of MySQL's charset rule.
 func TestEffectiveHexBlob(t *testing.T) {
 	cases := []struct {
 		engine             string
@@ -169,7 +169,8 @@ func TestEffectiveHexBlob(t *testing.T) {
 		{"pg", false, false, "utf8mb4", true},
 		{"pg", false, false, "gbk", true},
 		{"pg", false, true, "utf8mb4", false},
-		{"PG", false, false, "utf8mb4", false},
+		{"PG", false, false, "utf8mb4", true},
+		{"  Pg  ", false, false, "utf8mb4", true},
 	}
 	for _, tc := range cases {
 		cfg := config.NewExportConfig()

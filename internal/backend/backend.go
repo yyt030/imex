@@ -69,6 +69,23 @@ func Parse(s string) (Engine, error) {
 	}
 }
 
+// Normalize is Parse without the rejection: it applies exactly the same rule
+// (trim, then case-fold) and hands back the default engine for anything Parse
+// would have refused. Every decision point that only has the raw config string
+// uses it, so the spelling a user typed cannot decide which dialect answers.
+//
+// It exists because cmd validates the value before any of this runs, so a value
+// Normalize maps to the default here is either the empty string a hand-built
+// config carries or a string the CLI already rejected; neither is a user-facing
+// path. Parse stays the one that reports the error text.
+func Normalize(s string) Engine {
+	e, err := Parse(s)
+	if err != nil {
+		return EngineMySQL
+	}
+	return e
+}
+
 // SnapshotStep is one statement of a consistent read, plus the log message that
 // names it when it fails.
 type SnapshotStep struct {
@@ -281,17 +298,12 @@ func Get(e Engine) (Backend, error) {
 
 // Lookup resolves the raw engine string a config carries, for the decisions that
 // need a dialect but are not allowed to fail on a value the CLI has already
-// rejected. It applies the rule the tool has always applied at those call sites:
-// an exact match on a registered engine's CLI spelling wins, and anything else —
-// the empty string a zero-valued config holds above all — is MySQL. It does not
-// case-fold, so `--engine PG` looks up the PostgreSQL *connection* (cmd.Parse
-// lowercases) but MySQL's answers here; internal/list documents the same gap and
-// TestBuildQueryEngineKeyIsMatchedExactly pins it.
+// rejected. It applies the same normalisation Parse and cmd do (see Normalize),
+// so `--engine PG`, `--engine pg` and `--engine " pg "` all get the same answers,
+// and anything unrecognised — the empty string a zero-valued config holds above
+// all — gets the default engine rather than an error.
 func Lookup(raw string) Backend {
-	if b, ok := backends[Engine(raw)]; ok {
-		return b
-	}
-	return backends[EngineMySQL]
+	return backends[Normalize(raw)]
 }
 
 // Must returns the backend for one engine and panics on an unknown value. Every

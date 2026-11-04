@@ -624,11 +624,41 @@ func TestHexBlobMandatory(t *testing.T) {
 // decisions use: an exact engine spelling wins, and anything else — above all the
 // empty string a hand-built config carries — is MySQL, so no library caller that
 // never set Engine can start hitting PostgreSQL's dialect by accident.
-func TestLookupAppliesTheDefaultEngine(t *testing.T) {
-	if got := Lookup(string(EnginePG)).Engine(); got != EnginePG {
-		t.Fatalf("Lookup(%q).Engine() = %q, want pg", string(EnginePG), got)
+func TestNormalizeAppliesTheSameRuleAsParse(t *testing.T) {
+	cases := []struct {
+		in   string
+		want Engine
+	}{
+		{"", EngineMySQL},
+		{"mysql", EngineMySQL},
+		{"MYSQL", EngineMySQL},
+		{" Mysql ", EngineMySQL},
+		{"pg", EnginePG},
+		{"PG", EnginePG},
+		{"  Pg  ", EnginePG},
+		// Values cmd rejects with exit 2 never reach a decision point, but the
+		// accessors must still answer with the default rather than panic.
+		{"postgres", EngineMySQL},
+		{"oracle", EngineMySQL},
+		{"  ", EngineMySQL},
 	}
-	for _, raw := range []string{"", "mysql", "PG", "pg ", "oracle", "  "} {
+	for _, c := range cases {
+		if got := Normalize(c.in); got != c.want {
+			t.Errorf("Normalize(%q) = %q, want %q", c.in, got, c.want)
+		}
+		if e, err := Parse(c.in); err == nil && e != Normalize(c.in) {
+			t.Errorf("Normalize(%q) = %q disagrees with Parse, which returns %q", c.in, Normalize(c.in), e)
+		}
+	}
+}
+
+func TestLookupAppliesTheDefaultEngine(t *testing.T) {
+	for _, raw := range []string{"pg", "PG", "  Pg  "} {
+		if got := Lookup(raw).Engine(); got != EnginePG {
+			t.Errorf("Lookup(%q).Engine() = %q, want pg", raw, got)
+		}
+	}
+	for _, raw := range []string{"", "mysql", "oracle", "  "} {
 		if got := Lookup(raw).Engine(); got != EngineMySQL {
 			t.Errorf("Lookup(%q).Engine() = %q, want mysql", raw, got)
 		}

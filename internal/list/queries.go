@@ -30,21 +30,21 @@ func Objects() []string {
 	return out
 }
 
-// queryBuilders maps one --engine spelling to the catalog that engine reads.
-// MySQL is deliberately absent: it is the fallback below, not a table row, so a
-// run whose engine field was never set (every library caller that builds a
-// config by hand, and every command line that omits --engine) keeps the
-// statements it has always emitted. A new engine adds one row here plus its own
-// queries_<engine>.go file; nothing else in this package knows engine names.
+// queryBuilders maps one engine to the catalog that engine reads. MySQL is
+// deliberately absent: it is the fallback below, not a table row, so a run whose
+// engine field was never set (every library caller that builds a config by hand,
+// and every command line that omits --engine) keeps the statements it has always
+// emitted. A new engine adds one row here plus its own queries_<engine>.go file;
+// nothing else in this package knows engine names.
 //
-// The key is the raw config string, not a parsed backend.Engine, because that is
-// what BuildQuery compared before the split: an unnormalised spelling such as
-// `--engine PG` reaches the PostgreSQL *connection* (cmd parses case-insensitively)
-// but the MySQL *catalog* here. That gap is recorded as a finding rather than
-// quietly normalised away, because normalising changes what a server sees; see
-// TestBuildQueryEngineKeyIsMatchedExactly.
-var queryBuilders = map[string]func(*config.ListConfig) (string, []any, []string, error){
-	string(backend.EnginePG): buildPGQuery,
+// The key is a parsed backend.Engine and the lookup goes through
+// backend.Normalize, so the spelling on the command line cannot decide which
+// catalog is read: `--engine PG` and `--engine pg` build the same statement.
+// Before 131 the raw config string was compared here, so `--engine PG` reached
+// the PostgreSQL connection (cmd parses case-insensitively) but the MySQL
+// catalog, which is a server error rather than a different answer.
+var queryBuilders = map[backend.Engine]func(*config.ListConfig) (string, []any, []string, error){
+	backend.EnginePG: buildPGQuery,
 }
 
 // BuildQuery returns the statement, its bound arguments and the output column
@@ -53,12 +53,12 @@ var queryBuilders = map[string]func(*config.ListConfig) (string, []any, []string
 // placeholders.
 //
 // The engine decides which catalog is read and which placeholder style the
-// statement uses, and each engine's statements now live in their own file:
+// statement uses, and each engine's statements live in their own file:
 // queries_mysql.go and queries_pg.go. Neither builder is changed by the split:
 // every statement they emit is byte-identical to the ones this file emitted
 // before, so what a server sees does not depend on the refactor.
 func BuildQuery(cfg *config.ListConfig) (string, []any, []string, error) {
-	if build, ok := queryBuilders[cfg.Engine]; ok {
+	if build, ok := queryBuilders[backend.Normalize(cfg.Engine)]; ok {
 		return build(cfg)
 	}
 	return buildMySQLQuery(cfg)

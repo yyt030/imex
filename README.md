@@ -157,7 +157,7 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 
 | 选项 | 短选项 | 说明 | 环境变量 | 默认值 |
 |------|--------|------|----------|--------|
-| `--engine` | | 数据库引擎：`mysql`（默认）或 `pg`（PostgreSQL，经 `jackc/pgx/v5`）；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节 | 无（刻意不设） | `mysql` |
+| `--engine` | | 数据库引擎：`mysql`（默认）或 `pg`（PostgreSQL，经 `jackc/pgx/v5`），取值不区分大小写、裁两端空白；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节 | 无（刻意不设） | `mysql` |
 | `--host` | `-h` | 数据库主机地址 | `IMEX_HOST` | `127.0.0.1` |
 | `--port` | `-P` | TCP/IP 端口（`--engine pg` 时默认 `5432`） | `IMEX_PORT` | `3306` |
 | `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明） | `IMEX_USER` | `root` |
@@ -551,7 +551,7 @@ imex list tables
 
 ### PostgreSQL 引擎（`--engine pg`）
 
-加 `--engine pg` 即连 PostgreSQL（驱动 `github.com/jackc/pgx/v5`，直连明文 TCP，连接 URL 固定 `sslmode=disable`）。默认端口随之变成 `5432`——但只在命令行没写 `-P`、环境也没给 `IMEX_PORT` 时生效。本轮在 PostgreSQL 14.24 上实测。
+加 `--engine pg` 即连 PostgreSQL（驱动 `github.com/jackc/pgx/v5`，直连明文 TCP，连接 URL 固定 `sslmode=disable`）。默认端口随之变成 `5432`——但只在命令行没写 `-P`、环境也没给 `IMEX_PORT` 时生效。本轮在 PostgreSQL 14.24 上实测。取值不区分大小写、裁两端空白，`--engine PG`、`--engine " pg "` 与 `--engine pg` 是同一台服务器、同一套语句、同一份产物（131 轮统一）；配置回显仍照你写的拼写打印，那行记的是「这次给了什么」。
 
 ```bash
 imex export --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe \
@@ -1215,7 +1215,7 @@ imex/
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
 │   ├── backend/
-│   │   ├── backend.go         # 方言接口（28 个方法）、`--engine` 取值解析与 `backends` 注册表
+│   │   ├── backend.go         # 方言接口（28 个方法）、`--engine` 取值解析与折叠（`Parse`/`Normalize`）与 `backends` 注册表
 │   │   ├── types.go           # 类型词 → `common.ColumnKind` 的共享词表与二进制列判定（不含引擎名）
 │   │   ├── mysql.go           # MySQL/MariaDB/OceanBase 方言
 │   │   ├── postgres.go        # PostgreSQL 方言（`$n`、`client_encoding` 表、类型与二进制词表、单元格文本规则）
@@ -1262,7 +1262,7 @@ imex/
 │   │   └── parquet_reader.go    # Parquet 格式读取器
 │   ├── list/
 │       ├── list.go              # 执行查询、逐行读取并交给渲染器
-│       ├── queries.go           # 对象名与别名顺序、`BuildQuery()` 的引擎分派表
+│       ├── queries.go           # 对象名与别名顺序、`BuildQuery()` 的引擎分派表（引擎经 `backend.Normalize` 折叠后再选）
 │       ├── queries_mysql.go     # information_schema 查询构建（对象、范围、pattern、type）
 │       ├── queries_pg.go        # `--engine pg` 的同构语句（pg_catalog / information_schema，`$n` 顺序编号）
 │       ├── aliases.go           # 对象简写注册表（dbs、tab、trg…）

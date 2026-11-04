@@ -422,6 +422,64 @@ func TestPGLive_ListObjects(t *testing.T) {
 	}
 }
 
+// listResultRows strips the version banner — it carries a timestamp and a PID, so
+// it differs on every run — and returns the list result itself. It refuses a
+// result with no catalog rows, because "nothing printed" would compare equal for
+// two different statements.
+func listResultRows(t *testing.T, out string) string {
+	t.Helper()
+
+	var kept []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "imex starting") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	body := strings.Join(kept, "\n")
+	if !strings.Contains(body, "bytea") {
+		t.Fatalf("list columns printed no PostgreSQL catalog rows:\n%s", out)
+	}
+	return body
+}
+
+// TestPGLive_EngineSpellingIsNormalised is the real-server half of the 131
+// ruling. It runs the same list command with `--engine PG`, `--engine Pg`,
+// `--engine " pg "` and `--engine "pg\t"` and requires the same rows the canonical
+// spelling gets. Only the catalog choice ever differed: before the fix the raw
+// string decided the statement, so PostgreSQL was asked for information_schema
+// rows through MySQL's syntax and the run ended in a server error with exit 1
+// (measured against the previous release's binary, see the change record). The
+// comparison is the whole result rather than a substring, so a different
+// placeholder style or column order cannot pass.
+func TestPGLive_EngineSpellingIsNormalised(t *testing.T) {
+	env := newPGLive(t)
+	src := env.pgTable(t, "spell_src")
+	env.exec(t, fmt.Sprintf(pgSourceDDL, src))
+	env.exec(t, "INSERT INTO "+src+" (id, name) VALUES (1, 'row')")
+
+	// env.base opens with {"--engine", "pg"} (see newPGLive), so the connection
+	// flags after those two elements are what a spelling test reuses verbatim.
+	head := []string{"list", "columns", "--table", src}
+	want, code := env.runCLI(t, append(append([]string{}, head...), env.base...)...)
+	if code != 0 {
+		t.Fatalf("list columns --engine pg: exit %d\n%s", code, want)
+	}
+	rows := listResultRows(t, want)
+
+	for _, spelling := range []string{"PG", "Pg", " pg ", "pg\t"} {
+		args := append(append(append([]string{}, head...), "--engine", spelling), env.base[2:]...)
+		out, got := env.runCLI(t, args...)
+		if got != 0 {
+			t.Errorf("list columns --engine %q: exit %d\n%s", spelling, got, out)
+			continue
+		}
+		if diff := listResultRows(t, out); diff != rows {
+			t.Errorf("list columns --engine %q rows differ from --engine pg:\n%s\nvs\n%s", spelling, diff, rows)
+		}
+	}
+}
+
 // TestPGLive_EventAndShowRefusalsReachExit2 repeats the two refusals that need a
 // resolved engine and a real flag set, so the exit code is read from the process
 // rather than from the error value a validator returns.
