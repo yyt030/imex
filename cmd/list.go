@@ -97,7 +97,7 @@ func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 	// Override the default help flag so -h stays available for --host.
 	f.BoolP("help", "?", false, "help for list "+cmd.Use)
 
-	f.StringVar(&cfg.Engine, "engine", "mysql", "Database engine: mysql, pg")
+	f.StringVar(&cfg.Engine, "engine", "mysql", "Database engine: mysql, pg, dm")
 	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
 	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
 	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")

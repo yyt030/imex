@@ -2,6 +2,7 @@ package backend
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,7 +28,8 @@ func TestParseEngine(t *testing.T) {
 		{"  Pg  ", EnginePG, false},
 		{"pg", EnginePG, false},
 		{"postgres", "", true},
-		{"dameng", "", true},
+		{"dameng", EngineDM, false},
+		{"DM", EngineDM, false},
 		{"mariadb", "", true},
 	}
 	for _, c := range cases {
@@ -48,8 +50,8 @@ func TestParseEngine(t *testing.T) {
 			t.Fatalf("Parse(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	if got := Engines(); len(got) != 2 || got[0] != "mysql" || got[1] != "pg" {
-		t.Fatalf("Engines() = %v, want [mysql pg]: the order is printed in help and in the rejection", got)
+	if got := Engines(); len(got) != 3 || got[0] != "mysql" || got[1] != "pg" || got[2] != "dm" {
+		t.Fatalf("Engines() = %v, want [mysql pg dm]: the order is printed in help and in the rejection", got)
 	}
 }
 
@@ -78,17 +80,18 @@ func TestForConfigRejectsUnknownEngine(t *testing.T) {
 func TestValueGroups(t *testing.T) {
 	mysql := Must(EngineMySQL)
 	pg := Must(EnginePG)
+	dm := Must(EngineDM)
 
 	cases := []struct {
-		rows, cols        int
-		wantMySQL, wantPG string
+		rows, cols                int
+		wantMySQL, wantPG, wantDM string
 	}{
-		{1, 1, "(?)", "($1)"},
-		{1, 3, "(?,?,?)", "($1,$2,$3)"},
-		{2, 2, "(?,?),(?,?)", "($1,$2),($3,$4)"},
-		{3, 2, "(?,?),(?,?),(?,?)", "($1,$2),($3,$4),($5,$6)"},
-		{0, 3, "", ""},
-		{3, 0, "", ""},
+		{1, 1, "(?)", "($1)", "(?)"},
+		{1, 3, "(?,?,?)", "($1,$2,$3)", "(?,?,?)"},
+		{2, 2, "(?,?),(?,?)", "($1,$2),($3,$4)", "(?,?),(?,?)"},
+		{3, 2, "(?,?),(?,?),(?,?)", "($1,$2),($3,$4),($5,$6)", "(?,?),(?,?),(?,?)"},
+		{0, 3, "", "", ""},
+		{3, 0, "", "", ""},
 	}
 	for _, c := range cases {
 		if got := mysql.ValueGroups(c.rows, c.cols); got != c.wantMySQL {
@@ -96,6 +99,9 @@ func TestValueGroups(t *testing.T) {
 		}
 		if got := pg.ValueGroups(c.rows, c.cols); got != c.wantPG {
 			t.Errorf("pg ValueGroups(%d,%d) = %q, want %q", c.rows, c.cols, got, c.wantPG)
+		}
+		if got := dm.ValueGroups(c.rows, c.cols); got != c.wantDM {
+			t.Errorf("dm ValueGroups(%d,%d) = %q, want %q", c.rows, c.cols, got, c.wantDM)
 		}
 	}
 
@@ -144,13 +150,21 @@ func TestQuoteIdent(t *testing.T) {
 	if got := pg.QuoteIdent("MixedCase"); got != `"MixedCase"` {
 		t.Fatalf("pg must quote to preserve case, got %q", got)
 	}
+
+	dm := Must(EngineDM)
+	if got := dm.QuoteIdent(`a"b`); got != `"a""b"` {
+		t.Fatalf("dm QuoteIdent = %q, want \"a\"\"b\"", got)
+	}
+	if got := dm.QuoteIdent("MixedCase"); got != `"MixedCase"` {
+		t.Fatalf("dm must quote to preserve case, got %q", got)
+	}
 }
 
 // TestBatchRowCap checks the two engines' ceilings land where their protocols do.
 // Both are 65535, by different routes: MySQL's prepared-statement parameter count
 // is a uint16, PostgreSQL's Bind message parameter count is an int16.
 func TestBatchRowCap(t *testing.T) {
-	for _, e := range []Engine{EngineMySQL, EnginePG} {
+	for _, e := range []Engine{EngineMySQL, EnginePG, EngineDM} {
 		be := Must(e)
 		if rows, limit := be.BatchRowCap(5); limit != 65535 || rows != 13107 {
 			t.Errorf("%s BatchRowCap(5) = (%d,%d), want (13107,65535)", e, rows, limit)
@@ -191,6 +205,16 @@ func TestBatchWords(t *testing.T) {
 	if !contains(pw.BatchSizeClamp, "PostgreSQL") {
 		t.Fatalf("the clamp record must name the engine that caused it: %q", pw.BatchSizeClamp)
 	}
+
+	dw := Must(EngineDM).BatchWords()
+	for _, field := range []string{dw.PacketCap, dw.DriverCap, dw.PacketUnknown, dw.DriverOver, dw.BatchSizeClamp} {
+		if contains(field, "max_allowed_packet") || contains(field, "MySQL") {
+			t.Fatalf("Dameng record borrows MySQL vocabulary: %q", field)
+		}
+	}
+	if !contains(dw.BatchSizeClamp, "Dameng") {
+		t.Fatalf("the clamp record must name the engine that caused it: %q", dw.BatchSizeClamp)
+	}
 }
 
 func contains(s, sub string) bool {
@@ -219,6 +243,11 @@ func TestSnapshotSteps(t *testing.T) {
 	ps := Must(EnginePG).SnapshotSteps()
 	if len(ps) != 1 || ps[0].SQL != "BEGIN ISOLATION LEVEL REPEATABLE READ" {
 		t.Fatalf("PostgreSQL snapshot steps = %+v", ps)
+	}
+
+	ds := Must(EngineDM).SnapshotSteps()
+	if len(ds) != 1 || ds[0].SQL != "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE" {
+		t.Fatalf("Dameng snapshot steps = %+v", ds)
 	}
 }
 
@@ -295,6 +324,9 @@ func TestFKCheckToggle(t *testing.T) {
 	if off, on := Must(EnginePG).FKCheckToggle(); off != "" || on != "" {
 		t.Fatalf("pg toggle = %q / %q; PostgreSQL has no session switch for referential checks", off, on)
 	}
+	if off, on := Must(EngineDM).FKCheckToggle(); off != "" || on != "" {
+		t.Fatalf("dm toggle = %q / %q; Dameng has no session switch for referential checks", off, on)
+	}
 }
 
 // TestMetadataProbesAreEngineShaped asserts the placeholder style of every
@@ -333,6 +365,7 @@ func TestMetadataProbes(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			must(t, c.fn(Must(EngineMySQL)), false, c.n)
 			must(t, c.fn(Must(EnginePG)), true, c.n)
+			must(t, c.fn(Must(EngineDM)), false, c.n)
 		})
 	}
 
@@ -345,6 +378,14 @@ func TestMetadataProbes(t *testing.T) {
 		}
 	}
 
+	// Dameng scopes by OWNER in the Oracle-mode catalogue.
+	dm := Must(EngineDM)
+	for _, sql := range []string{dm.TableExistsSQL(), dm.ColumnListSQL(), dm.TargetColumnCheckSQL(2), dm.ColumnTypesSQL(2), dm.GeneratedColumnsSQL(), dm.UniqueKeyColumnsSQL(), dm.UniqueKeyIndexColumnsSQL()} {
+		if !contains(sql, "SYS.DBA_") {
+			t.Fatalf("dm probe must read the Oracle-mode catalogue: %s", sql)
+		}
+	}
+
 	// The conflict-target probe answers one row per key column, in key order, with
 	// the primary key's rows first — the only shape that can name a composite
 	// target. Each engine spells that in its own catalogue's vocabulary.
@@ -353,6 +394,9 @@ func TestMetadataProbes(t *testing.T) {
 	}
 	if sql := Must(EnginePG).UniqueKeyIndexColumnsSQL(); !contains(sql, "WITH ORDINALITY") {
 		t.Fatalf("pg key-column probe does not unfold the key in order: %s", sql)
+	}
+	if sql := Must(EngineDM).UniqueKeyIndexColumnsSQL(); !contains(sql, "DBA_CONS_COLUMNS") {
+		t.Fatalf("dm key-column probe does not read DBA_CONS_COLUMNS: %s", sql)
 	}
 }
 
@@ -422,6 +466,9 @@ func TestDefaultPort(t *testing.T) {
 	if got := Must(EnginePG).DefaultPort(); got != 5432 {
 		t.Fatalf("pg default port = %d", got)
 	}
+	if got := Must(EngineDM).DefaultPort(); got != 5236 {
+		t.Fatalf("dm default port = %d", got)
+	}
 }
 
 // TestPacketCeilingWithoutConnection keeps the dry-run path alive: a caller that
@@ -440,6 +487,14 @@ func TestPacketCeilingWithoutConnection(t *testing.T) {
 	}
 	if Must(EngineMySQL).DriverStatementCap() != MySQLDriverInterpolationCap {
 		t.Fatal("mysql driver ceiling drifted")
+	}
+
+	v, err = Must(EngineDM).PacketCeiling(nil, nil)
+	if err != nil || v != damengPacketCeilingFallback {
+		t.Fatalf("dm nil-db ceiling = (%d,%v), want the fallback", v, err)
+	}
+	if Must(EngineDM).DriverStatementCap() != damengPacketCeilingFallback {
+		t.Fatal("dm driver ceiling drifted")
 	}
 }
 
@@ -553,6 +608,58 @@ func urlQuery(t *testing.T, s string) url.Values {
 	return u.Query()
 }
 
+// TestDamengDSNPinsConnectionParams checks the dm:// DSN the backend builds.
+func TestDamengDSNPinsConnectionParams(t *testing.T) {
+	base := &config.Config{
+		Host: "127.0.0.1", Port: 5236, User: "SYSDBA", Password: "s3cret",
+		Database: "DMDB", DefaultCharset: config.DefaultCharset,
+	}
+	s, err := buildDamengDSN(base)
+	if err != nil {
+		t.Fatalf("buildDamengDSN: %v", err)
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatalf("the emitted DSN does not parse: %v (%s)", err, s)
+	}
+	q := u.Query()
+	if q.Get("compatibleMode") != "oracle" {
+		t.Errorf("compatibleMode = %q, want oracle", q.Get("compatibleMode"))
+	}
+	if q.Get("schema") != "DMDB" {
+		t.Errorf("schema = %q, want DMDB", q.Get("schema"))
+	}
+	if u.Scheme != "dm" || u.Host != "127.0.0.1:5236" {
+		t.Errorf("DSN identity = %s://%s, want dm://127.0.0.1:5236", u.Scheme, u.Host)
+	}
+
+	got := buildDamengDSNUnchecked(t, &config.Config{
+		Host: "127.0.0.1", Port: 5236, User: "u", Password: "p@ss:w/ord?=&%",
+		Database: "d", DefaultCharset: config.DefaultCharset,
+		ConnectTimeout: 1500 * time.Millisecond, SocketReadTimeout: 90 * time.Second,
+	})
+	q = urlQuery(t, got)
+	if q.Get("connectTimeout") != "1500" {
+		t.Errorf("connectTimeout = %q, want 1500 ms", q.Get("connectTimeout"))
+	}
+	if q.Get("socketTimeout") != "90" {
+		t.Errorf("socketTimeout = %q, want 90 s", q.Get("socketTimeout"))
+	}
+
+	if _, err := buildDamengDSN(&config.Config{User: ""}); err == nil {
+		t.Error("buildDamengDSN accepted an empty user")
+	}
+}
+
+func buildDamengDSNUnchecked(t *testing.T, cfg *config.Config) string {
+	t.Helper()
+	s, err := buildDamengDSN(cfg)
+	if err != nil {
+		t.Fatalf("buildDamengDSN: %v", err)
+	}
+	return s
+}
+
 // TestMetadataClassificationVocabulary pins the two type vocabularies the DEL,
 // Parquet and import paths classify against, including the types that must NOT be
 // treated as binary (uuid, json) and the ones that must be (bytea, bit).
@@ -606,6 +713,29 @@ func TestMetadataClassification(t *testing.T) {
 	if p.MetadataBinary("uuid") || p.MetadataBinary("json") || p.MetadataBinary("text") {
 		t.Fatal("uuid/json/text are printable and must not take the hex path")
 	}
+
+	d := Must(EngineDM)
+	for _, name := range []string{"NUMBER", "NUMBER(10,2)", "INTEGER", "FLOAT", "BINARY_DOUBLE"} {
+		if got := d.MetadataKind(name); got != common.KindNumber {
+			t.Fatalf("dm numeric type %q = %v, want %v", name, got, common.KindNumber)
+		}
+	}
+	for name, want := range map[string]common.ColumnKind{
+		"DATE":                     common.KindTimestamp,
+		"TIMESTAMP":                common.KindTimestamp,
+		"TIMESTAMP WITH TIME ZONE": common.KindTimestamp,
+		"TIMESTAMP(6)":             common.KindTimestamp,
+		"VARCHAR2":                 common.KindUnknown,
+		"CLOB":                     common.KindUnknown,
+		"name we have never seen":  common.KindUnknown,
+	} {
+		if got := d.MetadataKind(name); got != want {
+			t.Errorf("dm type %q = %v, want %v", name, got, want)
+		}
+	}
+	if !d.MetadataBinary("BLOB") || !d.MetadataBinary("RAW") || !d.MetadataBinary("LONG RAW") {
+		t.Fatal("Dameng binary types must take the hex path")
+	}
 }
 
 // TestHexBlobMandatory pins the fact that moved out of internal/export: the
@@ -617,6 +747,9 @@ func TestHexBlobMandatory(t *testing.T) {
 	}
 	if !Must(EnginePG).HexBlobMandatory() {
 		t.Fatal("pg must force hex: a NUL in a text value is SQLSTATE 22021 whatever the client encoding")
+	}
+	if !Must(EngineDM).HexBlobMandatory() {
+		t.Fatal("dm must force hex: Oracle-mode DM rejects a NUL byte inside a text value")
 	}
 }
 
@@ -636,6 +769,10 @@ func TestNormalizeAppliesTheSameRuleAsParse(t *testing.T) {
 		{"pg", EnginePG},
 		{"PG", EnginePG},
 		{"  Pg  ", EnginePG},
+		{"dm", EngineDM},
+		{"DM", EngineDM},
+		{"dameng", EngineDM},
+		{"  Dameng  ", EngineDM},
 		// Values cmd rejects with exit 2 never reach a decision point, but the
 		// accessors must still answer with the default rather than panic.
 		{"postgres", EngineMySQL},
@@ -653,9 +790,13 @@ func TestNormalizeAppliesTheSameRuleAsParse(t *testing.T) {
 }
 
 func TestLookupAppliesTheDefaultEngine(t *testing.T) {
-	for _, raw := range []string{"pg", "PG", "  Pg  "} {
-		if got := Lookup(raw).Engine(); got != EnginePG {
-			t.Errorf("Lookup(%q).Engine() = %q, want pg", raw, got)
+	for _, raw := range []string{"pg", "PG", "  Pg  ", "dm", "DM", "dameng", "  Dameng  "} {
+		want := EnginePG
+		if strings.ToLower(strings.TrimSpace(raw)) == "dm" || strings.ToLower(strings.TrimSpace(raw)) == "dameng" {
+			want = EngineDM
+		}
+		if got := Lookup(raw).Engine(); got != want {
+			t.Errorf("Lookup(%q).Engine() = %q, want %q", raw, got, want)
 		}
 	}
 	for _, raw := range []string{"", "mysql", "oracle", "  "} {

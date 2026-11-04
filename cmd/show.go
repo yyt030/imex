@@ -70,7 +70,7 @@ func registerShowFlags(cmd *cobra.Command, cfg *config.ShowConfig) {
 	// Same rule as export, import and list: -h belongs to --host, so help gets ?.
 	f.BoolP("help", "?", false, "help for show "+cmd.Use)
 
-	f.StringVar(&cfg.Engine, "engine", "mysql", "Database engine: mysql, pg")
+	f.StringVar(&cfg.Engine, "engine", "mysql", "Database engine: mysql, pg, dm")
 	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
 	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
 	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")

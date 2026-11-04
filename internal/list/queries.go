@@ -45,6 +45,7 @@ func Objects() []string {
 // catalog, which is a server error rather than a different answer.
 var queryBuilders = map[backend.Engine]func(*config.ListConfig) (string, []any, []string, error){
 	backend.EnginePG: buildPGQuery,
+	backend.EngineDM: buildDMQuery,
 }
 
 // BuildQuery returns the statement, its bound arguments and the output column

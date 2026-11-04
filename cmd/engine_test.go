@@ -32,6 +32,11 @@ import (
 // deliberately unreachable: reaching the server would mean the check missed.
 var pgConnFlags = []string{"-h", "127.0.0.1", "-P", "5432", "-u", "pgprobe", "-p", "pw", "-D", "pgprobe"}
 
+// dmConnFlags is the same idea for --engine dm. The address stays unreachable: a
+// refusal that fired has not dialled, and a case that reached the server would
+// fail on a connection error instead of on the rule it is about.
+var dmConnFlags = []string{"-h", "127.0.0.1", "-P", "5236", "-u", "dmprobe", "-p", "pw", "-D", "DMPROBE"}
+
 func pgExportFlags(extra ...string) []string {
 	return append(append([]string{}, pgConnFlags...), append([]string{"--engine", "pg", "-o", "/tmp/imex-engine-test.del", "-q", "SELECT 1"}, extra...)...)
 }
@@ -40,7 +45,15 @@ func pgImportFlags(extra ...string) []string {
 	return append(append([]string{}, pgConnFlags...), append([]string{"--engine", "pg", "-i", "/tmp/imex-engine-test.del", "-t", "rt"}, extra...)...)
 }
 
-// TestEngineRefusalMatrix drives every option --engine pg cannot serve through the
+func dmExportFlags(extra ...string) []string {
+	return append(append([]string{}, dmConnFlags...), append([]string{"--engine", "dm", "-o", "/tmp/imex-engine-test.del", "-q", "SELECT 1"}, extra...)...)
+}
+
+func dmImportFlags(extra ...string) []string {
+	return append(append([]string{}, dmConnFlags...), append([]string{"--engine", "dm", "-i", "/tmp/imex-engine-test.del", "-t", "RT"}, extra...)...)
+}
+
+// TestEngineRefusalMatrix drives every option an engine cannot serve through the
 // real validator and asserts the message and the exit class. One table, both
 // directions, so a new engine refusal without a row here cannot land quietly.
 func TestEngineRefusalMatrix(t *testing.T) {
@@ -54,7 +67,7 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			name: "export_unknown_engine",
 			sub:  "export",
 			args: append(append([]string{}, pgConnFlags...), "-o", "/tmp/x.del", "-q", "SELECT 1", "--engine", "oracle"),
-			want: `invalid --engine "oracle": must be one of mysql/pg`,
+			want: `invalid --engine "oracle": must be one of mysql/pg/dm`,
 		},
 		{
 			name: "export_format_sql",
@@ -114,7 +127,65 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			name: "import_engine_typo",
 			sub:  "import",
 			args: append(append([]string{}, pgConnFlags...), "-i", "/tmp/x.del", "-t", "rt", "--engine", "postgres"),
-			want: `invalid --engine "postgres": must be one of mysql/pg`,
+			want: `invalid --engine "postgres": must be one of mysql/pg/dm`,
+		},
+
+		// --engine dm. The MVP claims del/parquet export, del/parquet import in
+		// insert/replace mode, and four list objects; everything else has to stop
+		// here rather than at the server.
+		{
+			name: "dm_export_engine_dm8",
+			sub:  "export",
+			args: append(append([]string{}, dmConnFlags...), "-o", "/tmp/x.del", "-q", "SELECT 1", "--engine", "dm8"),
+			want: `invalid --engine "dm8": must be one of mysql/pg/dm`,
+		},
+		{
+			name: "dm_export_format_sql",
+			sub:  "export",
+			args: dmExportFlags("-f", "sql"),
+			want: "--format sql is not supported with --engine dm: the SQL writer emits MySQL INSERT text (backquoted names and MySQL escaping) that no Dameng server accepts, use --format del or --format parquet",
+		},
+		{
+			name: "dm_export_threads",
+			sub:  "export",
+			args: dmExportFlags("--threads", "4"),
+			want: "--threads is not supported with --engine dm: parallel export has not been measured against Dameng, use --threads 1",
+		},
+		{
+			name: "dm_export_no_hex_blob",
+			sub:  "export",
+			args: dmExportFlags("--no-hex-blob"),
+			want: "--no-hex-blob is not supported with --engine dm: Dameng rejects a NUL byte inside a text value, so binary columns must go out as 0x hex; imex always does it on this engine",
+		},
+		{
+			name: "dm_export_session_var",
+			sub:  "export",
+			args: dmExportFlags("--session-var", "compatible_mode=oracle"),
+			want: "--session-var is not supported with --engine dm: SET <name>=<value> is MySQL session grammar and imex does not translate it for Dameng; put session settings in the server or role configuration",
+		},
+		{
+			name: "dm_import_format_sql",
+			sub:  "import",
+			args: dmImportFlags("-f", "sql"),
+			want: "--format sql is not supported with --engine dm: a SQL dump is parsed with the MySQL statement grammar and carries MySQL INSERT text, import a --format del or --format parquet file instead",
+		},
+		{
+			name: "dm_import_mode_insert_update",
+			sub:  "import",
+			args: dmImportFlags("--mode", "insert_update"),
+			want: "--mode insert_update is not supported with --engine dm: the Dameng backend does not implement upsert in this MVP, use --mode insert or --mode replace",
+		},
+		{
+			name: "dm_import_mode_create",
+			sub:  "import",
+			args: dmImportFlags("--mode", "create"),
+			want: "--mode create is not supported with --engine dm: it runs CREATE TABLE text out of a MySQL dump, which Dameng does not accept, and imex cannot export that DDL on this engine either; create the table with your own DDL and use --mode insert",
+		},
+		{
+			name: "dm_import_session_var",
+			sub:  "import",
+			args: dmImportFlags("--session-var", "compatible_mode=oracle"),
+			want: "--session-var is not supported with --engine dm: SET <name>=<value> is MySQL session grammar and imex does not translate it for Dameng; put session settings in the server or role configuration",
 		},
 	}
 
@@ -328,6 +399,9 @@ func TestEnginePortIsAppliedByEngineOnly(t *testing.T) {
 		{"mysql_default", "mysql", "", "", 3306},
 		{"mysql_pg_port_kept", "mysql", "5432", "", 5432},
 		{"empty_engine_default", "", "", "", 3306},
+		{"dm_default", "dm", "", "", 5236},
+		{"dm_explicit_port", "dm", "6000", "", 6000},
+		{"dm_env_port", "dm", "", "6100", 6100},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -428,8 +502,124 @@ func TestEngineFlagFace(t *testing.T) {
 		if f.DefValue != "mysql" {
 			t.Errorf("%s --engine default = %q, want mysql", name, f.DefValue)
 		}
-		if f.Usage != "Database engine: mysql, pg" {
+		if f.Usage != "Database engine: mysql, pg, dm" {
 			t.Errorf("%s --engine usage = %q", name, f.Usage)
 		}
 	}
+}
+
+// TestDMSurfaceRefusals pins the two commands whose Dameng scope is a subset of
+// the tool's: `list` serves four catalog objects and `show` serves none. The
+// refusals are the CLI face of the same table the import and export paths read,
+// so an unmeasured object exits 2 without dialling.
+func TestDMSurfaceRefusals(t *testing.T) {
+	dmList := func(object string) *config.ListConfig {
+		cfg := config.NewListConfig()
+		cfg.Engine = "dm"
+		cfg.Host = "127.0.0.1"
+		cfg.Port = 5236
+		cfg.User = "dmprobe"
+		cfg.Password = "pw"
+		cfg.Database = "DMPROBE"
+		cfg.Object = object
+		return cfg
+	}
+
+	const dmListReason = "this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, tables, columns and indexes"
+	served := map[string]bool{
+		"databases": true, "tables": true, "columns": true, "indexes": true,
+	}
+	for _, object := range list.Objects() {
+		cfg := dmList(object)
+		if object == "columns" || object == "indexes" {
+			cfg.Table = "RT"
+		}
+		if object == "tables" {
+			cfg.Type = "all"
+		}
+		err := validateListConfig(cfg)
+		if served[object] {
+			if err != nil {
+				t.Errorf("list %s on dm must validate: %v", object, err)
+			}
+			continue
+		}
+		want := "list " + object + " is not supported with --engine dm: " + dmListReason
+		if err == nil || err.Error() != want {
+			t.Errorf("list %s refusal = %v, want %q", object, err, want)
+		}
+		if !common.IsUsageError(err) {
+			t.Errorf("list %s refusal must exit 2", object)
+		}
+	}
+
+	const dmShowReason = "definitions are read with SHOW CREATE, which Dameng Oracle mode does not provide through the same catalog, and imex cannot import the DDL it would produce; use your own DDL"
+	for _, kind := range show.Kinds() {
+		err := checkShowEngineOptions(backend.EngineDM, kind.Short)
+		want := "show " + kind.Short + " is not supported with --engine dm: " + dmShowReason
+		if err == nil || err.Error() != want {
+			t.Errorf("show %s refusal = %v, want %q", kind.Short, err, want)
+		}
+		if !common.IsUsageError(err) {
+			t.Errorf("show %s refusal must exit 2", kind.Short)
+		}
+	}
+
+	// A hand-built config with a spelling the flag parser accepts must hit the
+	// same wall, so the refusal does not depend on how --engine was written.
+	cfg := dmList("events")
+	cfg.Engine = " Dameng "
+	if err := validateListConfig(cfg); err == nil || !strings.Contains(err.Error(), "list events is not supported with --engine dm") {
+		t.Errorf(`--engine " Dameng " must normalise to dm and refuse events, got %v`, err)
+	}
+}
+
+// TestDMOptionsAreAccepted is the other half of the Dameng matrix: what the first
+// cut does serve. Anything dropped from the refusal table has to show up here, so
+// an acceptance is a deliberate claim rather than a deleted row.
+func TestDMOptionsAreAccepted(t *testing.T) {
+	cases := []struct {
+		name string
+		sub  string
+		args []string
+	}{
+		{"export_del", "export", dmExportFlags()},
+		{"export_parquet", "export", dmExportFlags("-f", "parquet", "-o", "/tmp/imex-engine-test.parquet")},
+		{"export_threads_one", "export", dmExportFlags("--threads", "1")},
+		{"export_hex_blob", "export", dmExportFlags("--hex-blob")},
+		{"import_insert", "import", dmImportFlags()},
+		{"import_replace", "import", dmImportFlags("--mode", "replace")},
+		{"import_parquet", "import", dmImportFlags("-f", "parquet", "-i", "/tmp/imex-engine-test.parquet")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := validateOnly(t, c.sub, c.args); err != nil {
+				t.Errorf("dm %s refused %v: %v", c.sub, c.args, err)
+			}
+		})
+	}
+
+	// The charset vocabulary Dameng keeps is MySQL's, so utf8mb4 is accepted and a
+	// name neither engine knows is refused with the engine-level wording.
+	cfg := dmListConfigForCharsetTest()
+	cfg.DefaultCharset = "utf8mb4"
+	if err := validateListConfig(cfg); err != nil {
+		t.Errorf("dm must accept utf8mb4: %v", err)
+	}
+	cfg.DefaultCharset = "nonsense"
+	err := validateListConfig(cfg)
+	if err == nil || !strings.HasPrefix(err.Error(), `invalid --default-charset "nonsense"`) {
+		t.Errorf("dm charset refusal = %v", err)
+	}
+}
+
+func dmListConfigForCharsetTest() *config.ListConfig {
+	cfg := config.NewListConfig()
+	cfg.Engine = "dm"
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 5236
+	cfg.User = "dmprobe"
+	cfg.Password = "pw"
+	cfg.Object = "databases"
+	return cfg
 }

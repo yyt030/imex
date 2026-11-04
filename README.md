@@ -26,7 +26,7 @@
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
-- **双引擎**：`--engine` 取 `mysql`（默认）或 `pg`。PostgreSQL 走 `github.com/jackc/pgx/v5`，支持 `export`/`import` 的 `-f del` 与 `-f parquet`（单线程、`--mode insert`）和 `list` 的七个对象；`show`、`-f sql`、并行、`--session-var` 等 MySQL 专有能力在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
+- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，支持 `export`/`import` 的 `-f del` 与 `-f parquet`（单线程、`--mode insert`）和 `list` 的七个对象；达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，支持 `export`/`import` 的 `-f del` 与 `-f parquet`（单线程、`--mode insert|replace`）和 `list` 的四个对象。`show`、`-f sql`、并行、`--session-var` 等 MySQL 专有能力在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -157,13 +157,13 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 
 | 选项 | 短选项 | 说明 | 环境变量 | 默认值 |
 |------|--------|------|----------|--------|
-| `--engine` | | 数据库引擎：`mysql`（默认）或 `pg`（PostgreSQL，经 `jackc/pgx/v5`），取值不区分大小写、裁两端空白；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节 | 无（刻意不设） | `mysql` |
+| `--engine` | | 数据库引擎：`mysql`（默认）、`pg`（PostgreSQL，经 `jackc/pgx/v5`）或 `dm`（达梦 DM8，经 `gitee.com/chunanyong/dm`，恒以 Oracle 兼容模式连接；`dameng` 是同一个取值的别名），取值不区分大小写、裁两端空白；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节，`dm` 见「达梦引擎」一节 | 无（刻意不设） | `mysql` |
 | `--host` | `-h` | 数据库主机地址 | `IMEX_HOST` | `127.0.0.1` |
-| `--port` | `-P` | TCP/IP 端口（`--engine pg` 时默认 `5432`） | `IMEX_PORT` | `3306` |
-| `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明） | `IMEX_USER` | `root` |
+| `--port` | `-P` | TCP/IP 端口（`--engine pg` 时默认 `5432`，`--engine dm` 时默认 `5236`） | `IMEX_PORT` | `3306` |
+| `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明）；`--engine dm` 时它就是达梦的账号，不能为空，为空在建连之前退出 2 | `IMEX_USER` | `root` |
 | `--password` | `-p` | 数据库密码 | `IMEX_PASSWORD` | 空 |
-| `--database` | `-D` | 数据库名 | `IMEX_DATABASE` | 空 |
-| `--session-var` | | 导出前设置的会话变量（`name=value`，可重复，见下方说明） | | 空 |
+| `--database` | `-D` | 数据库名；`--engine dm` 时它是模式名，既写进驱动的 `schema` 参数，也是目录查询过滤的 `OWNER` | `IMEX_DATABASE` | 空 |
+| `--session-var` | | 导出前设置的会话变量（`name=value`，可重复，见下方说明）；`--engine pg` 与 `--engine dm` 下整个选项被拒（退出 2） | | 空 |
 | `--connect-timeout` | | 建连（TCP dial）超时，落到驱动的 `timeout` | | `5s` |
 | `--socket-read-timeout` | | 单次 socket 读超时，落到驱动的 `readTimeout` | | `300s` |
 | `--socket-write-timeout` | | 单次 socket 写超时，落到驱动的 `writeTimeout` | | `300s` |
@@ -204,7 +204,7 @@ imex export ... --threads 4 \
 
 - 变量以 DSN 附加参数方式注入，驱动会在**每一条新建物理连接**上自动执行对应 `SET`，因此主连接、并行导出的每个分片连接、并行导入的每个工作线程连接都一致生效，不受连接池复用影响。
 - 值按 SQL 字面量自动处理：纯数字与 `ON/OFF/TRUE/FALSE/DEFAULT/NULL` 原样传入，其余加单引号（内部单引号双写）。值中禁止反引号、注释序列（`/*`、`--`）与反斜杠，防止破坏或注入 SET 语句。
-- 变量名须匹配 `[A-Za-z][A-Za-z0-9_]*`；与工具/驱动内部 DSN 参数同名（`charset`、`parseTime`、`tls`、`timeout` 等 29 个）会被拒绝——这份保留清单属于 MySQL 驱动的连接串词汇，由方言层交出（`internal/backend/dsn_mysql.go`），`--engine pg` 下 `--session-var` 整个被拒绝（见下方 PG 一节），因此解析器本身不认识引擎。连接/文件字符集由 `--default-charset` 统一掌管，会话级字符集变量 `character_set_client` / `character_set_connection` / `character_set_results` 同样被拒绝——否则会以会话变量绕过该不变量（如 `character_set_results=gbk` 会转码二进制列造成损坏）。未知变量名会在连接阶段由服务端报错，便于尽早发现拼写错误。
+- 变量名须匹配 `[A-Za-z][A-Za-z0-9_]*`；与工具/驱动内部 DSN 参数同名（`charset`、`parseTime`、`tls`、`timeout` 等 29 个）会被拒绝——这份保留清单属于 MySQL 驱动的连接串词汇，由方言层交出（`internal/backend/dsn_mysql.go`），`--engine pg` 与 `--engine dm` 下 `--session-var` 整个被拒绝（见下方 PG 与达梦两节），因此解析器本身不认识引擎。连接/文件字符集由 `--default-charset` 统一掌管，会话级字符集变量 `character_set_client` / `character_set_connection` / `character_set_results` 同样被拒绝——否则会以会话变量绕过该不变量（如 `character_set_results=gbk` 会转码二进制列造成损坏）。未知变量名会在连接阶段由服务端报错，便于尽早发现拼写错误。
 - 运行日志只打印变量**名**（`names=[sql_mode foreign_key_checks]`），**不打印值**——值可能包含密码/密钥等敏感信息，与失败 SQL 默认脱敏的原则一致。
 
 **字符集与二进制编码（`--default-charset` / `--hex-blob`）：**
@@ -227,7 +227,7 @@ imex export ... --threads 4 \
 | `gbk` / `936` / `1386` | GBK |
 | `gb18030` / `5488` / `1392` | GB18030 |
 
-这 16 个名字是 **MySQL 方言自己的词表**（`internal/backend/charset_mysql.go`，134 轮自 `cmd/validate.go` 下沉），`cmd` 只保留「不认识的字符集」那句文案与它在校验顺序里的位置；`--engine pg` 用的是另一张表，映射到 `client_encoding` 的五个名字（见下方「PostgreSQL 引擎」一节）。
+这 16 个名字是 **MySQL 方言自己的词表**（`internal/backend/charset_mysql.go`，134 轮自 `cmd/validate.go` 下沉），`cmd` 只保留「不认识的字符集」那句文案与它在校验顺序里的位置；`--engine pg` 用的是另一张表，映射到 `client_encoding` 的五个名字（见下方「PostgreSQL 引擎」一节）；`--engine dm` 沿用这 16 个名字做**文件编码**的判定，但连接串里没有对应的字符集参数，服务端一侧的字符集由实例与角色配置决定（见下方「达梦引擎」一节）。
 
 一旦 `--default-charset` 不是 `utf8mb4`，**二进制列（BLOB/BINARY/VARBINARY/BIT 等）自动以 `0x` 十六进制字面量写出**（等价 mysqldump `--hex-blob`）：十六进制为纯 ASCII，既**字符集免疫**（不被连接转码破坏），又**自描述**（读取端凭 `0x` 前缀识别）。DEL 与 SQL 两种文本格式都采用同一 `0x` 表示。可用 `--hex-blob` 强制开启、`--no-hex-blob` 强制关闭（非 utf8mb4 关闭时会打印告警，提示原始字节可能被转码损坏）。默认（utf8mb4、hex 关）下输出与旧行为逐字节一致。
 
@@ -255,7 +255,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--shard-key` | | 分片键列名（空=自动检测主键/唯一键）；**只有并行导出读取并校验它**——显式给出的列在表里不存在时为用法错误、退出码 2，自动检测失败仍回落单线程；`--threads 1` 或并行请求回落到单线程时该值不起作用，运行记一条 `warn` 并在配置记录标 `shard_key_ignored=true`（不改变退出码与产物） | 空 |
 | `--batch-size` | | 读→写交接每批的行数（仅单线程导出流水线；与 `--threads>1` 同时显式给出即用法错误，退出码 2） | `1000` |
 | `--pipeline-buffer` | | 读→写交接队列深度（批数；0=同步交接；仅单线程导出，与 `--threads>1` 同时显式给出即用法错误，退出码 2） | `10` |
-| `--default-charset` | | 连接与输出文件字符集（见上方说明；utf8mb4/utf8/latin1/ascii/gbk/gb18030。`--engine pg` 时它映射为 `client_encoding`，只认五个名字，见「PostgreSQL 引擎」） | `utf8mb4` |
+| `--default-charset` | | 连接与输出文件字符集（见上方说明；utf8mb4/utf8/latin1/ascii/gbk/gb18030。`--engine pg` 时它映射为 `client_encoding`，只认五个名字，见「PostgreSQL 引擎」；`--engine dm` 时它只管产物文件的文本编码，连接串里没有对应参数，见「达梦引擎」） | `utf8mb4` |
 | `--hex-blob` | | 二进制列强制写为 `0x` 十六进制字面量（非 utf8mb4 时自动开启）；仅 DEL/SQL 文本格式，`--format parquet` 下传入报错 | `false` |
 | `--no-hex-blob` | | 强制二进制列原样透传（非 utf8mb4 下可能损坏，会打印告警）；与 `--hex-blob` 互斥；`--format parquet` 下传入报错 | `false` |
 | `--parquet-compression` | | Parquet 页压缩算法（none/snappy/zstd）；仅 `--format parquet`，其它格式下传入报错（退出码 2）。导入无需指定：编解码器记录在文件 footer 里 | `none` |
@@ -302,7 +302,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。`--engine pg` 时 `--session-var` 与 `-f sql` 以及 `--mode create` 会被拒绝（退出码 `2`，见「PostgreSQL 引擎」）；`--mode replace` 与 `--mode insert_update` 与 `--threads` 可用，但 replace 在 pg 侧只是 `DELETE FROM`（没有可关的引用检查）、insert_update 要求表上有一把唯一的键（见下）。
+连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。`--engine pg` 时 `--session-var` 与 `-f sql` 以及 `--mode create` 会被拒绝（退出码 `2`，见「PostgreSQL 引擎」）；`--mode replace` 与 `--mode insert_update` 与 `--threads` 可用，但 replace 在 pg 侧只是 `DELETE FROM`（没有可关的引用检查）、insert_update 要求表上有一把唯一的键（见下）。`--engine dm` 时 `--session-var` 与 `-f sql` 以及 `--mode create`、`--mode insert_update` 全部退出 `2`，可用的是 `-f del|parquet` 的 `--mode insert|replace`（见「达梦引擎」）。
 
 **导入选项：**
 
@@ -372,7 +372,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时八个对象里七个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。对象名就是子命令名：
+`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时八个对象里七个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时四个对象可用（`databases`、`tables`、`columns`、`indexes`），其余四个退出 `2`；`-D` 是模式名，五个系统模式默认排除，`--all` 取消排除（见「达梦引擎」）。对象名就是子命令名：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -444,7 +444,7 @@ imex list tables -u root -p pass -D shop -o /backup/shop_tables.txt
 imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 ```
 
-`show` 打印**一个**对象在服务器上保存的 `CREATE` 语句原文，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。表的建表语句也只在这里取得——`export -f sql` 的产物是纯数据，全工具读 `SHOW CREATE TABLE` 的地方只有 `show tab`。六个 kind 一律三个字母。`show` 整个命令依赖 MySQL 的 `SHOW CREATE` 语句族，因此 `--engine pg` 下六个 kind 全部退出 `2`（PostgreSQL 没有对应语句，即便拼出 DDL 也回放不进 `imex import -f sql`），取定义请用 `pg_dump`：
+`show` 打印**一个**对象在服务器上保存的 `CREATE` 语句原文，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。表的建表语句也只在这里取得——`export -f sql` 的产物是纯数据，全工具读 `SHOW CREATE TABLE` 的地方只有 `show tab`。六个 kind 一律三个字母。`show` 整个命令依赖 MySQL 的 `SHOW CREATE` 语句族，因此 `--engine pg` 下六个 kind 全部退出 `2`（PostgreSQL 没有对应语句，即便拼出 DDL 也回放不进 `imex import -f sql`），取定义请用 `pg_dump`；`--engine dm` 下六个 kind 同样全部退出 `2`（达梦 Oracle 模式不从同一份目录给这些定义，请用你自己的 DDL）：
 
 | kind | 别名（英文全名） | 语句 | 定义所在列 |
 |------|------------------|------|------------|
@@ -586,6 +586,47 @@ imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 **`--default-charset` 在 pg 侧是 `client_encoding`**，只认五个名字：`UTF8`、`LATIN1`、`GBK`、`GB18030`、`SQL_ASCII`（写 `utf8mb4`/`utf8` 会落到 `UTF8`，`latin1`/`iso-8859-1` 落到 `LATIN1`，`gbk`/`936` 落到 `GBK`，`gb18030`/`5488` 落到 `GB18030`，`ascii`/`us-ascii` 落到 `SQL_ASCII`）。表外取值是用法错误、退出 `2`：`invalid --default-charset "nonsense" with --engine pg: PostgreSQL has no such client encoding (supported: utf8mb4, latin1, gbk, gb18030, ascii)`。
 
 **两级命名空间**：PostgreSQL 是「库 + schema」，而一个连接只能进一个库，所以 `-D` 归连接用，对象范围取该角色 `search_path` 的第一个 schema（`current_schema()`）。要换 schema，由连接角色的 `search_path` 决定，工具不加新选项。不给 `-D` 时默认排除 `pg_catalog`、`information_schema`、`pg_toast` 三个系统 schema，`--all` 取消排除。`list` 输出里那一列的名字仍叫 `database`，pg 下它装的是 schema 名。`list columns`/`list indexes` 仍要求 `--database`，与 MySQL 侧同口径。
+
+### 达梦引擎（`--engine dm`）
+
+加 `--engine dm` 即连达梦 DM8（驱动 `gitee.com/chunanyong/dm` v1.8.23，纯 Go、无 CGO，连接串是驱动自己的 `dm://user:password@host:port?k=v`）。这一引擎**恒以 Oracle 兼容模式连接**——DSN 里固定带 `compatibleMode=oracle`，不给开关，也不提供达梦原生模式。默认端口随之变成 `5236`——同样只在命令行没写 `-P`、环境也没给 `IMEX_PORT` 时生效。取值不区分大小写、裁两端空白，`dm`、`DM`、`" dm "` 与别名 `dameng` 是同一台服务器、同一套语句；`postgres`、`oracle`、`dm8` 这类拼法是用法错误退出 `2`（`invalid --engine "dm8": must be one of mysql/pg/dm`）。
+
+> **本轮没有可达的达梦实例**，所以这一节里的一切都是「按达梦官方手册与驱动源码写成、由单元层断言钉住形状」，不是真库往返测出来的。语句的占位符个数与绑定参数逐一对齐、目录视图名、输出列名都有测试兜着，但**首次连真实 DM8 时请按未验证面对待**。v8.1 这条下界是按需求写下的约定，同样没有实测。
+
+```bash
+imex export --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE \
+  -q "SELECT * FROM users" -o /backup/users.del
+imex import --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE \
+  -i /backup/users.del -t users
+imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
+```
+
+**能用的**：`export -f del|parquet`（单线程，任意 `--query`，DEL 布局修饰项照常生效）、`import -f del|parquet` 的 `--mode insert`（出厂默认值）与 `--mode replace`、`list` 的四个对象（`databases`、`tables`、`columns`、`indexes`，`tables` 的 `--type base|view|all` 可用）。`list` 四个对象的输出列名与 MySQL 侧逐列相同，解析表头的下游脚本不必为引擎分叉。导入侧的 `--threads` 不在拒绝之列——多 worker 各自攒批发的是同一句方言 INSERT，与引擎无关；被拒的是导出侧的并行，它的分片语句靠 `MOD()` 与 `LIMIT … OFFSET`。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
+
+`-D` 在达梦上是**模式名**（达梦是「一个角色一个模式」的结构）：它既写进驱动的 `schema` 参数，也是目录查询过滤的 `OWNER`，用 `UPPER(OWNER) = UPPER(?)` 匹配，所以小写给也行。不给 `-D` 时默认排除 `SYS`、`SYSTEM`、`OUTLN`、`SYSMAN`、`DBSNMP` 五个系统模式，`--all` 取消排除。`-u` 不能为空，为空在建连之前退出 `2`（`--user is required for --engine dm`）。标识符用双引号包裹、内部双引号翻倍（`a"b` → `"a""b"`）；Oracle 模式把未加引号的名字折成大写，要保住原名大小写唯有加引号这一条路。
+
+**不能用的**（连库之前就被拦下，退出码 `2`，文案点名原因，形状与 pg 侧一致；这张表同样是方言层的数据，见 `internal/backend/refusals_dameng.go`）：
+
+| 命令 / 选项 | 拒绝理由 |
+|-------------|----------|
+| `show`（六个 kind 全部） | 定义靠 `SHOW CREATE` 语句族取，达梦 Oracle 模式不从同一份目录给这些东西，产物也回放不进 `imex import -f sql`；请用你自己的 DDL |
+| `list` 的 `views`/`triggers`/`routines`/`events` | 这四个对象没对达梦 Oracle 模式目录测过，给不出与 MySQL 同形的列。注意 `list tables --type view` 可用——被拒的是列不齐的那个对象，不是 `DBA_VIEWS` 那张表 |
+| `export/import -f sql` | SQL 写出器发的是 MySQL 反引号与 MySQL 转义文本，达梦读不进去；SQL 解析器同样走 MySQL 语句语法 |
+| `export --threads > 1` | 并行导出的分片没对达梦测过，用 `--threads 1` |
+| `--mode insert_update` | 方言层的 upsert 在达梦上根本没实现，绕过 CLI 直接调库的调用方同样失败 |
+| `--mode create` | 它跑的是 SQL 文件里来自 MySQL dump 的 `CREATE TABLE` 文本，而本工具在达梦侧也导不出那种文本；请自行建表后用 `--mode insert` |
+| `--session-var` | `SET <name>=<value>` 是 MySQL 会话语法，本工具不翻译，请写进服务器或角色的配置 |
+| `--no-hex-blob` | 达梦拒绝文本值里出现 NUL 字节，二进制列恒以 `0x` 十六进制写出，关不掉 |
+
+**取值写法**：Oracle 模式的 `DATE` 带时分秒，因此它按时间戳处理、写成 `2026-01-31 09:26:15`（否则导出会把时间部分丢掉）；`TIMESTAMP` 家族同形后跟最多六位小数、尾零不印，并且**不折成 UTC**——服务器给 `2024-05-06T07:08:09+08:00`，文件里就是 `2024-05-06 07:08:09`。二进制列（`BLOB`/`RAW`/`LONG RAW`/`BINARY`/`VARBINARY`）恒为 `0x…`。NULL 是一个空字段，与 MySQL 侧同一套 DEL 布局规则。
+
+**批次与超时**：占位符是位置 `?`，与 MySQL 同形，攒批 INSERT 每行重复 `(?,?)`；单条语句参数上限 65535。批次字节预算这一维在达梦没有可证的等价物（Oracle 模式没有 `max_allowed_packet` 那种会话可见的语句字节上限），因此取刻意保守的 **4 MiB** 回退值，日志直说按 4 MiB 估——宁可批次小，也不赌服务端会收下更大的语句。超时按驱动自己的单位换算：`--connect-timeout` 进 `connectTimeout`（**毫秒**），`--socket-read-timeout` 向上进位进 `socketTimeout`（**秒**）；`--socket-write-timeout` 在驱动侧没有对应参数，它不改变达梦连接的写超时。
+
+`--mode replace` 在达梦上就是一条 `DELETE FROM "表"`：达梦没有会话级「关掉外键检查」的开关，工具不发也不编造那两句。代价与 pg 侧同性质——被别的表引用的表在清空时由服务端报引用完整性错误、退出 `1`，原行一条不少。
+
+瞬断重试只认驱动自己那四个连接层错误码（`6001` 通信异常、`9007` 未知网络、`9008` 无效连接、`20001` 连接切换失败），其余一律终态；`6001` 这一条是在沙箱里对着无人监听的 5236 端口实测出来的，其余三个照驱动源码收录。负数码与超出 16 位的正码不参与匹配，免得截断后把一条注定失败的语句误判成可重试。
+
+**已知风险**：① 达梦手册言明多行插入「不支持列存储表」，向列存表导入时攒批 INSERT 可能报错——第一版不特化，遇到就原样透传服务端错误；② `V$DM_INI` 与 `DBA_*` 的可见性依角色权限而定，读不到时连接上限与探列各走自己既有的失败路径。
 
 ### 并行导出
 
@@ -1221,18 +1262,24 @@ imex/
 │   │   ├── dsn_mysql.go       # MySQL 连接串构造与 29 个驱动保留参数
 │   │   ├── dberr_mysql.go     # MySQL 瞬态错误码表（7 个码）与取码方式
 │   │   ├── dberr_postgres.go  # PostgreSQL 瞬态 SQLSTATE 表（9 个码）与 `*pgconn.PgError` 取码（134 轮）
+│   │   ├── dberr_dameng.go    # 达梦瞬态码表（4 个驱动连接层码）与 `*dm.DmError` 取码（135 轮）
 │   │   ├── charset_mysql.go   # MySQL 的 16 个 `--default-charset` 名字与 `KnownCharset`（134 轮自 `cmd` 下沉）
 │   │   ├── show_mysql.go      # MySQL 的六条 `SHOW CREATE …` 与定义结果列名（133 轮自 `internal/show` 下沉）
 │   │   ├── refusals.go        # 选项拒绝表的数据形状（`Command`/`RunOptions`/`Refusal`，不含引擎名）
 │   │   ├── refusals_mysql.go  # MySQL 的拒绝表为空、字符集校验恒通过
 │   │   ├── refusals_postgres.go # pg 的选项拒绝表（export 4 / import 3 / list 1 / show 1）与 `client_encoding` 校验
+│   │   ├── refusals_dameng.go # dm 的选项拒绝表（export 4 / import 4 / list 1 / show 1）（135 轮）
+│   │   ├── dsn_dameng.go      # 达梦连接串构造（恒带 `compatibleMode=oracle`）与驱动保留参数表（135 轮）
+│   │   ├── types_dameng.go    # 达梦 Oracle 模式类型词表与二进制列判定（135 轮）
 │   │   ├── types.go           # 类型词 → `common.ColumnKind` 的共享词表与二进制列判定（不含引擎名）
 │   │   ├── mysql.go           # MySQL/MariaDB/OceanBase 方言
 │   │   ├── postgres.go        # PostgreSQL 方言（`$n`、`client_encoding` 表、类型与二进制词表、单元格文本规则）
-│   │   ├── backend_test.go    # 两方言逐字节对照与注册表测试
+│   │   ├── dameng.go          # 达梦 DM8 Oracle 兼容模式方言（`?`、双引号引用、强制 0x hex、保守 4 MiB 批次预算）（135 轮）
+│   │   ├── backend_test.go    # 三方言逐字节对照与注册表测试
 │   │   ├── types_test.go      # 类型词表分类断言
-│   │   ├── dberr_test.go      # 码表归属与两方言瞬态判据断言
+│   │   ├── dberr_test.go      # 码表归属与三方言瞬态判据断言
 │   │   ├── dberr_postgres_test.go # pg 的 9 个瞬态 SQLSTATE、缺席码与 `*pgconn.PgError` 拆包
+│   │   ├── dameng_test.go     # 达梦的时间文本、瞬态码表与 16 位截断防护、upsert 未实现（135 轮）
 │   │   ├── charset_mysql_test.go # MySQL 16 个字符集名字与 `KnownCharset` 的裁空白/折叠
 │   │   ├── dsn_mysql_test.go  # 连接串 golden 与保留参数清单
 │   │   ├── refusals_test.go   # 拒绝表的顺序、触发条件与文案取值
@@ -1281,9 +1328,11 @@ imex/
 │       ├── queries.go           # 对象名与别名顺序、`BuildQuery()` 的引擎分派表（引擎经 `backend.Normalize` 折叠后再选）
 │       ├── queries_mysql.go     # information_schema 查询构建（对象、范围、pattern、type）
 │       ├── queries_pg.go        # `--engine pg` 的同构语句（pg_catalog / information_schema，`$n` 顺序编号）
+│       ├── queries_dameng.go    # `--engine dm` 的同构语句（`SYS.DBA_*` 目录，`?` 顺序占位）（135 轮）
 │       ├── aliases.go           # 对象简写注册表（dbs、tab、trg…）
 │       ├── render.go            # table 对齐输出
 │       ├── queries_test.go      # 查询构建测试
+│       ├── queries_dameng_test.go # 达梦目录查询的分派、列名对齐、`?` 与绑定参数一一对齐、范围与转义（135 轮）
 │       ├── aliases_test.go      # 简写唯一性与注册表隔离测试
 │       └── render_test.go       # 渲染与 NULL/转义测试
 │   └── show/

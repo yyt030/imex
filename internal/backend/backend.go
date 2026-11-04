@@ -35,16 +35,19 @@ const (
 	// and OceanBase, all reached through the MySQL wire protocol.
 	EngineMySQL Engine = "mysql"
 	// EnginePG is PostgreSQL, reached through the PostgreSQL wire protocol via
-	// pgx. Dameng (DM8) was evaluated and is not supported: see the change
-	// record that introduced this package for the measured reasons.
+	// pgx.
 	EnginePG Engine = "pg"
+	// EngineDM is Dameng DM8 in Oracle-compatible mode, reached through the
+	// Dameng Go driver. Only Oracle mode is supported; the MySQL-compatible
+	// mode is out of scope for this first cut.
+	EngineDM Engine = "dm"
 )
 
 // engineOrder is the order --engine values are listed in help text and in the
 // rejection message. It is a slice, not a map, for the same reason the delimiter
 // validation in cmd/validate.go uses one: the order a value is reported in is
 // part of the error-text contract.
-var engineOrder = []Engine{EngineMySQL, EnginePG}
+var engineOrder = []Engine{EngineMySQL, EnginePG, EngineDM}
 
 // Engines returns the accepted --engine values in contract order.
 func Engines() []string {
@@ -64,6 +67,8 @@ func Parse(s string) (Engine, error) {
 		return EngineMySQL, nil
 	case EnginePG:
 		return EnginePG, nil
+	case EngineDM, "dameng":
+		return EngineDM, nil
 	default:
 		return "", errors.Errorf("invalid --engine %q: must be one of %s", s, strings.Join(Engines(), "/"))
 	}
@@ -349,6 +354,7 @@ type Backend interface {
 var backends = map[Engine]Backend{
 	EngineMySQL: mysqlBackend{},
 	EnginePG:    postgresBackend{},
+	EngineDM:    damengBackend{},
 }
 
 // Get returns the backend for one engine. The returned value is a stateless
