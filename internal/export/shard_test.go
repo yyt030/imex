@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"math/big"
 	"testing"
+
+	"github.com/imex/internal/backend"
+	"github.com/imex/internal/common"
 )
 
 // boundaryText renders a range boundary for assertions.
@@ -261,4 +264,43 @@ func TestGenerateShardRanges_NullKeyCoverage(t *testing.T) {
 			t.Errorf("want no ranges (single-threaded fallback), got %d", len(ranges))
 		}
 	})
+}
+
+// TestShardNumericVerdictIsTheDialectVocabulary pins the equivalence that let
+// getShardInfo stop carrying its own word list: every word the old copy accepted
+// is still numeric through Backend.MetadataKind, the words it rejected are still
+// non-numeric, and the three words the dialect adds (dec, real, serial) are type
+// aliases MySQL stores under a base type — MariaDB 10.6.23 reports `decimal`,
+// `double` and `bigint` for them in information_schema.COLUMNS (measured
+// 2026-11-04), so no answer this query can return changes.
+func TestShardNumericVerdictIsTheDialectVocabulary(t *testing.T) {
+	be := backend.Must(backend.EngineMySQL)
+
+	for _, word := range []string{
+		"int", "integer", "tinyint", "smallint", "mediumint",
+		"bigint", "float", "double", "decimal", "numeric",
+	} {
+		if got := be.MetadataKind(word); got != common.KindNumber {
+			t.Errorf("MetadataKind(%q) = %v, want KindNumber (the old list accepted it)", word, got)
+		}
+	}
+
+	// The dialect's superset: aliases that never reach this query, because the
+	// catalogue reports the base type. Asserting them here documents the only
+	// difference between the two lists.
+	for _, word := range []string{"dec", "real", "serial"} {
+		if got := be.MetadataKind(word); got != common.KindNumber {
+			t.Errorf("MetadataKind(%q) = %v, want KindNumber (dialect alias)", word, got)
+		}
+	}
+
+	for _, word := range []string{
+		"varchar", "char", "text", "longtext", "blob", "longblob", "binary",
+		"varbinary", "date", "time", "datetime", "timestamp", "year", "json",
+		"enum", "set", "bit", "geometry",
+	} {
+		if got := be.MetadataKind(word); got == common.KindNumber {
+			t.Errorf("MetadataKind(%q) = KindNumber, want non-numeric", word)
+		}
+	}
 }

@@ -453,7 +453,7 @@ imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 | `prc` | `procedure` | `SHOW CREATE PROCEDURE` | `Create Procedure` |
 | `fcn` | `function` | `SHOW CREATE FUNCTION` | `Create Function` |
 
-三个字母与全名等价（`imex show table x` 与 `imex show tab x` 逐字节相同），大小写敏感。定义文本按服务器给的原样输出，工具只补一个终止符 `;\n`——`SHOW CREATE` 不返回终止符，而 `imex import -f sql` 读的是以 `;` 结尾的语句。列位置在六种语句间并不固定（表与视图第 2 列，触发器第 3 列，事件第 4 列，存储过程与函数第 3 列），因此按列名取值，取不到时退化为「第一个以 `CREATE` 开头的值」，绝不把 `sql_mode` 或 `time_zone` 当定义输出。
+三个字母与全名等价（`imex show table x` 与 `imex show tab x` 逐字节相同），大小写敏感。上表的「语句」与「定义所在列」两列是方言数据（`internal/backend/show_mysql.go`，经 `Backend.ShowDefinition` 取得）：pg 一张空表，所以整条命令在连库前就被拒。定义文本按服务器给的原样输出，工具只补一个终止符 `;\n`——`SHOW CREATE` 不返回终止符，而 `imex import -f sql` 读的是以 `;` 结尾的语句。列位置在六种语句间并不固定（表与视图第 2 列，触发器第 3 列，事件第 4 列，存储过程与函数第 3 列），因此按列名取值，取不到时退化为「第一个以 `CREATE` 开头的值」，绝不把 `sql_mode` 或 `time_zone` 当定义输出。
 
 `information_schema` 被刻意排除：`TRIGGERS.ACTION_STATEMENT` 只有函数体没有触发器头，`ROUTINES.ROUTINE_DEFINITION` 丢参数列表与 `RETURNS`，`VIEWS.VIEW_DEFINITION` 是解析后的规范化文本——都不足以重建对象。
 
@@ -1215,9 +1215,10 @@ imex/
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
 │   ├── backend/
-│   │   ├── backend.go         # 方言接口（32 个方法）、`--engine` 取值解析与折叠（`Parse`/`Normalize`）与 `backends` 注册表
+│   │   ├── backend.go         # 方言接口（33 个方法）、`--engine` 取值解析与折叠（`Parse`/`Normalize`）与 `backends` 注册表
 │   │   ├── dsn_mysql.go       # MySQL 连接串构造与 29 个驱动保留参数
 │   │   ├── dberr_mysql.go     # MySQL 瞬态错误码表（7 个码）与取码方式
+│   │   ├── show_mysql.go      # MySQL 的六条 `SHOW CREATE …` 与定义结果列名（133 轮自 `internal/show` 下沉）
 │   │   ├── refusals.go        # 选项拒绝表的数据形状（`Command`/`RunOptions`/`Refusal`，不含引擎名）
 │   │   ├── refusals_mysql.go  # MySQL 的拒绝表为空、字符集校验恒通过
 │   │   ├── refusals_postgres.go # pg 的选项拒绝表（export 4 / import 3 / list 1 / show 1）与 `client_encoding` 校验
@@ -1228,7 +1229,8 @@ imex/
 │   │   ├── types_test.go      # 类型词表分类断言
 │   │   ├── dberr_test.go      # 码表归属与两方言瞬态判据断言
 │   │   ├── dsn_mysql_test.go  # 连接串 golden 与保留参数清单
-│   │   └── refusals_test.go   # 拒绝表的顺序、触发条件与文案取值
+│   │   ├── refusals_test.go   # 拒绝表的顺序、触发条件与文案取值
+│   │   └── show_mysql_test.go # 六条定义语句与结果列名的逐字断言、pg 侧空回答（133 轮）
 │   ├── config/
 │   │   ├── config.go            # 配置定义与默认值（连接/超时/字符集/DelModifier/导出导入选项）
 │   │   ├── list.go              # list 配置与输出格式枚举

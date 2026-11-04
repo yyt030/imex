@@ -9,6 +9,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 )
 
@@ -59,24 +60,27 @@ const schemaFilter = "TABLE_SCHEMA = COALESCE(NULLIF(?, ''), DATABASE())"
 
 // DetectShardKey detects the best column(s) for sharding
 // Priority: PRIMARY KEY > UNIQUE KEY > first indexed column
-func DetectShardKey(db *sql.DB, target shardTarget, preferKey string) (*ShardInfo, error) {
+//
+// be is the dialect the run resolved: the type vocabulary that decides whether a
+// shard key is numeric belongs to the engine, not to this package.
+func DetectShardKey(db *sql.DB, be backend.Backend, target shardTarget, preferKey string) (*ShardInfo, error) {
 	// If user specified a shard key, use it (single column)
 	if preferKey != "" {
-		return getShardInfo(db, target, []string{preferKey})
+		return getShardInfo(db, be, target, []string{preferKey})
 	}
 
 	// Try to find PRIMARY KEY (may be composite)
 	pkCols, err := findPrimaryKey(db, target)
 	if err == nil && len(pkCols) > 0 {
 		common.Logger.Debug("using primary key for sharding", "columns", pkCols)
-		return getShardInfo(db, target, pkCols)
+		return getShardInfo(db, be, target, pkCols)
 	}
 
 	// Try to find any UNIQUE KEY (may be composite)
 	ukCols, err := findUniqueKey(db, target)
 	if err == nil && len(ukCols) > 0 {
 		common.Logger.Debug("using unique key for sharding", "columns", ukCols)
-		return getShardInfo(db, target, ukCols)
+		return getShardInfo(db, be, target, ukCols)
 	}
 
 	return nil, errors.Errorf("no suitable shard key found for table %s", target.display())
@@ -158,7 +162,7 @@ func findUniqueKey(db *sql.DB, target shardTarget) ([]string, error) {
 }
 
 // getShardInfo gets shard information for specific column(s)
-func getShardInfo(db *sql.DB, target shardTarget, columnNames []string) (*ShardInfo, error) {
+func getShardInfo(db *sql.DB, be backend.Backend, target shardTarget, columnNames []string) (*ShardInfo, error) {
 	if len(columnNames) == 0 {
 		return nil, errors.New("no columns provided")
 	}
@@ -191,13 +195,13 @@ func getShardInfo(db *sql.DB, target shardTarget, columnNames []string) (*ShardI
 		info.ColumnTypes[i] = colType
 		info.Nullable[i] = strings.EqualFold(isNullable, "YES")
 
-		// Determine if numeric
-		numericTypes := map[string]bool{
-			"int": true, "integer": true, "tinyint": true, "smallint": true,
-			"mediumint": true, "bigint": true, "float": true, "double": true,
-			"decimal": true, "numeric": true,
-		}
-		info.IsNumeric[i] = numericTypes[strings.ToLower(colType)]
+		// Determine if numeric. The type vocabulary is the dialect's, so the answer
+		// comes from Backend.MetadataKind rather than from a list of words copied
+		// into this package: MySQL's information_schema reports the base type
+		// (`double` for a REAL column, `decimal` for DEC/NUMERIC/FIXED, `bigint`
+		// for SERIAL), so the wider table behind MetadataKind cannot change an
+		// answer this query can return — measured on MariaDB 10.6.23.
+		info.IsNumeric[i] = be.MetadataKind(colType) == common.KindNumber
 	}
 
 	// Get min/max values for all columns

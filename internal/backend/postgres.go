@@ -354,6 +354,13 @@ func (postgresBackend) UpsertNeedsTarget() bool { return true }
 // silently detached.
 func (postgresBackend) FKCheckToggle() (off, on string) { return "", "" }
 
+// ShowDefinition has no rows: PostgreSQL has no SHOW CREATE, and the equivalents
+// (pg_get_functiondef, pg_index, a view's stored definition) would have to be
+// re-imported by --mode create through the SQL reader this engine also refuses.
+// cmd refuses every `imex show` kind before it dials (Refusals(CmdShow)), so this
+// answer is only reached by a library caller.
+func (postgresBackend) ShowDefinition(string) (string, string, bool) { return "", "", false }
+
 // SnapshotSteps opens the read transaction. PostgreSQL has no
 // START TRANSACTION WITH CONSISTENT SNAPSHOT (it is a MySQL/MariaDB extension),
 // but a plain BEGIN at REPEATABLE READ already gives the same guarantee: the

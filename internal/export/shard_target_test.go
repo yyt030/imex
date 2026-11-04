@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/pkg/errors"
+
+	"github.com/imex/internal/backend"
 )
 
 // shardTarget decides which table the parallel path measures: the key it shards
@@ -247,7 +249,7 @@ func TestDetectShardKey_ReadsTheSchemaTheQueryNamed(t *testing.T) {
 	f := baseTargetFake()
 	db := newTargetDB(t, f)
 
-	info, err := DetectShardKey(db, shardTarget{schema: "other", table: "t"}, "")
+	info, err := DetectShardKey(db, backend.Must(backend.EngineMySQL), shardTarget{schema: "other", table: "t"}, "")
 	if err != nil {
 		t.Fatalf("DetectShardKey: %v", err)
 	}
@@ -273,7 +275,7 @@ func TestDetectShardKey_BareQueryKeepsTheConnectionDatabase(t *testing.T) {
 	f := baseTargetFake()
 	db := newTargetDB(t, f)
 
-	if _, err := DetectShardKey(db, shardTarget{table: "t"}, ""); err != nil {
+	if _, err := DetectShardKey(db, backend.Must(backend.EngineMySQL), shardTarget{table: "t"}, ""); err != nil {
 		t.Fatalf("DetectShardKey: %v", err)
 	}
 
@@ -300,7 +302,7 @@ func TestDetectShardKey_ExplicitShardKeyIsScopedToo(t *testing.T) {
 	f := baseTargetFake()
 	db := newTargetDB(t, f)
 
-	if _, err := DetectShardKey(db, shardTarget{schema: "other", table: "t"}, "id"); err != nil {
+	if _, err := DetectShardKey(db, backend.Must(backend.EngineMySQL), shardTarget{schema: "other", table: "t"}, "id"); err != nil {
 		t.Fatalf("DetectShardKey: %v", err)
 	}
 	if got := f.callsFor("KEY_COLUMN_USAGE"); len(got) != 0 {
@@ -318,7 +320,7 @@ func TestDetectShardKey_ErrorNamesTheQualifiedTable(t *testing.T) {
 	f.ukCols = nil
 	db := newTargetDB(t, f)
 
-	_, err := DetectShardKey(db, shardTarget{schema: "other", table: "t"}, "")
+	_, err := DetectShardKey(db, backend.Must(backend.EngineMySQL), shardTarget{schema: "other", table: "t"}, "")
 	if err == nil {
 		t.Fatal("DetectShardKey succeeded without any key")
 	}

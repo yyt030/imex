@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+
+	"github.com/imex/internal/backend"
 )
 
 func TestKindRegistryIsConsistent(t *testing.T) {
@@ -12,6 +14,7 @@ func TestKindRegistryIsConsistent(t *testing.T) {
 		t.Fatalf("kinds = %d, want 6", len(kinds))
 	}
 
+	be := backend.Must(backend.EngineMySQL)
 	wantShort := []string{"tab", "vws", "trg", "evt", "prc", "fcn"}
 	wantFull := []string{"table", "view", "trigger", "event", "procedure", "function"}
 	shorts := map[string]bool{}
@@ -28,10 +31,17 @@ func TestKindRegistryIsConsistent(t *testing.T) {
 		if len(k.Short) != 3 {
 			t.Errorf("kind %q: short name must be 3 letters, got %d", k.Short, len(k.Short))
 		}
-		if !strings.HasPrefix(k.Statement, "SHOW CREATE ") {
-			t.Errorf("kind %q: statement = %q", k.Short, k.Statement)
+		// The statement and the result column are the dialect's now (round 133);
+		// what this package still owns is the CLI vocabulary, and every kind it
+		// registers has to be one the engine can actually print.
+		stmt, column, ok := be.ShowDefinition(k.Full)
+		if !ok {
+			t.Errorf("kind %q: engine %s has no definition statement", k.Short, be.Engine())
 		}
-		if k.DefinitionColumn == "" {
+		if !strings.HasPrefix(stmt, "SHOW CREATE ") {
+			t.Errorf("kind %q: statement = %q", k.Short, stmt)
+		}
+		if column == "" {
 			t.Errorf("kind %q: no definition column", k.Short)
 		}
 		if shorts[k.Short] || fulls[k.Full] {
@@ -138,30 +148,21 @@ func TestScanQuoted(t *testing.T) {
 	}
 }
 
-func TestQuoteIdent(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"users", "`users`"},
-		{"we`ird", "`we``ird`"},
-		{"`", "````"},
-		{"a b", "`a b`"},
-	}
-	for _, tc := range cases {
-		if got := quoteIdent(tc.in); got != tc.want {
-			t.Errorf("quoteIdent(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
+// The identifier quoting that used to live here is Backend.QuoteIdent now and is
+// pinned in internal/backend/backend_test.go for both dialects; what stays here is
+// the composition that adds the schema qualifier.
 
 func TestQualify(t *testing.T) {
-	if got := qualify("", "users"); got != "`users`" {
+	be := backend.Must(backend.EngineMySQL)
+	if got := qualify(be, "", "users"); got != "`users`" {
 		t.Errorf("unqualified = %q", got)
 	}
-	if got := qualify("mydb", "users"); got != "`mydb`.`users`" {
+	if got := qualify(be, "mydb", "users"); got != "`mydb`.`users`" {
 		t.Errorf("qualified = %q", got)
 	}
 	// A name carrying a backquote must not be able to close its own quoted span
 	// and append statements to the SHOW.
-	if got := qualify("a", "x`; DROP TABLE t"); !strings.HasSuffix(got, "``; DROP TABLE t`") {
+	if got := qualify(be, "a", "x`; DROP TABLE t"); !strings.HasSuffix(got, "``; DROP TABLE t`") {
 		t.Errorf("escaping failed: %q", got)
 	}
 }
@@ -178,12 +179,13 @@ func TestSplitAndQualifyRoundTrip(t *testing.T) {
 		{"`we``ird`.`x`", "`we``ird`.`x`"},
 		{"`a.b`", "`a.b`"},
 	}
+	be := backend.Must(backend.EngineMySQL)
 	for _, tc := range cases {
 		schema, object := SplitName(tc.raw)
 		if object == "" {
 			t.Fatalf("SplitName(%q) lost the object name", tc.raw)
 		}
-		if got := qualify(schema, object); got != tc.want {
+		if got := qualify(be, schema, object); got != tc.want {
 			t.Errorf("SplitName(%q) then qualify = %q, want %q", tc.raw, got, tc.want)
 		}
 	}
@@ -240,11 +242,11 @@ func TestPickDefinition(t *testing.T) {
 	}
 	for _, tc := range shapes {
 		t.Run(tc.name, func(t *testing.T) {
-			kind, ok := Lookup(tc.name)
+			_, column, ok := backend.Must(backend.EngineMySQL).ShowDefinition(tc.name)
 			if !ok {
-				t.Fatalf("no kind named %q", tc.name)
+				t.Fatalf("engine has no definition statement for %q", tc.name)
 			}
-			got, ok := pickDefinition(tc.columns, tc.values, kind.DefinitionColumn)
+			got, ok := pickDefinition(tc.columns, tc.values, column)
 			if !ok {
 				t.Fatalf("no definition found in %v", tc.columns)
 			}

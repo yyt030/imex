@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 	"github.com/imex/internal/export"
@@ -180,7 +181,7 @@ func (e *liveEnv) dumpWithDDL(t *testing.T, table, output string) {
 	showCfg.Config = e.base
 	showCfg.Object = table
 	var ddl bytes.Buffer
-	if _, err := show.Run(context.Background(), e.db, kind, showCfg, &ddl); err != nil {
+	if _, err := show.Run(context.Background(), e.db, backend.Must(backend.EngineMySQL), kind, showCfg, &ddl); err != nil {
 		t.Fatalf("show tab %s: %v", table, err)
 	}
 

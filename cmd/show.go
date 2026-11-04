@@ -143,7 +143,7 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 	}
 
 	sink := newResultSink(cfg.Output, cfg.NoOverwrite, cmd.OutOrStdout())
-	written, err := show.Run(cmd.Context(), db, kind, cfg, sink)
+	written, err := show.Run(cmd.Context(), db, backend.Must(e), kind, cfg, sink)
 	if err != nil {
 		return errors.Wrapf(err, "show %s failed", kind.Short)
 	}

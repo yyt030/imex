@@ -279,6 +279,19 @@ type Backend interface {
 	// IMEX_PORT named one.
 	DefaultPort() int
 
+	// ShowDefinition names the statement and the result column that print one
+	// schema object's definition, keyed by the object word the CLI uses ("table",
+	// "view", "trigger", "event", "procedure", "function"). ok is false for an
+	// engine that has no such statement; its table is empty because cmd refuses
+	// the command first (Refusals(CmdShow)) and the refusal, not a half-statement,
+	// is the operator's answer.
+	//
+	// The statement is server-visible SQL (contract face ⑤) and the row shape it
+	// returns is the server's, which is why both live here: before round 133
+	// internal/show carried MySQL's six statements itself, so a second engine could
+	// only be taught by editing the command package.
+	ShowDefinition(object string) (statement, column string, ok bool)
+
 	// Refusals returns, in reporting order, the options of one command this engine
 	// cannot serve. cmd folds the run's flag values and the two presence-only facts
 	// into a RunOptions and returns the first rule the run trips; an engine with an

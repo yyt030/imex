@@ -23,40 +23,39 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
 
 // Kind is one object type `show` can print.
+//
+// It carries the CLI vocabulary only: the SHOW statement and the result column
+// that carries the definition are the engine's (Backend.ShowDefinition), because
+// they are server-visible SQL and a dialect that has no such statement has to be
+// able to say so. Keeping them here made this package the second place a new
+// engine had to be taught, and `show` the one command the dialect layer could not
+// answer for.
 type Kind struct {
 	// Short is the three-letter name the CLI registers as the subcommand, and the
 	// name help text and error messages use.
 	Short string
 
 	// Full is the English word kept as an alias, so `show table` and `show tab`
-	// parse to the same command exactly like `list tables` and `list tab`.
+	// parse to the same command exactly like `list tables` and `list tab`. It is
+	// also the key the dialect table is looked up by.
 	Full string
-
-	// Statement is the SHOW statement prefix; the qualified object name is
-	// appended to it.
-	Statement string
-
-	// DefinitionColumn names the result column that carries the definition text.
-	// The position is NOT stable across the six statements — measured on MariaDB
-	// 10.6.23: table and view return it second, trigger and routine third, event
-	// fourth — so it is selected by name, with a value-shape fallback below.
-	DefinitionColumn string
 }
 
 // kindOrder is the registration order, and the order the parent command lists in
 // its help and in its "unknown kind" message.
 var kindOrder = []Kind{
-	{Short: "tab", Full: "table", Statement: "SHOW CREATE TABLE", DefinitionColumn: "Create Table"},
-	{Short: "vws", Full: "view", Statement: "SHOW CREATE VIEW", DefinitionColumn: "Create View"},
-	{Short: "trg", Full: "trigger", Statement: "SHOW CREATE TRIGGER", DefinitionColumn: "SQL Original Statement"},
-	{Short: "evt", Full: "event", Statement: "SHOW CREATE EVENT", DefinitionColumn: "Create Event"},
-	{Short: "prc", Full: "procedure", Statement: "SHOW CREATE PROCEDURE", DefinitionColumn: "Create Procedure"},
-	{Short: "fcn", Full: "function", Statement: "SHOW CREATE FUNCTION", DefinitionColumn: "Create Function"},
+	{Short: "tab", Full: "table"},
+	{Short: "vws", Full: "view"},
+	{Short: "trg", Full: "trigger"},
+	{Short: "evt", Full: "event"},
+	{Short: "prc", Full: "procedure"},
+	{Short: "fcn", Full: "function"},
 }
 
 // Kinds returns the accepted kinds in help order. The slice is a copy, so a
@@ -152,19 +151,15 @@ func unquoteIdent(s string) string {
 
 // qualify renders the object reference the SHOW statement targets. An empty
 // schema leaves the name unqualified, which makes the server resolve it in the
-// connection's own database.
-func qualify(schema, object string) string {
-	name := quoteIdent(object)
+// connection's own database. The quoting is the dialect's (Backend.QuoteIdent),
+// so an engine that spells identifiers another way gets its own spelling instead
+// of this package's backquotes.
+func qualify(be backend.Backend, schema, object string) string {
+	name := be.QuoteIdent(object)
 	if schema != "" {
-		name = quoteIdent(schema) + "." + name
+		name = be.QuoteIdent(schema) + "." + name
 	}
 	return name
-}
-
-// quoteIdent backquotes one identifier, doubling any backquote inside it so a
-// name cannot end the quoted span and carry a statement of its own.
-func quoteIdent(s string) string {
-	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }
 
 // Run prints the definition of the single object cfg names to out. It returns
@@ -172,8 +167,16 @@ func quoteIdent(s string) string {
 //
 // Like `list`, the statement is recorded through common.LogInteractionSQL before
 // it goes out, so a default-level log shows what was asked of the server.
-func Run(ctx context.Context, db *sql.DB, kind Kind, cfg *config.ShowConfig, out io.Writer) (int, error) {
-	stmt := kind.Statement + " " + qualify(cfg.Schema, cfg.Object)
+func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *config.ShowConfig, out io.Writer) (int, error) {
+	statement, column, ok := be.ShowDefinition(kind.Full)
+	if !ok {
+		// Unreachable through the CLI: cmd asks Refusals(CmdShow) before it dials,
+		// so an engine with no definition statement never gets here. The branch is
+		// for a library caller and for a future dialect whose table is still empty:
+		// a refusal, not a statement with no verb.
+		return 0, errors.Errorf("show %s is not supported by engine %s", kind.Full, be.Engine())
+	}
+	stmt := statement + " " + qualify(be, cfg.Schema, cfg.Object)
 	common.LogInteractionSQL(stmt)
 
 	rows, err := db.QueryContext(ctx, common.TagSQL(stmt))
@@ -187,13 +190,13 @@ func Run(ctx context.Context, db *sql.DB, kind Kind, cfg *config.ShowConfig, out
 		return 0, errors.Wrap(err, "failed to read definition columns")
 	}
 	if len(columns) < 2 {
-		return 0, errors.Errorf("%s returned no definition column", kind.Statement)
+		return 0, errors.Errorf("%s returned no definition column", statement)
 	}
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
 			return 0, errors.Wrap(err, "definition query failed")
 		}
-		return 0, errors.Errorf("no %s found: %s", kind.Full, qualify(cfg.Schema, cfg.Object))
+		return 0, errors.Errorf("no %s found: %s", kind.Full, qualify(be, cfg.Schema, cfg.Object))
 	}
 
 	values := make([]sql.NullString, len(columns))
@@ -205,9 +208,9 @@ func Run(ctx context.Context, db *sql.DB, kind Kind, cfg *config.ShowConfig, out
 		return 0, errors.Wrap(err, "failed to read definition row")
 	}
 
-	definition, ok := pickDefinition(columns, values, kind.DefinitionColumn)
+	definition, ok := pickDefinition(columns, values, column)
 	if !ok {
-		return 0, errors.Errorf("%s returned no definition column (columns: %s)", kind.Statement, strings.Join(columns, ", "))
+		return 0, errors.Errorf("%s returned no definition column (columns: %s)", statement, strings.Join(columns, ", "))
 	}
 
 	text := definition + ";\n"

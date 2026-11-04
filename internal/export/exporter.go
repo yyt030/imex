@@ -579,7 +579,7 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 	// refused request, not a hint: silently exporting single-threaded would report
 	// success while dropping the instruction, and the user would see a run that is
 	// several times slower with no reason. Auto-detection keeps its fallback.
-	shardInfo, err := DetectShardKey(e.db, target, e.config.ShardKey)
+	shardInfo, err := DetectShardKey(e.db, e.backend(), target, e.config.ShardKey)
 	if err != nil {
 		if e.config.ShardKey != "" {
 			return common.Usagef("invalid --shard-key %q for table %q: %v", e.config.ShardKey, target.display(), err)

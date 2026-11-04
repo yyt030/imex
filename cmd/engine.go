@@ -95,11 +95,12 @@ func checkEngineRefusals(e backend.Engine, c backend.Command, o backend.RunOptio
 	return nil
 }
 
-// checkCharsetForEngine resolves --default-charset against the engine. MySQL
-// sends SET NAMES with it; PostgreSQL takes it as the connection's
-// client_encoding, which has fewer names available. validateCharset has already
-// accepted the value by the time this runs, so what is reported here is a charset
-// that exists but has no counterpart on the other side.
+// checkCharsetForEngine asks the engine whether --default-charset means anything
+// there. The name list and the message are the dialect's (Backend.ValidateCharset,
+// which is where the per-engine spelling lives); the error is relabelled just below
+// so a bad option value still exits 2. validateCharset has already accepted the
+// value by the time this runs, so what can be reported here is a charset that
+// exists but has no counterpart on this engine.
 func checkCharsetForEngine(e backend.Engine, charset string) error {
 	if err := backend.Must(e).ValidateCharset(charset); err != nil {
 		// Re-labelled as a usage error: the name lives in the backend's vocabulary,
@@ -114,9 +115,9 @@ func checkCharsetForEngine(e backend.Engine, charset string) error {
 // the order a run reports them: the output format first (it decides which writer
 // the other options belong to), then parallelism, then session settings.
 //
-// What is left working is the point of the increment: a single-threaded DEL or
-// Parquet dump of any SELECT, with the tool's own delimiters, escaping and NULL
-// spelling, read through the same sql.RawBytes pipeline MySQL uses.
+// The rules, their order and their reasons live in the dialect
+// (refusals_postgres.go); this function only folds the run's flags into one
+// backend.RunOptions, because cobra's flag state cannot cross into that package.
 func checkExportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.ExportConfig) error {
 	o := backend.RunOptions{
 		Format:     cfg.Format,
@@ -130,14 +131,13 @@ func checkExportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.
 	return checkCharsetForEngine(e, cfg.DefaultCharset)
 }
 
-// checkImportEngineOptions rejects the import options --engine pg cannot serve.
+// checkImportEngineOptions folds the import run into backend.RunOptions and asks
+// the dialect which option it refuses.
 //
-// Only --mode create is refused, and for a reason the mode switch cannot fix: the
-// DDL comes out of the MySQL dump reader, which this engine refuses on the other
-// side of the same chain (see checkShowEngineOptions). --mode replace empties the
-// table with DELETE, which both engines parse, and the referential-check toggle
-// that MySQL wraps around it is now the backend's to supply — PostgreSQL has no
-// such session setting and gets no statement rather than a failing one.
+// Only --mode create trips a rule, and the reason lives with the rule
+// (refusals_postgres.go). What is deliberately still allowed is the other two
+// modes: --mode replace empties the table with DELETE, which both engines parse,
+// and the referential-check toggle around it is the backend's to supply or omit;
 // --mode insert_update builds an ON CONFLICT whose target the importer reads out
 // of the catalogue instead of guessing.
 func checkImportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.ImportConfig) error {
@@ -152,13 +152,11 @@ func checkImportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.
 	return checkCharsetForEngine(e, cfg.DefaultCharset)
 }
 
-// checkListEngineOptions rejects the object types --engine pg cannot enumerate.
-//
-// The other seven come from the PostgreSQL catalogue instead of
-// information_schema (internal/list/queries_pg.go), with the same column names and
-// the same --pattern and --all behaviour. Events are the one object MySQL has that
-// PostgreSQL does not have at all, so there is nothing to report rather than an
-// empty list that reads like a database without schedules.
+// checkListEngineOptions folds the requested object into backend.RunOptions. One
+// object is refused on PostgreSQL (events), and the reason travels with that rule
+// in refusals_postgres.go; the other seven are answered from the PostgreSQL
+// catalogue in internal/list/queries_pg.go with the same columns and the same
+// --pattern/--all behaviour.
 func checkListEngineOptions(e backend.Engine, cfg *config.ListConfig) error {
 	o := backend.RunOptions{Object: cfg.Object}
 	if err := checkEngineRefusals(e, backend.CmdList, o); err != nil {
@@ -167,13 +165,8 @@ func checkListEngineOptions(e backend.Engine, cfg *config.ListConfig) error {
 	return checkCharsetForEngine(e, cfg.DefaultCharset)
 }
 
-// checkShowEngineOptions refuses every `imex show` kind on --engine pg.
-//
-// A definition is not a row: SHOW CREATE TABLE produces MySQL DDL, and the
-// PostgreSQL equivalents (pg_get_functiondef, pg_index, a view's stored definition)
-// would have to be re-imported by --mode create through the SQL reader this engine
-// also refuses. Until both halves exist, the honest answer is that the tool does
-// not do it, and pg_dump does.
+// checkShowEngineOptions refuses every `imex show` kind on --engine pg. The reason
+// is one rule in refusals_postgres.go, next to the other dialect-owned refusals.
 //
 // The charset is not checked here: `show` validates it in validateShowConfig, after
 // this refusal, and moving it would change which message a doubly-invalid run gets.

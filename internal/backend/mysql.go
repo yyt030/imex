@@ -25,11 +25,12 @@ func (mysqlBackend) Engine() Engine { return EngineMySQL }
 // --default-charset, parseTime, interpolateParams, session-variable and timeout
 // decisions live.
 //
-// The driver registers itself in this package and nowhere else: dsn_mysql.go is the
-// only file that imports go-sql-driver/mysql, and postgres.go does the same with
-// pgx's database/sql wrapper (a blank import). That symmetry is why internal/export
-// and internal/import carry no driver import of their own — a command that opens a
-// connection must name an engine, never a driver.
+// The driver registers itself in this package and nowhere else: dsn_mysql.go and
+// dberr_mysql.go are the two files that import go-sql-driver/mysql (the DSN builder
+// and the server code table, split apart in round 132), and postgres.go does the
+// same with pgx's database/sql wrapper (a blank import). That symmetry is why
+// internal/export and internal/import carry no driver import of their own — a
+// command that opens a connection must name an engine, never a driver.
 func (mysqlBackend) Open(cfg *config.Config) (*sql.DB, error) {
 	return sql.Open("mysql", buildMySQLDSN(cfg))
 }
