@@ -625,6 +625,17 @@ func (postgresBackend) CellFixups(colTypes []*sql.ColumnType) []func([]byte) []b
 	return fixups
 }
 
+// BindFixups returns a nil adapter for every column. PostgreSQL's own text
+// parser takes the file's decimal text for numeric and integer targets, and the
+// payload shapes that need adapting on Dameng are already classified as binary
+// here (bytea), so the readers hand over bytes and the driver sends them as
+// bytes. `bit` and `varbit` deliberately stay out of that binary class — the
+// note above IsPostgresBinaryType records why a byte slice is the wrong answer
+// for them and their text is what belongs in the placeholder.
+func (postgresBackend) BindFixups(dataTypes []string) []func(interface{}) interface{} {
+	return make([]func(interface{}) interface{}, len(dataTypes))
+}
+
 // pgFloatText re-renders a float the way PostgreSQL does. Two differences are
 // measured: a REAL (float4) arrives widened to float64, so 3.14 comes through as
 // "3.140000104904175" where the server prints "3.14" — reformatting at 32-bit

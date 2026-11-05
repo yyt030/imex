@@ -1,11 +1,14 @@
 package _import
 
 import (
-	"github.com/pkg/errors"
 	"io"
 	"os"
 
+	"github.com/pkg/errors"
+
 	"github.com/parquet-go/parquet-go"
+
+	"github.com/imex/internal/common"
 )
 
 // ParquetReader reads data in Parquet format.
@@ -23,6 +26,19 @@ type ParquetReader struct {
 	// binaryCols marks, per file position, the columns that hold raw bytes.
 	// Everything else is bound as text. See SetBinaryColumns.
 	binaryCols []bool
+
+	// kinds marks, per file position, the target column's type kind. Only
+	// KindTimestampTZ is acted on today — see SetColumnKinds.
+	kinds []common.ColumnKind
+
+	// binds holds the target engine's value adapter per file position, from
+	// backend.BindFixups; nil entries (and every other engine) leave the value
+	// exactly as it was read. See SetBindFixups.
+	binds []func(interface{}) interface{}
+
+	// rawCols marks, per file position, the columns whose own content the file
+	// says is bytes rather than annotated text. See rawColumnsOf.
+	rawCols []bool
 }
 
 // NewParquetReader creates a new Parquet format reader.
@@ -54,7 +70,8 @@ func NewParquetReader(file *os.File) (rdr *ParquetReader, err error) {
 
 	reader := parquet.NewReader(file)
 
-	fields := reader.Schema().Fields()
+	schema := reader.Schema()
+	fields := schema.Fields()
 	columns := make([]string, len(fields))
 	for i, field := range fields {
 		columns[i] = field.Name()
@@ -68,10 +85,47 @@ func NewParquetReader(file *os.File) (rdr *ParquetReader, err error) {
 		file:    file,
 		reader:  reader,
 		columns: columns,
+		rawCols: rawColumnsOf(schema, columns),
 		rowBuf:  nil,
 		bufIdx:  0,
 		bufSize: 1000,
 	}, nil
+}
+
+// rawColumnsOf asks the file which of its byte-array columns carry content bytes
+// rather than annotated text. imex writes a binary column as a plain BYTE_ARRAY
+// leaf and a text column as parquet.String(), so the presence of a logical type
+// is the file's own statement about its bytes — which no target table can say,
+// because the same file may be loaded into a column of any type.
+//
+// A file whose leaves do not line up one per column (a nested schema) gets all
+// false: nothing is known about its annotations from here, and reading it as
+// text is what this reader has always done.
+func rawColumnsOf(schema *parquet.Schema, columns []string) []bool {
+	paths := schema.Columns()
+	if len(paths) != len(columns) {
+		return nil
+	}
+	raw := make([]bool, len(paths))
+	for i, path := range paths {
+		leaf, ok := schema.Lookup(path...)
+		if !ok || leaf.ColumnIndex != i {
+			return nil
+		}
+		t := leaf.Node.Type()
+		if t.Kind() != parquet.ByteArray && t.Kind() != parquet.FixedLenByteArray {
+			continue
+		}
+		// An annotated column says what its bytes mean (text, a decimal, a date);
+		// a plain BYTE_ARRAY with no logical type at all is the file's way of
+		// saying these are the column's content bytes. Measured on files this
+		// tool writes: a text column carries LogicalType.UTF8 (and parquet-go
+		// reconstructs the same one from a legacy ConvertedType UTF8), while a
+		// BLOB, VARBINARY or BIT column has neither a logical type nor a
+		// converted type.
+		raw[i] = t.LogicalType() == nil
+	}
+	return raw
 }
 
 // ReadHeader returns the column names of the Parquet file.
@@ -97,6 +151,43 @@ func (p *ParquetReader) SetBinaryColumns(flags []bool) {
 // isBinaryColumn reports whether the file column at idx carries raw bytes.
 func (p *ParquetReader) isBinaryColumn(idx int) bool {
 	return idx < len(p.binaryCols) && p.binaryCols[idx]
+}
+
+// SetColumnKinds marks which file columns are zone-bearing timestamps. A
+// timestamp with a UTC offset is stored as the dump's own text, and Dameng's
+// Oracle-mode parser only takes that text with a space before the offset; the
+// same rule the DEL reader applies, in the same helper. See
+// separateTimestampOffset.
+//
+// The kinds arrive aligned to the file's column order, from the same
+// backend.MetadataKind classification the DEL reader uses.
+func (p *ParquetReader) SetColumnKinds(kinds []common.ColumnKind) {
+	p.kinds = kinds
+}
+
+// isTimestampTZColumn reports whether the file column at idx holds timestamp
+// text with a UTC offset.
+func (p *ParquetReader) isTimestampTZColumn(idx int) bool {
+	return idx < len(p.kinds) && p.kinds[idx] == common.KindTimestampTZ
+}
+
+// SetBindFixups supplies the per-position value adapters the target engine needs
+// between the reader and the driver placeholder. A nil at a position leaves the
+// value exactly as it was read. See DelReader.SetBindFixups for why the question
+// exists at all; the numbers are in internal/backend/bind_dameng.go.
+func (p *ParquetReader) SetBindFixups(fixups []func(interface{}) interface{}) {
+	p.binds = fixups
+}
+
+// isRawColumn reports whether the file's own schema says the bytes under this
+// column are the column's content rather than its text.
+func (p *ParquetReader) isRawColumn(idx int) bool {
+	return idx < len(p.rawCols) && p.rawCols[idx]
+}
+
+// hasBindFixup reports whether the target engine wants a word about this column.
+func (p *ParquetReader) hasBindFixup(idx int) bool {
+	return idx < len(p.binds) && p.binds[idx] != nil
 }
 
 // ReadRow reads a single row from the Parquet file.
@@ -136,10 +227,31 @@ func (p *ParquetReader) ReadRow() (values []interface{}, err error) {
 			values[idx] = nil
 			continue
 		}
-		values[idx] = parquetValueToInterface(v, p.isBinaryColumn(idx))
+		// A column the file itself marks as content bytes is read as bytes only
+		// where the target engine has something to do about that (see the note on
+		// parquetValueToInterface); a text target's adapter turns the bytes back
+		// into the string they used to be, so engines that answer nil for every
+		// adapter — MySQL and PostgreSQL — read exactly what they always did.
+		raw := p.isRawColumn(idx) && p.hasBindFixup(idx)
+		value := parquetValueToInterface(v, p.isBinaryColumn(idx) || raw)
+		if f := p.bindFixup(idx); f != nil {
+			value = f(value)
+		}
+		if text, ok := value.(string); ok && p.isTimestampTZColumn(idx) {
+			value = separateTimestampOffset(text)
+		}
+		values[idx] = value
 	}
 
 	return values, nil
+}
+
+// bindFixup returns the target engine's adapter for one file position, or nil.
+func (p *ParquetReader) bindFixup(idx int) func(interface{}) interface{} {
+	if idx >= len(p.binds) {
+		return nil
+	}
+	return p.binds[idx]
 }
 
 // parquetValueToInterface converts a single parquet.Value into a Go value that

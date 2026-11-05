@@ -608,7 +608,10 @@ func urlQuery(t *testing.T, s string) url.Values {
 	return u.Query()
 }
 
-// TestDamengDSNPinsConnectionParams checks the dm:// DSN the backend builds.
+// TestDamengDSNPinsConnectionParams checks the dm:// DSN the backend builds:
+// the connection parameters it always sets, and a userinfo the driver can read
+// back unchanged. The second half is the reason the DSN is assembled by hand
+// instead of through net/url — see parseDamengDSN.
 func TestDamengDSNPinsConnectionParams(t *testing.T) {
 	base := &config.Config{
 		Host: "127.0.0.1", Port: 5236, User: "SYSDBA", Password: "s3cret",
@@ -618,37 +621,108 @@ func TestDamengDSNPinsConnectionParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildDamengDSN: %v", err)
 	}
-	u, err := url.Parse(s)
-	if err != nil {
-		t.Fatalf("the emitted DSN does not parse: %v (%s)", err, s)
+	want := "dm://SYSDBA:s3cret@127.0.0.1:5236?compatibleMode=oracle&schema=DMDB"
+	if s != want {
+		t.Errorf("DSN = %s, want %s", s, want)
 	}
-	q := u.Query()
-	if q.Get("compatibleMode") != "oracle" {
-		t.Errorf("compatibleMode = %q, want oracle", q.Get("compatibleMode"))
+	user, password, host, q := parseDamengDSN(t, s)
+	if user != "SYSDBA" || password != "s3cret" {
+		t.Errorf("identity = %q/%q, want SYSDBA/s3cret", user, password)
 	}
-	if q.Get("schema") != "DMDB" {
-		t.Errorf("schema = %q, want DMDB", q.Get("schema"))
+	if host != "127.0.0.1:5236" {
+		t.Errorf("host = %q, want 127.0.0.1:5236", host)
 	}
-	if u.Scheme != "dm" || u.Host != "127.0.0.1:5236" {
-		t.Errorf("DSN identity = %s://%s, want dm://127.0.0.1:5236", u.Scheme, u.Host)
+	if q["compatibleMode"] != "oracle" {
+		t.Errorf("compatibleMode = %q, want oracle", q["compatibleMode"])
+	}
+	if q["schema"] != "DMDB" {
+		t.Errorf("schema = %q, want DMDB", q["schema"])
 	}
 
-	got := buildDamengDSNUnchecked(t, &config.Config{
-		Host: "127.0.0.1", Port: 5236, User: "u", Password: "p@ss:w/ord?=&%",
+	// Every character the driver's hand-rolled parser is not built around has to
+	// survive to the server verbatim, because the parser never URL-decodes.
+	// Percent-encoding any of them (what net/url does to userinfo) is how a real
+	// DM8 answered -2501 "Invalid username or password" for a password as plain
+	// as `pw#41`.
+	for _, password := range []string{
+		"pw#41", "pw%41", "pw@ss", "pw/rd", "pw=1&2", "pw:sep", "p w", "空格#",
+	} {
+		s = buildDamengDSNUnchecked(t, &config.Config{
+			Host: "127.0.0.1", Port: 5236, User: "IMEXIT", Password: password,
+			Database: "IMEXIT", DefaultCharset: config.DefaultCharset,
+		})
+		_, got, _, _ := parseDamengDSN(t, s)
+		if got != password {
+			t.Errorf("password %q arrived as %q in %s", password, got, s)
+		}
+	}
+
+	s = buildDamengDSNUnchecked(t, &config.Config{
+		Host: "127.0.0.1", Port: 5236, User: "u", Password: "p@ss:w/ord&=%",
 		Database: "d", DefaultCharset: config.DefaultCharset,
 		ConnectTimeout: 1500 * time.Millisecond, SocketReadTimeout: 90 * time.Second,
 	})
-	q = urlQuery(t, got)
-	if q.Get("connectTimeout") != "1500" {
-		t.Errorf("connectTimeout = %q, want 1500 ms", q.Get("connectTimeout"))
+	_, _, host, q = parseDamengDSN(t, s)
+	if host != "127.0.0.1:5236" {
+		t.Errorf("host = %q with a punctuation-heavy password, want 127.0.0.1:5236", host)
 	}
-	if q.Get("socketTimeout") != "90" {
-		t.Errorf("socketTimeout = %q, want 90 s", q.Get("socketTimeout"))
+	if q["connectTimeout"] != "1500" {
+		t.Errorf("connectTimeout = %q, want 1500 ms", q["connectTimeout"])
+	}
+	if q["socketTimeout"] != "90" {
+		t.Errorf("socketTimeout = %q, want 90 s", q["socketTimeout"])
+	}
+	if q["compatibleMode"] != "oracle" || q["schema"] != "d" {
+		t.Errorf("query = %v, want compatibleMode=oracle and schema=d", q)
+	}
+
+	// No --database means no schema parameter at all.
+	s = buildDamengDSNUnchecked(t, &config.Config{
+		Host: "127.0.0.1", Port: 5236, User: "u", Password: "p",
+		DefaultCharset: config.DefaultCharset,
+	})
+	_, _, _, q = parseDamengDSN(t, s)
+	if _, ok := q["schema"]; ok {
+		t.Errorf("schema = %q without --database, want the parameter absent", q["schema"])
 	}
 
 	if _, err := buildDamengDSN(&config.Config{User: ""}); err == nil {
 		t.Error("buildDamengDSN accepted an empty user")
 	}
+}
+
+// parseDamengDSN splits a dm:// DSN the way the Dameng driver's own parser does
+// (n.go `parseDSN` of gitee.com/chunanyong/dm v1.8.23): the query is everything
+// after the last '?', split on '&' then the first '='; the userinfo is what
+// precedes the last '@', split from the host; user and password divide at the
+// first ':'. Nothing is URL-decoded on the way through, and the driver exports
+// no way to run its parser, so the shape is mirrored here. This is the contract
+// the emitted string has to satisfy.
+func parseDamengDSN(t *testing.T, dsn string) (user, password, host string, query map[string]string) {
+	t.Helper()
+	if !strings.HasPrefix(dsn, "dm://") {
+		t.Fatalf("DSN %q does not start with dm://", dsn)
+	}
+	rest := strings.TrimPrefix(dsn, "dm://")
+	query = map[string]string{}
+	if i := strings.LastIndex(rest, "?"); i > 0 {
+		for _, kvString := range strings.Split(rest[i+1:], "&") {
+			kv := strings.SplitN(kvString, "=", 2)
+			if len(kv) == 2 {
+				query[kv[0]] = kv[1]
+			}
+		}
+		rest = rest[:i]
+	}
+	i := strings.LastIndex(rest, "@")
+	if i < 0 {
+		t.Fatalf("DSN %q has no user@host section", dsn)
+	}
+	kv := strings.SplitN(rest[:i], ":", 2)
+	if len(kv) != 2 {
+		t.Fatalf("DSN %q has no user:password section", dsn)
+	}
+	return kv[0], kv[1], rest[i+1:], query
 }
 
 func buildDamengDSNUnchecked(t *testing.T, cfg *config.Config) string {
@@ -721,13 +795,19 @@ func TestMetadataClassification(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]common.ColumnKind{
-		"DATE":                     common.KindTimestamp,
-		"TIMESTAMP":                common.KindTimestamp,
-		"TIMESTAMP WITH TIME ZONE": common.KindTimestamp,
-		"TIMESTAMP(6)":             common.KindTimestamp,
-		"VARCHAR2":                 common.KindUnknown,
-		"CLOB":                     common.KindUnknown,
-		"name we have never seen":  common.KindUnknown,
+		"DATE":         common.KindTimestamp,
+		"TIMESTAMP":    common.KindTimestamp,
+		"TIMESTAMP(6)": common.KindTimestamp,
+		// The zone-bearing types land on their own kind: their text ends in an
+		// offset, which --timestamp-fmt must not re-lay out, and which Dameng's
+		// own parser only accepts with a space before it.
+		"DATETIME WITH TIME ZONE":        common.KindTimestampTZ,
+		"TIMESTAMP WITH TIME ZONE":       common.KindTimestampTZ,
+		"TIMESTAMP(6) WITH TIME ZONE":    common.KindTimestampTZ,
+		"TIMESTAMP WITH LOCAL TIME ZONE": common.KindTimestampTZ,
+		"VARCHAR2":                       common.KindUnknown,
+		"CLOB":                           common.KindUnknown,
+		"name we have never seen":        common.KindUnknown,
 	} {
 		if got := d.MetadataKind(name); got != want {
 			t.Errorf("dm type %q = %v, want %v", name, got, want)
@@ -750,6 +830,71 @@ func TestHexBlobMandatory(t *testing.T) {
 	}
 	if !Must(EngineDM).HexBlobMandatory() {
 		t.Fatal("dm must force hex: Oracle-mode DM rejects a NUL byte inside a text value")
+	}
+}
+
+// TestBindFixupsIsPerEngineAndPosition pins the third contract face of the import
+// path: one adapter per target column, in the order the reader's positions come
+// in, and the statement a nil carries. MySQL and PostgreSQL answer nil for every
+// column — their servers parse the file's own text, and the payload shapes that
+// drift on Dameng reach them as bytes already — while Dameng answers per type name
+// and leaves a binary or unknown column alone.
+//
+// The numbers are the three defects this seam exists for, asserted through the
+// interface rather than through the helper: text that the driver's 64-bit parse
+// moved, a 41-digit value that wrapped into a negative number, and a BIT column
+// that read "0x01" as false.
+func TestBindFixupsIsPerEngineAndPosition(t *testing.T) {
+	types := []string{"VARCHAR2", "NUMBER", "BIGINT", "FLOAT", "BIT", "BLOB", "DATE", "", "NOT_A_TYPE"}
+	for _, e := range []Engine{EngineMySQL, EnginePG} {
+		got := Must(e).BindFixups(types)
+		if len(got) != len(types) {
+			t.Fatalf("%s: %d adapters for %d columns", e, len(got), len(types))
+		}
+		for i, f := range got {
+			if f != nil {
+				t.Errorf("%s: column %d (%q) has an adapter; that engine binds the file's text as it is", e, i, types[i])
+			}
+		}
+		if got := Must(e).BindFixups(nil); len(got) != 0 {
+			t.Errorf("%s: no columns must give no adapters, got %d", e, len(got))
+		}
+	}
+
+	f := Must(EngineDM).BindFixups(types)
+	if len(f) != len(types) {
+		t.Fatalf("dm: %d adapters for %d columns", len(f), len(types))
+	}
+	// A binary target already gets bytes, and a name the type table does not
+	// know must not guess: both are nil, at their own position.
+	for _, i := range []int{5, 7, 8} {
+		if f[i] != nil {
+			t.Errorf("dm: column %d (%q) must have no adapter", i, types[i])
+		}
+	}
+	for _, i := range []int{0, 1, 2, 3, 4, 6} {
+		if f[i] == nil {
+			t.Errorf("dm: column %d (%q) must have an adapter", i, types[i])
+		}
+	}
+	for _, c := range []struct {
+		col  int
+		in   interface{}
+		want string
+		why  string
+	}{
+		{1, "99999999999999999999", "#99999999999999999999", "D1: the text path drifted it"},
+		{1, "899999999999999.99999", "#899999999999999.99999", "D1: the text path rounded it"},
+		{2, "9999999999999999999999999999999999999999999", "#" + strings.Repeat("9", 40), "D1: overflow must not wrap"},
+		{4, "0xaa", "1", "D2: the text path landed 0"},
+		{4, "170", "1", "D2: the text path landed 0"},
+		{3, []byte{0xaa}, "170", "D3: a payload into FLOAT"},
+		{0, []byte("abc"), "abc", "text column receives the text"},
+		{6, "2024-05-06 07:08:09", "2024-05-06 07:08:09", "a date keeps its own text"},
+	} {
+		if got := bindRender(f[c.col](c.in)); got != c.want {
+			t.Errorf("dm: %s: column %d (%q) with %#v = %s, want %s", c.why, c.col, types[c.col], c.in, got, c.want)
+		}
 	}
 }
 

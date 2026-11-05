@@ -17,4 +17,11 @@ const (
 	KindTime                 // TIME: text passthrough
 	KindTimestamp            // DATETIME / TIMESTAMP: --timestamp-fmt applies
 	KindYear                 // YEAR: passthrough ("0000" normalization upstream)
+	// KindTimestampTZ is a DATETIME/TIMESTAMP whose text also carries a UTC
+	// offset ("2024-05-06 07:08:09.123456+08:00"). The offset is part of the
+	// value, so --date-fmt/--timestamp-fmt do not apply to it: a layout that
+	// drops the offset would silently move the instant to another timezone.
+	// The import side re-lays the text out where an engine's own literal
+	// parser wants it — see internal/import/del_reader.go.
+	KindTimestampTZ
 )

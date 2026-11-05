@@ -263,3 +263,13 @@ func (mysqlBackend) HexBlobMandatory() bool { return false }
 func (mysqlBackend) CellFixups(colTypes []*sql.ColumnType) []func([]byte) []byte {
 	return make([]func([]byte) []byte, len(colTypes))
 }
+
+// BindFixups returns a nil adapter for every column, and the nil is the answer
+// rather than a gap: the server parses the text it is given for its own DECIMAL
+// and integer types, and the two shapes that need adapting on Dameng never reach
+// a MySQL placeholder unchanged — a BIT or BLOB target is classified as binary,
+// so the DEL reader decodes the 0x token to bytes and the Parquet reader hands
+// over the payload as bytes, which is what those columns store.
+func (mysqlBackend) BindFixups(dataTypes []string) []func(interface{}) interface{} {
+	return make([]func(interface{}) interface{}, len(dataTypes))
+}

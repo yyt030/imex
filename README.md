@@ -591,7 +591,9 @@ imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 
 加 `--engine dm` 即连达梦 DM8（驱动 `gitee.com/chunanyong/dm` v1.8.23，纯 Go、无 CGO，连接串是驱动自己的 `dm://user:password@host:port?k=v`）。这一引擎**恒以 Oracle 兼容模式连接**——DSN 里固定带 `compatibleMode=oracle`，不给开关，也不提供达梦原生模式。默认端口随之变成 `5236`——同样只在命令行没写 `-P`、环境也没给 `IMEX_PORT` 时生效。取值不区分大小写、裁两端空白，`dm`、`DM`、`" dm "` 与别名 `dameng` 是同一台服务器、同一套语句；`postgres`、`oracle`、`dm8` 这类拼法是用法错误退出 `2`（`invalid --engine "dm8": must be one of mysql/pg/dm`）。
 
-> **本轮没有可达的达梦实例**，所以这一节里的一切都是「按达梦官方手册与驱动源码写成、由单元层断言钉住形状」，不是真库往返测出来的。语句的占位符个数与绑定参数逐一对齐、目录视图名、输出列名都有测试兜着，但**首次连真实 DM8 时请按未验证面对待**。v8.1 这条下界是按需求写下的约定，同样没有实测。
+`-u` 与 `-p` 是**原样**写进连接串的，不做 URL 转义（只有 `?` 后面的参数部分才转义）。这是驱动自己的读法决定的：它手写解析这条串——最后一个 `?` 之后是参数、最后一个 `@` 之前是账号、第一个 `:` 分账号与口令——并且**从不解码**，尽管它自己拼串时是转义的。于是转义过的口令到服务器那儿成了字面的 `%23`，达梦回 `Error -2501: Invalid username or password`。实测有 22 个 ASCII 字符会被 `net/url` 转义（`` !"#%'()*/:<>?@[\]^`{|} ``），按同一处「从不解码」的实现它们都读不回来；其中 `#`、`%`、`@` 三个在真实 DM8 上取过样本——141 轮建了三个分别含这三字的账号，修复前一律 `-2501`，修复后登录、导出、导入全部走通。唯一仍然无法表达的取值是口令里含字面 `?`：它会把参数分界挪走，驱动也没给转义的办法（转义版同样读不回来，两种写法都不行）。
+
+> **这一节已有真库往返**（2026-11-05，沙箱内自装的独立 DM8 实例：`DM Database Server 64 V8`、构建号 `03134284604-20260707-335949-20228`、`DB Version 0x7000d`、x64、UTF-8 字符集、`CASE_SENSITIVE=1`、`COMPATIBLE_MODE=0`（服务端）——`compatibleMode=oracle` 是客户端参数，见 2.1.12）。26 列 × 8 行的类型矩阵在 dm→dm 的 DEL 与 parquet 两条路径上各自往返，逐列 NULL 安全比对差异 **0**；dm→MySQL 与 MySQL→dm 也各跑一遍。仍未实测的只剩少数几项（列存储表上的攒批插入、v8.1 这条版本下界、`±Inf`/`NaN` 在其它 DM 版本上的写法、多行 VALUES 的失败形态），逐条见 `docs/requirements.md` 11.2。
 
 ```bash
 imex export --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE \
@@ -619,6 +621,12 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 | `--no-hex-blob` | 达梦拒绝文本值里出现 NUL 字节，二进制列恒以 `0x` 十六进制写出，关不掉 |
 
 **取值写法**：驱动对每一个日期时间类型都交回 Go 的 `time.Time`，工具把它重排成达梦自己打印的样子——Oracle 模式的 `DATE` 带时分秒，写成 `2026-01-31 09:26:15`（按日期处理就会把时间部分丢掉）；`TIMESTAMP`/`DATETIME`/`DATETIME2` 同形后跟最多六位小数、尾零不印；`TIME` 写成 `15:04:05`；四个 `WITH TIME ZONE` 类型在各自形态后**保留偏移、不折成 UTC**，服务器给 `2024-05-06T07:08:09.123456+08:00`，文件里就是 `2024-05-06 07:08:09.123456+08:00`。`BIT`/`BOOLEAN` 一律写成一个数字（`1`/`0`）。二进制列（`BLOB`/`RAW`/`LONG RAW`/`BINARY`/`VARBINARY`/`LONGVARBINARY`/`IMAGE`）恒为 `0x…`。`+Inf`/`-Inf`/`NaN` 照达梦存的样子写出，不做归一。NULL 是一个空字段、空串是 `""`，与 MySQL 侧同一套 DEL 布局规则。
+
+**导回达梦时的偏移量写法**：带时区的三个时间戳类型（`TIMESTAMP WITH TIME ZONE`、`DATETIME WITH TIME ZONE`、`TIMESTAMP WITH LOCAL TIME ZONE`）在导入侧会被补一个空格再发出去——文件里是 `…:09.123456+08:00`，绑进语句的是 `…:09.123456 +08:00`。达梦 Oracle 模式的字面量解析只认后者，前者一律 `Error 6015: Invalid datetime type format`、整批一行不进（141 轮实测：`+08:00`、`-07:00`、`+00:00` 三种偏移、0/3/6 位小数、`0001-01-01` 都在加空格后按同一时刻入库；`+0800` 这种没冒号的写法与 `[]byte` 绑定都读不进去，各报 `6015` 与 `6007`）。这条改写只认「偏移量直接贴在秒后面」的形状，已经带空格的、不带偏移的、以及 varchar 里恰好长成这样的值都原样发出；它由目标列的类型判定，因此 MySQL 与 PostgreSQL 两侧的行为一字不变，产物文件的字节也不变（同一张 26 列表用修复前后两个二进制各导一次，产物逐字节相同）。`TIME WITH TIME ZONE` 是另一回事：达梦对它的字符串绑定无论加不加空格都报 `Error 6103: Invalid datetime value`，只有 Go 的 `time.Time` 才收，因此这一列的 DEL/parquet 往返在达梦侧走不通，工具不伪造。
+
+**绑进达梦时的取值形状**（142 轮）：达梦驱动会把交给它的**文本**再用 64 位浮点解析一遍，所以 15 位以上的数字会漂、超过 int64 的整数会**静默回绕**、而 `BIT`/`BOOLEAN` 列只认 `"0"`/`"1"`/`"true"`/`"false"` 四个词，别的一律落 `0`。导入侧因此按目标列的类型改绑定形态（不是改文件）：`NUMBER`/`DECIMAL`/`NUMERIC` 走驱动的精确小数（实测 `899999999999999.99999` 原样落库，旧二进制落 `900000000000000`；`99999999999999999999` 进 BIGINT 现在是服务器的 `Error -6102: Digital overflow`，旧二进制悄悄存成 `7766279631452241920`），`TINYINT`/`SMALLINT`/`INT`/`BIGINT` 先按四舍五入远离零取整再精确绑定（与今天文本路的落点一致，只把越界的那些从回绕换成报错），`BIT`/`BOOLEAN` 归一到「非零即 1」，parquet 与 `--hex-blob` 转储里的原始字节进数值列时先变成它承载的无符号整数文本（`0xaa`→170，旧二进制整批 `Error 6007: Data convertion error`）。MySQL 与 PostgreSQL 一侧什么都不改：两侧对每一列都交回「原样绑定」，同一份夹具导进 MySQL 的 `DECIMAL(20,5)` 在修复前后逐字节同值。
+
+**跨引擎导入达梦时，二进制与 `BIT` 列请用 `--hex-blob` 或 parquet**：MySQL 的 DEL 转储默认把 `BIT`/`BLOB` 的存储字节**原样写在字段的引号里**（只有字符集装不下这些字节时才强制 `0x…`），那种串到读取器手里已经是文本、没法和真正的列内容区分。工具只把「不含任何可打印字节」的短串（≤ 8 字节）按载荷处理——`BIT(1)` 的 `0x01`/`0x00` 因此能正确落 `1`/`0`；而像 `BIT(8)` = `0x41`（恰是字符 `A`）这种含可打印字节的载荷**故意不猜**，它仍按文本走，结果是 BIT 目标落 `0`、数值目标报 `6007`。要可靠地搬这些列，导出时加 `--hex-blob`（`0x…` 记法），或改用 `-f parquet`（按文件自己的 schema 认字节）：实测这两种写法在达梦的 `BIT`/`BOOLEAN`/`INT`/`NUMBER`/`FLOAT` 五类目标上逐格正确落库。
 
 **把这份文件导进 MySQL/PostgreSQL 时怎么建列**（现测，MariaDB 10.6.23 严格模式与 PostgreSQL 14.24）：`DATE`/`TIMESTAMP`/`DATETIME` → `DATETIME`/`DATETIME(6)`（pg `timestamp`），**不要**建 `DATE`——那一列会把时分秒静默截掉，导入退出码仍是 `0`；带 `WITH TIME ZONE` 的列 pg 建 `timestamptz` 直接可用，MySQL 没有任何日期时间列能接 `'…+08:00'`（一律 `Error 1292`），要么建 `VARCHAR`/`TEXT`，要么在导出语句里由服务端先剥掉偏移；`BIT`/`BOOLEAN` → MySQL 建 `TINYINT(1)`，**不要** `BIT(1)`（`'1'` 进 `BIT(1)` 报 `Error 1406`），pg 的 `bit(1)`/`boolean`/`smallint` 都可用；`FLOAT`/`DOUBLE` 若可能存 `±Inf`/`NaN`，MySQL 侧建 `TEXT`/`VARCHAR`（`DOUBLE` 报 `Error 1366`），pg 侧 `double precision` 认这三种拼法；零值时间 `0001-01-01 00:00:00` 超出 MySQL `TIMESTAMP` 的范围，用 `DATETIME`；`VARCHAR2` 里的长数字串照字符落库，别默认建 `BIGINT`（26 位就 `Error 1264`）。逐列细节见 `docs/requirements.md` 的 2.1.12 与 11.2。
 
@@ -1260,7 +1268,7 @@ imex/
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
 │   ├── backend/
-│   │   ├── backend.go         # 方言接口（34 个方法）、`--engine` 取值解析与折叠（`Parse`/`Normalize`）与 `backends` 注册表
+│   │   ├── backend.go         # 方言接口（35 个方法）、`--engine` 取值解析与折叠（`Parse`/`Normalize`）与 `backends` 注册表
 │   │   ├── dsn_mysql.go       # MySQL 连接串构造与 29 个驱动保留参数
 │   │   ├── dberr_mysql.go     # MySQL 瞬态错误码表（7 个码）与取码方式
 │   │   ├── dberr_postgres.go  # PostgreSQL 瞬态 SQLSTATE 表（9 个码）与 `*pgconn.PgError` 取码（134 轮）
@@ -1272,16 +1280,18 @@ imex/
 │   │   ├── refusals_postgres.go # pg 的选项拒绝表（export 4 / import 3 / list 1 / show 1）与 `client_encoding` 校验
 │   │   ├── refusals_dameng.go # dm 的选项拒绝表（export 4 / import 4 / list 1 / show 1）（135 轮）
 │   │   ├── dsn_dameng.go      # 达梦连接串构造（恒带 `compatibleMode=oracle`）与驱动保留参数表（135 轮）
-│   │   ├── types_dameng.go    # 达梦 Oracle 模式类型词表与二进制列判定（135 轮）
+│   │   ├── types_dameng.go    # 达梦 Oracle 模式类型词表：一行同时回答分类、二进制、取值文本与绑定形态四类（135 轮，142 轮加 `bind`）
+│   │   ├── bind_dameng.go     # 达梦导入侧的取值绑定规则：六个 bind 类别、五个实测上限常量与三条缺陷的修法（142 轮）
 │   │   ├── types.go           # 类型词 → `common.ColumnKind` 的共享词表与二进制列判定（不含引擎名）
 │   │   ├── mysql.go           # MySQL/MariaDB/OceanBase 方言
 │   │   ├── postgres.go        # PostgreSQL 方言（`$n`、`client_encoding` 表、类型与二进制词表、单元格文本规则）
-│   │   ├── dameng.go          # 达梦 DM8 Oracle 兼容模式方言（`?`、双引号引用、强制 0x hex、保守 4 MiB 批次预算）（135 轮）
-│   │   ├── backend_test.go    # 三方言逐字节对照与注册表测试
+│   │   ├── dameng.go          # 达梦 DM8 Oracle 兼容模式方言（`?`、双引号引用、强制 0x hex、保守 4 MiB 批次预算、`BindFixups` 逐列问类型表）（135 轮，142 轮加）
+│   │   ├── backend_test.go    # 三方言逐字节对照与注册表测试（含 `BindFixups` 的逐引擎逐位置断言，142 轮）
 │   │   ├── types_test.go      # 类型词表分类断言
 │   │   ├── dberr_test.go      # 码表归属与三方言瞬态判据断言
 │   │   ├── dberr_postgres_test.go # pg 的 9 个瞬态 SQLSTATE、缺席码与 `*pgconn.PgError` 拆包
 │   │   ├── dameng_test.go     # 达梦的时间文本、瞬态码表与 16 位截断防护、upsert 未实现，以及单一类型表「分类即改写」的五条防漂移断言（135 轮、137 轮）
+│   │   ├── bind_dameng_test.go # 五个绑定适配器与四条 helper 的取值对照，含驱动十进制的 `#` 文本 oracle（142 轮）
 │   │   ├── charset_mysql_test.go # MySQL 16 个字符集名字与 `KnownCharset` 的裁空白/折叠
 │   │   ├── dsn_mysql_test.go  # 连接串 golden 与保留参数清单
 │   │   ├── refusals_test.go   # 拒绝表的顺序、触发条件与文案取值
@@ -1322,9 +1332,9 @@ imex/
 │   │   ├── diag.go              # 导入侧诊断常量（慢批/慢提交 5 秒、批字节估算、worker 速率）
 │   │   ├── session.go           # 写入会话（事务、重连回放、空闲提交、commit-count）
 │   │   ├── record_reader.go     # 无上限记录读取器（自定义 SplitFunc，零拷贝别名）
-│   │   ├── del_reader.go        # DEL 格式读取器
+│   │   ├── del_reader.go        # DEL 格式读取器（文本修饰符反解、0x 解码、达梦偏移量加空格、值适配器在修饰符之后）
 │   │   ├── sql_reader.go        # SQL 格式读取器
-│   │   └── parquet_reader.go    # Parquet 格式读取器
+│   │   └── parquet_reader.go    # Parquet 格式读取器（按文件 schema 判定内容字节、只在目标引擎要时交出去、达梦偏移量加空格）
 │   ├── list/
 │       ├── list.go              # 执行查询、逐行读取并交给渲染器
 │       ├── queries.go           # 对象名与别名顺序、`BuildQuery()` 的引擎分派表（引擎经 `backend.Normalize` 折叠后再选）

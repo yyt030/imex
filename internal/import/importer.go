@@ -398,14 +398,24 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// flags let it decode the 0x hex literals the exporter writes for
 	// binary columns.
 	//
-	// Parquet needs the same lookup for one of the two: every column in the file
-	// is a BYTE_ARRAY, so only the target type says whether those bytes are the
-	// column's content or the column's text. MySQL quotes a string and a byte
-	// slice identically, so the flags matter on the other engine, where a byte
-	// slice binds as a binary value and a uuid or integer[] column then receives
-	// bytes instead of the text it parses.
+	// Parquet needs the same two lookups for different reasons. Every column in
+	// the file is a BYTE_ARRAY, so only the target type says whether those bytes
+	// are the column's content or the column's text: MySQL quotes a string and a
+	// byte slice identically, so the flags matter on the other engine, where a
+	// byte slice binds as a binary value and a uuid or integer[] column then
+	// receives bytes instead of the text it parses. The kinds answer exactly one
+	// question on that path and none of the modifiers: a target column that is a
+	// zone-bearing timestamp needs its text re-laid out for Dameng, which is what
+	// separateTimestampOffset does.
+	//
+	// The third lookup — the target engine's bind adapters, from the same type
+	// words — is the one that decides what Go value reaches the driver, and only
+	// Dameng answers anything but nil: its text path re-parses a decimal through a
+	// 64-bit float, wraps an integer past int64, and reads a BIT column's text as
+	// a boolean. MySQL and PostgreSQL get an all-nil list and bind exactly what
+	// they bound before.
 	if imp.cfg.Format == "del" || imp.cfg.Format == "parquet" {
-		kinds, binaries, err := imp.columnInfoFor(ctx, readerColumns)
+		kinds, binaries, types, err := imp.columnInfoFor(ctx, readerColumns)
 		if err != nil {
 			if imp.cfg.Format == "del" {
 				common.Logger.Warn("failed to resolve target column types; DEL text modifiers disabled", "error", err)
@@ -413,8 +423,11 @@ func (imp *Importer) Import(ctx context.Context) error {
 		} else if delReader, ok := reader.(*DelReader); ok {
 			delReader.SetColumnKinds(kinds)
 			delReader.SetBinaryColumns(binaries)
+			delReader.SetBindFixups(imp.backend().BindFixups(types))
 		} else if parquetReader, ok := reader.(*ParquetReader); ok {
 			parquetReader.SetBinaryColumns(binaries)
+			parquetReader.SetColumnKinds(kinds)
+			parquetReader.SetBindFixups(imp.backend().BindFixups(types))
 		}
 	}
 
@@ -745,11 +758,15 @@ func (imp *Importer) headerLooksLikeData(ctx context.Context, fields []string) (
 
 // columnInfoFor resolves the ColumnKind of each target column (by name) from
 // information_schema, returning slices aligned to cols order, together with a
-// "this column is raw binary" flag per column. Unknown or missing columns map to
-// common.KindUnknown and false.
-func (imp *Importer) columnInfoFor(ctx context.Context, cols []string) ([]common.ColumnKind, []bool, error) {
+// "this column is raw binary" flag and the catalogue's own DATA_TYPE word per
+// column. Unknown or missing columns map to common.KindUnknown, false and "".
+//
+// The type words come back as the third slice because the question they answer
+// next is engine vocabulary: what a value has to look like when it reaches the
+// driver is the dialect's, not the reader's (see backend.BindFixups).
+func (imp *Importer) columnInfoFor(ctx context.Context, cols []string) ([]common.ColumnKind, []bool, []string, error) {
 	if len(cols) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	infoSQL := imp.backend().ColumnTypesSQL(len(cols))
 	q := common.TagSQL(infoSQL)
@@ -761,7 +778,7 @@ func (imp *Importer) columnInfoFor(ctx context.Context, cols []string) ([]common
 	common.LogInteractionSQL(infoSQL, args...)
 	rows, err := imp.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "failed to query column types")
+		return nil, nil, nil, errors.Wrap(err, "failed to query column types")
 	}
 	defer rows.Close()
 
@@ -769,25 +786,27 @@ func (imp *Importer) columnInfoFor(ctx context.Context, cols []string) ([]common
 	for rows.Next() {
 		var name, dataType string
 		if err := rows.Scan(&name, &dataType); err != nil {
-			return nil, nil, errors.Wrap(err, "failed to scan column type")
+			return nil, nil, nil, errors.Wrap(err, "failed to scan column type")
 		}
 		byName[strings.ToLower(name)] = dataType
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, errors.Wrap(err, "column type iteration error")
+		return nil, nil, nil, errors.Wrap(err, "column type iteration error")
 	}
 
 	kinds := make([]common.ColumnKind, len(cols))
 	binaries := make([]bool, len(cols))
+	types := make([]string, len(cols))
 	for i, c := range cols {
 		if dt, ok := byName[strings.ToLower(strings.TrimSpace(c))]; ok {
 			kinds[i] = imp.backend().MetadataKind(dt)
 			binaries[i] = imp.backend().MetadataBinary(dt)
+			types[i] = dt
 		} else {
 			kinds[i] = common.KindUnknown
 		}
 	}
-	return kinds, binaries, nil
+	return kinds, binaries, types, nil
 }
 
 // addBatchResult splits one successfully applied batch into inserted / updated

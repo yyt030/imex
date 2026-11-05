@@ -230,17 +230,39 @@ func (damengBackend) CellFixups(colTypes []*sql.ColumnType) []func([]byte) []byt
 	return fixups
 }
 
+// BindFixups answers per target column how an imported value has to reach the
+// driver. The classification and the measured numbers are in bind_dameng.go and
+// the single Dameng type table it reads (types_dameng.go), which is the same
+// table that answers ColumnKind and the binary question, so a type cannot be
+// known to the dump and unknown to the import.
+func (damengBackend) BindFixups(dataTypes []string) []func(interface{}) interface{} {
+	fixups := make([]func(interface{}) interface{}, len(dataTypes))
+	for i, dt := range dataTypes {
+		fixups[i] = damengBindFixup(dt)
+	}
+	return fixups
+}
+
 // buildDamengDSN renders a dm:// DSN with Oracle-compatible mode always on.
+//
+// The userinfo goes out verbatim, with no percent-encoding, because that is the
+// only form the Dameng driver can read back. Its parser (n.go `parseDSN` in
+// gitee.com/chunanyong/dm) splits the string by hand — the query at the last
+// '?', the userinfo at the last '@', user from password at the first ':' — and
+// never URL-decodes what it finds, even though the driver's own `BuildDSN`
+// escapes. An encoded `#` therefore reaches the server as the three characters
+// `%23` and every login answers Error -2501. The query part keeps its encoding:
+// there the driver does split on '&' and '=', so an unescaped value would
+// change the parameter set.
+//
+// One password shape this form cannot express is a literal '?', which would move
+// the query boundary — the driver has no escape for it either, so such a
+// password is unrepresentable in any dm:// DSN.
 func buildDamengDSN(c *config.Config) (string, error) {
 	if strings.TrimSpace(c.User) == "" {
 		return "", errors.New("--user is required for --engine dm")
 	}
-	u := url.URL{
-		Scheme: "dm",
-		User:   url.UserPassword(c.User, c.Password),
-		Host:   fmt.Sprintf("%s:%d", c.Host, c.Port),
-	}
-	q := u.Query()
+	q := url.Values{}
 	q.Set("compatibleMode", "oracle")
 	if c.Database != "" {
 		q.Set("schema", c.Database)
@@ -253,6 +275,6 @@ func buildDamengDSN(c *config.Config) (string, error) {
 		secs := int64((c.SocketReadTimeout + time.Second - 1) / time.Second)
 		q.Set("socketTimeout", strconv.FormatInt(secs, 10))
 	}
-	u.RawQuery = q.Encode()
-	return u.String(), nil
+	return "dm://" + c.User + ":" + c.Password + "@" +
+		fmt.Sprintf("%s:%d", c.Host, c.Port) + "?" + q.Encode(), nil
 }

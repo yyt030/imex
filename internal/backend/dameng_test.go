@@ -198,9 +198,12 @@ func TestDamengBinaryNames(t *testing.T) {
 }
 
 // TestDamengTypeTableSingleSource guards the table itself: every entry must be
-// reachable through the three public questions, and a name that carries a layout
-// must be one the driver answers with a time (so a text type can never be
-// rewritten by accident).
+// reachable through the public questions — kind, binary, rewrite layout and bind —
+// and the answers must agree with each other, so a type cannot be known to the
+// dump and unknown to the import, or raw to one half of the code and text to the
+// other. A row left unclassified is a build failure, which is how a new type name
+// becomes a measured decision instead of a silent fall-through to the drifting
+// text path.
 func TestDamengTypeTableSingleSource(t *testing.T) {
 	timeBearing := map[string]bool{
 		"DATE": true, "TIME": true, "TIME WITH TIME ZONE": true,
@@ -221,9 +224,33 @@ func TestDamengTypeTableSingleSource(t *testing.T) {
 		if typ.binary && typ.textLayout != "" {
 			t.Errorf("%s: a binary column cannot also be re-rendered", name)
 		}
+		if typ.bind == bindUnset {
+			t.Errorf("%s: no bind classification", name)
+		}
+		if got, ok := damengBindOf(name); !ok || got != typ.bind {
+			t.Errorf("%s: bind %v/%v, table says %v", name, got, ok, typ.bind)
+		}
+		// Binary and raw are the same answer, seen from the two sides.
+		if typ.binary != (typ.bind == bindRaw) {
+			t.Errorf("%s: binary %v but bind %v", name, typ.binary, typ.bind)
+		}
+		if timeBearing[name] && typ.bind != bindText {
+			t.Errorf("%s: a date/time target takes text, not bind %v", name, typ.bind)
+		}
+		if typ.boolText && typ.bind != bindBit {
+			t.Errorf("%s: reads a flag as text but binds %v", name, typ.bind)
+		}
+		// An adapter exists for every class except the one that must not touch
+		// the value, so a type name can never reach the driver unclassified.
+		if f := damengBindFixup(name); (f != nil) != (typ.bind != bindRaw) {
+			t.Errorf("%s: bind %v, adapter %v", name, typ.bind, f != nil)
+		}
 	}
 	// The name that started this: classified as a time, so it must be rewritten.
 	if damengCellFixup("TIME") == nil {
 		t.Error("TIME is KindTime but has no rewriter")
+	}
+	if _, ok := damengBindOf("NOT_A_TYPE"); ok {
+		t.Error("an unknown type name must not answer the bind question")
 	}
 }

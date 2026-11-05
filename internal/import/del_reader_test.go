@@ -452,6 +452,29 @@ func TestDelReader_ReverseModifiers(t *testing.T) {
 			expected: []interface{}{"2026-03-15 10:30:00"},
 		},
 		{
+			name: "dameng zone timestamp gets its offset separated",
+			mod: &config.DelModifier{
+				CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`,
+			},
+			kinds: []common.ColumnKind{common.KindTimestampTZ},
+			line:  `"2024-05-06 07:08:09.123456+08:00"`,
+			expected: []interface{}{
+				"2024-05-06 07:08:09.123456 +08:00",
+			},
+		},
+		{
+			name: "dameng zone timestamp ignores the text modifiers",
+			mod: &config.DelModifier{
+				CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`,
+				TimestampFmt: "yyyy/MM/dd HH:mm:ss",
+			},
+			kinds: []common.ColumnKind{common.KindTimestampTZ},
+			line:  `"2024-05-06 07:08:09.123456+08:00"`,
+			expected: []interface{}{
+				"2024-05-06 07:08:09.123456 +08:00",
+			},
+		},
+		{
 			name: "no kinds set - passthrough",
 			mod: &config.DelModifier{
 				CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`,
@@ -479,6 +502,36 @@ func TestDelReader_ReverseModifiers(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSeparateTimestampOffset pins the one text shape Dameng's zone-bearing
+// timestamp columns take. The spaced forms are what a real DM8 accepted, and the
+// instant it stored matched the offset in the text for +08:00, -07:00 and +00:00,
+// at 0, 3 and 6 fractional digits, and for year 0001.
+func TestSeparateTimestampOffset(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"2024-05-06 07:08:09.123456+08:00", "2024-05-06 07:08:09.123456 +08:00"},
+		{"2024-12-31 23:59:59.999999-07:00", "2024-12-31 23:59:59.999999 -07:00"},
+		{"0001-01-01 00:00:00+00:00", "0001-01-01 00:00:00 +00:00"},
+		{"2024-05-06 07:08:09+08:00", "2024-05-06 07:08:09 +08:00"},
+		// Already the accepted shape, or text with no offset in it: untouched.
+		{"2024-05-06 07:08:09.123456 +08:00", "2024-05-06 07:08:09.123456 +08:00"},
+		{"2024-05-06 07:08:09.123456", "2024-05-06 07:08:09.123456"},
+		{"", ""},
+		{"+08:00", "+08:00"},
+		// Not an offset the server would read: no colon, or no digit in front of
+		// the sign. Left alone so the server reports the value rather than a
+		// rewrite of it.
+		{"2024-05-06 07:08:09.123456+0800", "2024-05-06 07:08:09.123456+0800"},
+		{"text+08:00", "text+08:00"},
+	}
+	for _, c := range cases {
+		if got := separateTimestampOffset(c.in); got != c.want {
+			t.Errorf("separateTimestampOffset(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -535,5 +588,88 @@ func TestDelReader_EmptyColDelTerminates(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("parseLine did not return with an empty column delimiter")
+	}
+}
+
+// TestDelReader_BindFixups pins where the target engine's value adapter is
+// applied — after the hex decode and after the text modifiers, at the file
+// position it was given, and not at all for a NULL field. The adapters are the
+// test's own markers, because the numbers belong to internal/backend (pinned in
+// bind_dameng_test.go) and what is under test here is the reader's wiring: a
+// decoded payload must arrive as bytes, the file's text as text, and a column the
+// engine said nothing about must be untouched.
+func TestDelReader_BindFixups(t *testing.T) {
+	mod := &config.DelModifier{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`}
+	called := map[int]int{}
+	mark := func(idx int) func(interface{}) interface{} {
+		return func(v interface{}) interface{} {
+			called[idx]++
+			switch x := v.(type) {
+			case string:
+				return fmt.Sprintf("#%d:%s", idx, x)
+			case []byte:
+				return fmt.Sprintf("#%d:bytes(%d=%x)", idx, len(x), x)
+			default:
+				return fmt.Sprintf("#%d:%T", idx, v)
+			}
+		}
+	}
+	line := "12345678901234567890,0xaa,,\"0xaa\",0xzz\n"
+	binds := []func(interface{}) interface{}{mark(0), mark(1), mark(2), mark(3), nil}
+
+	d := NewDelReader(bufio.NewReader(strings.NewReader(line)), mod, false)
+	d.SetBinaryColumns([]bool{false, true, false, false, true})
+	d.SetBindFixups(binds)
+	got, err := d.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow: %v", err)
+	}
+	want := []interface{}{
+		"#0:12345678901234567890",
+		"#1:bytes(1=aa)",
+		nil,
+		"#3:0xaa",
+		// A binary column whose token is not decodable stays the file's text and
+		// the adapter still sees whatever the reader produced for it.
+		"0xzz",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("row = %#v, want %#v", got, want)
+	}
+	if called[2] != 0 {
+		t.Errorf("a NULL field reached its adapter %d times", called[2])
+	}
+
+	// Without adapters — the answer MySQL and PostgreSQL give for every column —
+	// the row is exactly what this reader has always produced: text for text
+	// fields, bytes for a decoded payload.
+	plain := NewDelReader(bufio.NewReader(strings.NewReader(line)), mod, false)
+	plain.SetBinaryColumns([]bool{false, true, false, false, true})
+	plain.SetBindFixups(nil)
+	got, err = plain.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow without binds: %v", err)
+	}
+	if got[0] != "12345678901234567890" || got[2] != nil || got[3] != "0xaa" {
+		t.Errorf("row = %#v, want the file's own text and NULL", got)
+	}
+	if b, ok := got[1].([]byte); !ok || len(b) != 1 || b[0] != 0xaa {
+		t.Errorf("binary column = %#v, want the decoded payload", got[1])
+	}
+
+	// The adapter runs after --date-fmt is reversed, so what the engine is asked
+	// about is the canonical text, not the file's layout.
+	dm := &config.DelModifier{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`, DateFmt: "yyyy/MM/dd"}
+	var saw string
+	dd := NewDelReader(bufio.NewReader(strings.NewReader(`"2026/03/15"`+"\n")), dm, false)
+	dd.SetColumnKinds([]common.ColumnKind{common.KindDate})
+	dd.SetBindFixups([]func(interface{}) interface{}{
+		func(v interface{}) interface{} { saw = v.(string); return v },
+	})
+	if _, err := dd.ReadRow(); err != nil {
+		t.Fatalf("ReadRow with date modifier: %v", err)
+	}
+	if saw != "2026-03-15" {
+		t.Errorf("adapter saw %q, want the canonical date text", saw)
 	}
 }

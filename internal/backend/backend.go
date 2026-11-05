@@ -332,6 +332,26 @@ type Backend interface {
 	// (see exporter.go's parseTime comment).
 	CellFixups(colTypes []*sql.ColumnType) []func([]byte) []byte
 
+	// BindFixups is the import-side counterpart of CellFixups: one adapter per
+	// target column, applied to a value between the reader and the driver
+	// placeholder. The argument is the catalogue's own DATA_TYPE words, in the
+	// order of the file's columns — the same list MetadataKind and
+	// MetadataBinary are asked about.
+	//
+	// It exists because a Go string is not one value to every driver. Dameng's
+	// parses the text it is given with a 64-bit big.Float, so the digits past
+	// about the fifteenth are the float's, and an integer target wraps silently
+	// past int64; its BIT column reads text as a boolean and answers 0 for a
+	// value it cannot name. See bind_dameng.go for the measured numbers and the
+	// three shapes that need adapting (decimal text, a 0x token, a raw payload).
+	//
+	// A nil at a position means "hand the driver exactly what the reader
+	// produced", which is the whole answer for MySQL and PostgreSQL: both take
+	// the file's text and the file's bytes as they are, measured on the live
+	// beds. Returning all-nils is therefore a statement about the engine, not
+	// an unimplemented method.
+	BindFixups(dataTypes []string) []func(interface{}) interface{}
+
 	// TransientError is the dialect half of "can a reconnect heal this?".
 	//
 	// decided is true when err is one of this engine's own typed server errors,

@@ -37,6 +37,10 @@ type DelReader struct {
 	// hex encoding is on, so the reader has to decode them back to bytes; for
 	// any other column a 0x token is ordinary text.
 	binaryCols []bool
+	// binds holds the target engine's value adapter per file-column position,
+	// from backend.BindFixups. Nil for MySQL and PostgreSQL, so their imports
+	// bind exactly what they bound before; see SetBindFixups.
+	binds []func(interface{}) interface{}
 
 	// Delimiter layout, resolved once. scanRows is a bufio.SplitFunc that runs
 	// for every record and parseLine tests delimiters at every byte position,
@@ -99,6 +103,31 @@ func (d *DelReader) SetBinaryColumns(flags []bool) {
 // isBinaryColumn reports whether the field at idx targets a binary column.
 func (d *DelReader) isBinaryColumn(idx int) bool {
 	return idx < len(d.binaryCols) && d.binaryCols[idx]
+}
+
+// SetBindFixups supplies the per-file-column value adapters the target engine
+// needs between the reader and the driver placeholder. A nil at a position, and
+// a short or absent slice, leaves the value exactly as the reader produced it.
+//
+// The adapters exist because a Go string is not one value to every driver: on
+// Dameng a decimal text past about fifteen digits is re-parsed through a 64-bit
+// float, an integer past int64 wraps, and a BIT column reads "0x01" as false.
+// All of it is the driver's and the server's measured behaviour, documented with
+// its numbers in internal/backend/bind_dameng.go; MySQL and PostgreSQL answer
+// nil for every column and change nothing here.
+func (d *DelReader) SetBindFixups(fixups []func(interface{}) interface{}) {
+	d.binds = fixups
+}
+
+// applyBind runs the target engine's adapter for one file-column position.
+func (d *DelReader) applyBind(v interface{}, idx int) interface{} {
+	if idx >= len(d.binds) {
+		return v
+	}
+	if f := d.binds[idx]; f != nil {
+		return f(v)
+	}
+	return v
 }
 
 // NewDelReader creates a new DEL format reader
@@ -245,11 +274,11 @@ func (d *DelReader) ReadRow() ([]interface{}, error) {
 		// and non-binary columns keep "0x…" verbatim.
 		if !quoted[i] && d.isBinaryColumn(i) {
 			if b, ok := decodeHexField(f); ok {
-				values[i] = b
+				values[i] = d.applyBind(b, i)
 				continue
 			}
 		}
-		values[i] = d.applyModifiers(f, i)
+		values[i] = d.applyBind(d.applyModifiers(f, i), i)
 	}
 
 	return values, nil
@@ -279,9 +308,46 @@ func (d *DelReader) applyModifiers(f string, idx int) string {
 				}
 			}
 		}
+	case common.KindTimestampTZ:
+		return separateTimestampOffset(f)
 	}
 	return f
 }
+
+// separateTimestampOffset puts one space between a timestamp's seconds and its
+// trailing UTC offset: "2024-05-06 07:08:09.123456+08:00" becomes
+// "2024-05-06 07:08:09.123456 +08:00".
+//
+// Dameng's Oracle-mode literal parser accepts only the spaced form for a
+// zone-bearing column — the dump's own text, which the Go time layout writes
+// with no space, is rejected on import with Error 6015 "Invalid datetime type
+// format" and the batch carries no rows. Measured on a DM8 instance for
+// TIMESTAMP WITH TIME ZONE, TIMESTAMP(6) WITH TIME ZONE, DATETIME(6) WITH TIME
+// ZONE and TIMESTAMP WITH LOCAL TIME ZONE: the spaced text is accepted and the
+// instant round-trips unchanged for a positive, negative or zero offset, with
+// any fractional precision up to six digits, and for year 0001. MySQL and
+// PostgreSQL are unaffected — no type word in their tables classifies as
+// KindTimestampTZ, so this branch never runs for them.
+//
+// Only an offset that is already glued to a digit is separated: text that has
+// the space already, ends in something else, or is too short is returned as is.
+func separateTimestampOffset(s string) string {
+	const offsetLen = 6 // "+08:00"
+	if len(s) < offsetLen+1 {
+		return s
+	}
+	i := len(s) - offsetLen
+	if s[i] != '+' && s[i] != '-' {
+		return s
+	}
+	if !isDigitByte(s[i-1]) || !isDigitByte(s[i+1]) || !isDigitByte(s[i+2]) ||
+		s[i+3] != ':' || !isDigitByte(s[i+4]) || !isDigitByte(s[i+5]) {
+		return s
+	}
+	return s[:i] + " " + s[i:]
+}
+
+func isDigitByte(c byte) bool { return c >= '0' && c <= '9' }
 
 // convertImportFormat converts a DB2-style format string to a Go layout,
 // mirroring the exporter's convertTimeFormat.
