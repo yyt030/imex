@@ -230,8 +230,10 @@ func (p *ParquetReader) ReadRow() (values []interface{}, err error) {
 		// A column the file itself marks as content bytes is read as bytes only
 		// where the target engine has something to do about that (see the note on
 		// parquetValueToInterface); a text target's adapter turns the bytes back
-		// into the string they used to be, so engines that answer nil for every
-		// adapter — MySQL and PostgreSQL — read exactly what they always did.
+		// into the string they used to be. MySQL marks only its BIT columns and
+		// BIT is never a content-bytes column, so — like PostgreSQL, which answers
+		// nil everywhere — content bytes still reach MySQL as the string they
+		// always were.
 		raw := p.isRawColumn(idx) && p.hasBindFixup(idx)
 		value := parquetValueToInterface(v, p.isBinaryColumn(idx) || raw)
 		if f := p.bindFixup(idx); f != nil {

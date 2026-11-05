@@ -38,8 +38,10 @@ type DelReader struct {
 	// any other column a 0x token is ordinary text.
 	binaryCols []bool
 	// binds holds the target engine's value adapter per file-column position,
-	// from backend.BindFixups. Nil for MySQL and PostgreSQL, so their imports
-	// bind exactly what they bound before; see SetBindFixups.
+	// from backend.BindFixups. Nil for PostgreSQL (and for every non-BIT MySQL
+	// column), so those imports bind exactly what they bound before; MySQL answers
+	// only for a BIT target, folding a peer engine's boolean text to a byte. See
+	// SetBindFixups and mysql.go's mysqlBindBit.
 	binds []func(interface{}) interface{}
 
 	// Delimiter layout, resolved once. scanRows is a bufio.SplitFunc that runs

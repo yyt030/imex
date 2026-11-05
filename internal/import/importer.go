@@ -409,11 +409,12 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// separateTimestampOffset does.
 	//
 	// The third lookup — the target engine's bind adapters, from the same type
-	// words — is the one that decides what Go value reaches the driver, and only
-	// Dameng answers anything but nil: its text path re-parses a decimal through a
+	// words — is the one that decides what Go value reaches the driver. Dameng
+	// answers for several columns (its text path re-parses a decimal through a
 	// 64-bit float, wraps an integer past int64, and reads a BIT column's text as
-	// a boolean. MySQL and PostgreSQL get an all-nil list and bind exactly what
-	// they bound before.
+	// a boolean). MySQL answers only for a BIT target, folding another engine's
+	// boolean text ("1"/"0") to the bit byte it stores. PostgreSQL gets an
+	// all-nil list and binds exactly what it bound before.
 	if imp.cfg.Format == "del" || imp.cfg.Format == "parquet" {
 		kinds, binaries, types, err := imp.columnInfoFor(ctx, readerColumns)
 		if err != nil {

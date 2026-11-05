@@ -346,10 +346,14 @@ type Backend interface {
 	// three shapes that need adapting (decimal text, a 0x token, a raw payload).
 	//
 	// A nil at a position means "hand the driver exactly what the reader
-	// produced", which is the whole answer for MySQL and PostgreSQL: both take
-	// the file's text and the file's bytes as they are, measured on the live
-	// beds. Returning all-nils is therefore a statement about the engine, not
-	// an unimplemented method.
+	// produced". PostgreSQL answers nil for every column: it takes the file's
+	// text and the file's bytes as they are, measured on the live beds. MySQL
+	// answers nil for every column except a BIT target — the one shape another
+	// engine's dump writes as boolean text ("1"/"0") rather than the 0x token
+	// MySQL itself emits, which the driver would otherwise read as the ASCII
+	// digit byte and the server rejects with Error 1406. Both are statements
+	// about the engine, not unimplemented methods; the fold is in mysql.go's
+	// mysqlBindBit.
 	BindFixups(dataTypes []string) []func(interface{}) interface{}
 
 	// TransientError is the dialect half of "can a reconnect heal this?".

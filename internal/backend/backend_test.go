@@ -833,31 +833,86 @@ func TestHexBlobMandatory(t *testing.T) {
 	}
 }
 
+// sameBind compares one bind-adapter result against an expected value, treating a
+// []byte as its content (so the byte-level BIT payload can be pinned) and every
+// other value by identity.
+func sameBind(got, want interface{}) bool {
+	gb, gok := got.([]byte)
+	wb, wok := want.([]byte)
+	if gok || wok {
+		return gok && wok && len(gb) == len(wb) && string(gb) == string(wb)
+	}
+	return got == want
+}
+
 // TestBindFixupsIsPerEngineAndPosition pins the third contract face of the import
 // path: one adapter per target column, in the order the reader's positions come
-// in, and the statement a nil carries. MySQL and PostgreSQL answer nil for every
-// column — their servers parse the file's own text, and the payload shapes that
-// drift on Dameng reach them as bytes already — while Dameng answers per type name
-// and leaves a binary or unknown column alone.
+// in, and the statement a nil carries. PostgreSQL answers nil for every column —
+// its bit input already takes the file's own text — while MySQL answers nil for
+// every column except a BIT target: a pg/Dameng dump writes a one-bit column as
+// the quoted text "1"/"0", which the driver reads into BIT(1) as the ASCII digit
+// byte 0x31 and the server rejects with Error 1406, so only that text is folded
+// back to the bit byte. Dameng answers per type name and leaves a binary or
+// unknown column alone.
 //
-// The numbers are the three defects this seam exists for, asserted through the
+// The numbers are the defects this seam exists for, asserted through the
 // interface rather than through the helper: text that the driver's 64-bit parse
 // moved, a 41-digit value that wrapped into a negative number, and a BIT column
-// that read "0x01" as false.
+// that read "0x01" as false (Dameng) or 0x31 as too-long (MySQL).
 func TestBindFixupsIsPerEngineAndPosition(t *testing.T) {
 	types := []string{"VARCHAR2", "NUMBER", "BIGINT", "FLOAT", "BIT", "BLOB", "DATE", "", "NOT_A_TYPE"}
-	for _, e := range []Engine{EngineMySQL, EnginePG} {
-		got := Must(e).BindFixups(types)
-		if len(got) != len(types) {
-			t.Fatalf("%s: %d adapters for %d columns", e, len(got), len(types))
-		}
+
+	// PostgreSQL: nil for every column, the file's text binds as it is.
+	if got := Must(EnginePG).BindFixups(types); len(got) != len(types) {
+		t.Fatalf("pg: %d adapters for %d columns", len(got), len(types))
+	} else {
 		for i, f := range got {
 			if f != nil {
-				t.Errorf("%s: column %d (%q) has an adapter; that engine binds the file's text as it is", e, i, types[i])
+				t.Errorf("pg: column %d (%q) has an adapter; that engine binds the file's text as it is", i, types[i])
 			}
 		}
-		if got := Must(e).BindFixups(nil); len(got) != 0 {
-			t.Errorf("%s: no columns must give no adapters, got %d", e, len(got))
+		if got := Must(EnginePG).BindFixups(nil); len(got) != 0 {
+			t.Errorf("pg: no columns must give no adapters, got %d", len(got))
+		}
+	}
+
+	// MySQL: nil everywhere except the BIT column (position 4), and the BIT
+	// adapter folds the boolean text to a byte while leaving the payload bytes
+	// that MySQL's own 0x form and Parquet hand over untouched — the width-safety
+	// boundary that keeps a real BIT(8) 0x30 from being re-read as the text "0".
+	if got := Must(EngineMySQL).BindFixups(types); len(got) != len(types) {
+		t.Fatalf("mysql: %d adapters for %d columns", len(got), len(types))
+	} else {
+		for i, f := range got {
+			want := i == 4
+			if (f != nil) != want {
+				t.Errorf("mysql: column %d (%q) adapter = %v, want present=%v", i, types[i], f != nil, want)
+			}
+		}
+		if got := Must(EngineMySQL).BindFixups(nil); len(got) != 0 {
+			t.Errorf("mysql: no columns must give no adapters, got %d", len(got))
+		}
+		bit := Must(EngineMySQL).BindFixups(types)[4]
+		// bindRender collapses every []byte to "@bytes", so the BIT adapter is
+		// checked on its concrete result: the boolean text becomes the exact bit
+		// byte, and every value that must not move (the payload bytes MySQL's own
+		// 0x form and Parquet hand over, and unrelated text) stays identical.
+		for _, c := range []struct {
+			in   interface{}
+			want interface{}
+			why  string
+		}{
+			{"1", []byte{1}, "boolean text 1 becomes the bit byte"},
+			{"0", []byte{0}, "boolean text 0 becomes the bit byte"},
+			{"true", []byte{1}, "the word true becomes the bit byte"},
+			{"false", []byte{0}, "the word false becomes the bit byte"},
+			{[]byte{0x30}, []byte{0x30}, "a real payload byte is NOT re-read as text"},
+			{[]byte{0x01}, []byte{0x01}, "MySQL's own decoded payload passes through"},
+			{"2", "2", "any other text is left as the file wrote it"},
+		} {
+			if !sameBind(bit(c.in), c.want) {
+				t.Errorf("mysql BIT: %s: %#v = %#v, want %#v", c.why, c.in, bit(c.in), c.want)
+			}
 		}
 	}
 

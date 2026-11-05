@@ -264,12 +264,69 @@ func (mysqlBackend) CellFixups(colTypes []*sql.ColumnType) []func([]byte) []byte
 	return make([]func([]byte) []byte, len(colTypes))
 }
 
-// BindFixups returns a nil adapter for every column, and the nil is the answer
-// rather than a gap: the server parses the text it is given for its own DECIMAL
-// and integer types, and the two shapes that need adapting on Dameng never reach
-// a MySQL placeholder unchanged — a BIT or BLOB target is classified as binary,
-// so the DEL reader decodes the 0x token to bytes and the Parquet reader hands
-// over the payload as bytes, which is what those columns store.
+// BindFixups answers per target column how an imported value has to reach the
+// driver. MySQL and PostgreSQL need nothing for their own dumps — the server
+// parses the text it is given for DECIMAL and integer types, and a binary target
+// (BIT or BLOB) is classified as binary, so the DEL reader decodes the 0x token
+// to bytes and the Parquet reader hands the payload over as bytes, which is what
+// those columns store.
+//
+// The one column that is NOT already covered is a BIT target fed by another
+// engine's dump. MySQL writes its own BIT as an unquoted 0x token (bit1 is 0x01
+// in this round's measured dumps), so re-importing a MySQL file decodes it to
+// bytes and it binds as it always has. A PostgreSQL or Dameng dump, however,
+// writes the same one-bit column as the quoted text "1"/"0" (measured this round:
+// pg and dm both emit "1"), and the driver reads that 1-character text into a
+// BIT(1) as the ASCII digit byte 0x31 = 49, which the server rejects with
+// `Error 1406 (22001): Data too long for column 'bit1'` (the whole of the
+// pg→my and dm→my cross-engine failures this round measured). The adapter below
+// turns only that text into the byte payload a BIT column stores.
+//
+// It is deliberately keyed to strings: the unquoted-hex form the same column
+// carries in a MySQL file reaches the placeholder as []byte (decodeHexField in
+// sql_reader.go runs first), and raw bytes are left exactly as they are, so a
+// real BIT(8) payload such as 0x30 is never mistaken for the text "0". Only the
+// four unambiguous boolean words move, so this changes nothing but the failing
+// cross-engine path.
 func (mysqlBackend) BindFixups(dataTypes []string) []func(interface{}) interface{} {
-	return make([]func(interface{}) interface{}, len(dataTypes))
+	fixups := make([]func(interface{}) interface{}, len(dataTypes))
+	for i, dt := range dataTypes {
+		if isMySQLBitType(dt) {
+			fixups[i] = mysqlBindBit
+		}
+	}
+	return fixups
+}
+
+// isMySQLBitType reports a BIT target column from the catalogue DATA_TYPE word
+// (information_schema.DATA_TYPE is "bit"; a length suffix, if any, is dropped).
+func isMySQLBitType(dataType string) bool {
+	name := strings.ToUpper(strings.TrimSpace(dataType))
+	if p := strings.IndexByte(name, '('); p >= 0 {
+		name = strings.TrimSpace(name[:p])
+	}
+	return name == "BIT"
+}
+
+// mysqlBindBit reduces the boolean text another engine writes for a one-bit
+// column to the single byte a MySQL BIT stores. Bytes (MySQL's own 0x form, once
+// decoded, and every Parquet payload) and every other value pass through
+// untouched, so this only ever fixes the pg→my / dm→my boolean case.
+func mysqlBindBit(v interface{}) interface{} {
+	switch x := v.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "1", "true":
+			return []byte{1}
+		case "0", "false":
+			return []byte{0}
+		}
+		return x
+	case bool:
+		if x {
+			return []byte{1}
+		}
+		return []byte{0}
+	}
+	return v
 }
