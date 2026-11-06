@@ -206,9 +206,10 @@ func TestCLIResultAndMessageSameFileIsRefused(t *testing.T) {
 		{
 			name: "import", resultArg: "--input", optional: false,
 			args: func(p string) []string {
-				// --mode create is the only import invocation that needs no --table,
-				// so the run reaches the path guard instead of the table check.
-				return append(append([]string{"import", "-f", "sql", "-M", "create", "-i", p}, env.base...), "-m", p)
+				// --table is always required now, so supply it; the run then reaches
+				// the path guard (--input and --messages on the same file) instead of
+				// the missing-table check.
+				return append(append([]string{"import", "-f", "sql", "-t", fix.table, "-i", p}, env.base...), "-m", p)
 			},
 		},
 	}

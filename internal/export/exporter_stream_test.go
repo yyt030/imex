@@ -52,11 +52,11 @@ func readOut(t *testing.T, path string) string {
 	return string(b)
 }
 
-// TestWriteShardStreamSQLHasNoTableLocks pins the preamble of a parallel SQL
-// dump: the charset header leads, both shard bodies follow in order, and there
-// is no LOCK TABLES/UNLOCK TABLES pair anywhere. The pair used to be written by
-// this merge step (and suppressed per shard); it is gone because it made the
-// dump unreplayable into an empty schema.
+// TestWriteShardStreamSQLHasNoTableLocks pins the shape of a parallel SQL dump:
+// the two shard bodies follow in order, with neither the LOCK TABLES/UNLOCK
+// TABLES pair that used to make the dump unreplayable into an empty schema nor
+// the `SET NAMES` preamble that used to lead it. A parallel dump now starts at
+// the first INSERT, exactly like a single-threaded one.
 func TestWriteShardStreamSQLHasNoTableLocks(t *testing.T) {
 	e := streamTestExporter(t, "sql", false)
 
@@ -72,15 +72,18 @@ func TestWriteShardStreamSQLHasNoTableLocks(t *testing.T) {
 	if strings.Contains(out, "LOCK TABLES") || strings.Contains(out, "UNLOCK TABLES") {
 		t.Errorf("dump must not contain lock statements:\n%s", out)
 	}
-	if got := strings.Count(out, "SET NAMES"); got != 1 {
-		t.Errorf("expected exactly one SET NAMES header, got %d in:\n%s", got, out)
+	if got := strings.Count(out, "SET NAMES"); got != 0 {
+		t.Errorf("expected no SET NAMES preamble, got %d in:\n%s", got, out)
 	}
 
-	// The charset header still leads, and the shards stay in order behind it.
-	header := strings.Index(out, "SET NAMES")
+	// With no preamble, the file leads with the first shard's INSERT and the
+	// shards stay in order.
 	firstRow := strings.Index(out, "VALUES (1)")
 	secondRow := strings.Index(out, "VALUES (2)")
-	if !(header >= 0 && header < firstRow && firstRow < secondRow) {
+	if !strings.HasPrefix(out, "INSERT INTO") {
+		t.Errorf("parallel dump must lead with an INSERT, got:\n%s", out)
+	}
+	if !(firstRow >= 0 && firstRow < secondRow) {
 		t.Errorf("unexpected statement order in:\n%s", out)
 	}
 }

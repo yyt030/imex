@@ -23,11 +23,15 @@ func captureWriterWarnings(t *testing.T) *bytes.Buffer {
 	return &logs
 }
 
-func TestSQLWriter_SetNamesHeader(t *testing.T) {
-	// The charset line is the whole preamble, for every connection charset.
+func TestSQLWriter_NoPreamble(t *testing.T) {
+	// The dump carries no preamble line at all: it used to open with a MySQL
+	// version-conditional `/*!40101 SET NAMES <charset> */;`, which is MySQL
+	// session grammar and cannot ride in a file meant to replay unchanged on
+	// every engine. Whatever the connection charset, the product now starts at
+	// the first INSERT.
 	for _, charset := range []string{"utf8mb4", "latin1", "utf8"} {
 		var buf bytes.Buffer
-		w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize, charset)
+		w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize)
 		if err := w.WriteHeader([]string{"id"}); err != nil {
 			t.Fatalf("WriteHeader(%s): %v", charset, err)
 		}
@@ -38,40 +42,41 @@ func TestSQLWriter_SetNamesHeader(t *testing.T) {
 			t.Fatalf("WriteFooter(%s): %v", charset, err)
 		}
 		out := buf.String()
-		if !strings.HasPrefix(out, "/*!40101 SET NAMES "+charset+" */;\n") {
-			t.Errorf("missing SET NAMES header for %s, got:\n%s", charset, out)
+		if strings.Contains(out, "SET NAMES") || strings.Contains(out, "40101") {
+			t.Errorf("preamble must be gone for %s, got:\n%s", charset, out)
 		}
-		if !strings.Contains(out, "INSERT INTO") {
-			t.Errorf("expected INSERT after the header (charset=%s):\n%s", charset, out)
+		if !strings.HasPrefix(out, "INSERT INTO") {
+			t.Errorf("expected INSERT as the first line for %s, got:\n%s", charset, out)
 		}
 	}
 }
 
-// TestSQLWriter_HeaderIsPreambleOnly pins the DDL removal: the header is the
-// charset line alone. It used to also carry `-- Table structure for <t>`, the
-// CREATE TABLE statement, a blank line and `-- Data for <t>`. Table definitions
-// now come only from `imex show tab`, which is the only place this tool reads
-// SHOW CREATE TABLE, so a SQL export must not contain DDL or section comments.
-func TestSQLWriter_HeaderIsPreambleOnly(t *testing.T) {
+// TestSQLWriter_HeaderEmitsNothing pins the whole-file invariant at the empty
+// end: an export with only a header and footer — no row — is a zero-byte file.
+// It used to open with `/*!40101 SET NAMES utf8mb4 */;`; that preamble is gone,
+// so a data-only dump of an empty table is exactly empty, and the importer's
+// only-preamble handling reads it as the no-op it is. Table definitions still
+// never appear here: they come only from `imex show tab`.
+func TestSQLWriter_HeaderEmitsNothing(t *testing.T) {
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize)
 	if err := w.WriteHeader([]string{"id"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.WriteFooter(); err != nil {
 		t.Fatal(err)
 	}
-	if got := buf.String(); got != "/*!40101 SET NAMES utf8mb4 */;\n" {
-		t.Errorf("header = %q, want the charset line only", got)
+	if got := buf.String(); got != "" {
+		t.Errorf("header = %q, want the empty string (no preamble)", got)
 	}
 }
 
 // TestSQLWriter_NeverEmitsDDL keeps the whole-file invariant, not just the
-// header: after a row has been written the product is still SET NAMES plus
-// INSERT statements, with no CREATE TABLE anywhere.
+// empty end: after a row has been written the product is still only INSERT
+// statements — no preamble, no CREATE TABLE, no section comment anywhere.
 func TestSQLWriter_NeverEmitsDDL(t *testing.T) {
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize)
 	if err := w.WriteHeader([]string{"id"}); err != nil {
 		t.Fatal(err)
 	}
@@ -82,16 +87,19 @@ func TestSQLWriter_NeverEmitsDDL(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	for _, forbidden := range []string{"CREATE TABLE", "DROP TABLE", "-- Table structure", "-- Data for"} {
+	for _, forbidden := range []string{"CREATE TABLE", "DROP TABLE", "-- Table structure", "-- Data for", "SET NAMES"} {
 		if strings.Contains(out, forbidden) {
 			t.Errorf("dump must not contain %q, got:\n%s", forbidden, out)
 		}
+	}
+	if !strings.HasPrefix(out, "INSERT INTO") {
+		t.Errorf("dump must start at the first INSERT, got:\n%s", out)
 	}
 }
 
 func TestSQLWriter_EscapeHandling(t *testing.T) {
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"s"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"s"}, config.DefaultStatementSize)
 	w.WriteHeader(nil)
 
 	// Test: newline, carriage return, tab, backslash, single quote
@@ -136,7 +144,7 @@ func TestSQLWriter_EscapeHandling(t *testing.T) {
 
 func TestSQLWriter_OneInsertPerLine(t *testing.T) {
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"s"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"s"}, config.DefaultStatementSize)
 	w.WriteHeader(nil)
 	w.WriteRow([]interface{}{"hello\nworld"})
 	w.WriteRow([]interface{}{"foo\rbar"})
@@ -162,7 +170,7 @@ func TestSQLWriter_OneInsertPerLine(t *testing.T) {
 
 func TestSQLWriter_HexBlobEncoding(t *testing.T) {
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id", "data"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id", "data"}, config.DefaultStatementSize)
 	w.SetBinaryFormat([]bool{false, true}, true)
 	w.WriteHeader(nil)
 
@@ -199,7 +207,7 @@ func TestSQLWriter_HexBlobEncoding(t *testing.T) {
 
 func TestSQLWriter_HexBlobDisabled(t *testing.T) {
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"data"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"data"}, config.DefaultStatementSize)
 	w.SetBinaryFormat([]bool{true}, false) // binary column but hex disabled
 	w.WriteHeader(nil)
 	w.WriteRawRow([]sql.RawBytes{sql.RawBytes("raw\x00bytes")})
@@ -217,7 +225,7 @@ func TestSQLWriter_HexBlobDisabled(t *testing.T) {
 func TestSQLWriter_StatementSizeBatching(t *testing.T) {
 	// Use a very small statement size to force batch splitting
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id", "name"}, 80, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id", "name"}, 80)
 	w.WriteHeader(nil)
 
 	// Write enough rows to exceed the 80-byte statement size
@@ -237,7 +245,7 @@ func TestSQLWriter_StatementSizeBatching(t *testing.T) {
 func TestSQLWriter_StatementSizeSingleRowOverflow(t *testing.T) {
 	// A single row that exceeds statementSize should still be written (graceful degradation)
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"data"}, 10, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"data"}, 10)
 	w.WriteHeader(nil)
 
 	// This single value exceeds the 10-byte budget
@@ -253,7 +261,7 @@ func TestSQLWriter_StatementSizeSingleRowOverflow(t *testing.T) {
 func TestSQLWriter_YearNormalization(t *testing.T) {
 	// YEAR "0000" should pass through as-is (normalization happens upstream)
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"y"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"y"}, config.DefaultStatementSize)
 	w.WriteHeader(nil)
 	w.WriteRawRow([]sql.RawBytes{sql.RawBytes("0000")})
 	w.WriteFooter()
@@ -267,7 +275,7 @@ func TestSQLWriter_YearNormalization(t *testing.T) {
 func TestSQLWriter_NumericColumnsUnquoted(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "amount", "name", "flag", "year"},
-		config.DefaultStatementSize, "utf8mb4")
+		config.DefaultStatementSize)
 	w.SetColumnKinds([]common.ColumnKind{
 		common.KindNumber, common.KindNumber, common.KindUnknown, common.KindNumber, common.KindYear,
 	})
@@ -298,7 +306,7 @@ func TestSQLWriter_NumericColumnsUnquoted(t *testing.T) {
 func TestSQLWriter_WriteRowNumericValuesUnquoted(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"a", "b", "c", "d"},
-		config.DefaultStatementSize, "utf8mb4")
+		config.DefaultStatementSize)
 	w.SetColumnKinds([]common.ColumnKind{
 		common.KindNumber, common.KindNumber, common.KindNumber, common.KindUnknown,
 	})
@@ -320,7 +328,7 @@ func TestSQLWriter_WriteRowNumericValuesUnquoted(t *testing.T) {
 func TestSQLWriter_NumericValuesStayQuotedWithoutKinds(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"a", "b"},
-		config.DefaultStatementSize, "utf8mb4")
+		config.DefaultStatementSize)
 	if err := w.WriteHeader(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +347,7 @@ func TestSQLWriter_NumericValuesStayQuotedWithoutKinds(t *testing.T) {
 func TestSQLWriter_MergedTuplesHaveNoSpaces(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewSQLWriter(&buf, "t", []string{"id", "v"},
-		config.DefaultStatementSize, "utf8mb4")
+		config.DefaultStatementSize)
 	w.SetColumnKinds([]common.ColumnKind{common.KindNumber, common.KindUnknown})
 	if err := w.WriteHeader(nil); err != nil {
 		t.Fatal(err)
@@ -360,7 +368,7 @@ func TestSQLWriter_MergedTuplesHaveNoSpaces(t *testing.T) {
 
 func TestSQLWriter_SingleRowInsert(t *testing.T) {
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, config.DefaultStatementSize)
 	w.SetSingleRowInsert(true)
 	w.WriteHeader(nil)
 
@@ -399,7 +407,7 @@ func TestSQLWriter_SingleRowInsert(t *testing.T) {
 
 func TestSQLWriter_SingleRowInsertRawRows(t *testing.T) {
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize)
 	w.SetSingleRowInsert(true)
 	w.WriteHeader(nil)
 
@@ -417,7 +425,7 @@ func TestSQLWriter_SingleRowInsertOverridesStatementSize(t *testing.T) {
 	// A statement size that would normally split rows into one-per-statement is
 	// irrelevant now, but the layout must stay valid either way.
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 1, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 1)
 	w.SetSingleRowInsert(true)
 	w.WriteHeader(nil)
 	w.WriteRow([]interface{}{int64(1), strings.Repeat("x", 50)})
@@ -438,10 +446,11 @@ func TestSQLWriterWritesNoTableLocks(t *testing.T) {
 	// lock statement came before CREATE TABLE, so the file could not be replayed
 	// into an empty schema: the standard mysql client stopped on the second line
 	// with ERROR 1146 (table does not exist). The pair is not written at all now,
-	// for either layout.
+	// for either layout, and the SET NAMES preamble that used to sit above it is
+	// gone too, so the file is INSERT statements from its first line.
 	for _, singleRow := range []bool{true, false} {
 		var buf bytes.Buffer
-		w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize, "utf8mb4")
+		w := NewSQLWriter(&buf, "t", []string{"id"}, config.DefaultStatementSize)
 		w.SetSingleRowInsert(singleRow)
 		if err := w.WriteHeader(nil); err != nil {
 			t.Fatalf("WriteHeader(singleRow=%v): %v", singleRow, err)
@@ -457,8 +466,11 @@ func TestSQLWriterWritesNoTableLocks(t *testing.T) {
 		if strings.Contains(out, "LOCK TABLES") || strings.Contains(out, "UNLOCK TABLES") {
 			t.Errorf("dump must not contain lock statements (singleRow=%v):\n%s", singleRow, out)
 		}
-		if !strings.Contains(out, "SET NAMES") || !strings.Contains(out, "INSERT INTO") {
-			t.Errorf("preamble and data must survive (singleRow=%v):\n%s", singleRow, out)
+		if strings.Contains(out, "SET NAMES") {
+			t.Errorf("dump must not carry the SET NAMES preamble (singleRow=%v):\n%s", singleRow, out)
+		}
+		if !strings.HasPrefix(out, "INSERT INTO") {
+			t.Errorf("data must survive as the first line (singleRow=%v):\n%s", singleRow, out)
 		}
 	}
 }
@@ -469,7 +481,7 @@ func TestSQLWriter_ExtendedInsertNeverMergedWarns(t *testing.T) {
 	// single-row layout it was meant to avoid. That has to be said out loud.
 	logs := captureWriterWarnings(t)
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 64, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 64)
 	w.WriteHeader(nil)
 
 	for i := 1; i <= 3; i++ {
@@ -496,7 +508,7 @@ func TestSQLWriter_ExtendedInsertNeverMergedWarns(t *testing.T) {
 func TestSQLWriter_ExtendedInsertMergedStaysSilent(t *testing.T) {
 	logs := captureWriterWarnings(t)
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, config.DefaultStatementSize, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, config.DefaultStatementSize)
 	w.WriteHeader(nil)
 
 	for i := 1; i <= 3; i++ {
@@ -521,7 +533,7 @@ func TestSQLWriter_ExtendedInsertSingleRowDoesNotWarn(t *testing.T) {
 	// never-merged warning would only be noise here.
 	logs := captureWriterWarnings(t)
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 1, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 1)
 	w.WriteHeader(nil)
 	if err := w.WriteRow([]interface{}{int64(1), "row"}); err != nil {
 		t.Fatalf("WriteRow: %v", err)
@@ -539,7 +551,7 @@ func TestSQLWriter_SingleRowInsertWarnsOnceOnly(t *testing.T) {
 	// one line per file, and never emits the merged-layout warning.
 	logs := captureWriterWarnings(t)
 	var buf bytes.Buffer
-	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 64, "utf8mb4")
+	w := NewSQLWriter(&buf, "t", []string{"id", "v"}, 64)
 	w.SetSingleRowInsert(true)
 	w.WriteHeader(nil)
 

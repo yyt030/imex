@@ -33,7 +33,6 @@ func TestAddBatchResultCounters(t *testing.T) {
 		wantUnch int64
 	}{
 		{"insert fresh table", config.ImportModeInsert, 4, 4, 4, 0, 0},
-		{"create mode same as insert", config.ImportModeCreate, 3, 3, 3, 0, 0},
 		{"replace empties the table first so every row is new", config.ImportModeReplace, 4, 4, 4, 0, 0},
 		{"insert_update all new", config.ImportModeInsertUpdate, 4, 4, 4, 0, 0},
 		{"insert_update all changed", config.ImportModeInsertUpdate, 4, 8, 0, 4, 0},

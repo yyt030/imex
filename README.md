@@ -10,7 +10,7 @@
 - **Pipeline 模式**：导入导出采用 goroutine → channel → goroutine 流水线架构，提升吞吐量
 - **联合主键支持**：完整支持复合主键的并行分片导出
 - **复杂 SQL 智能检测**：集成 Vitess SQL 解析器，自动检测 JOIN 查询并降级为单线程导出，单表查询自动分片并行
-- **灵活的导入模式**：INSERT / INSERT_UPDATE / REPLACE / CREATE
+- **灵活的导入模式**：INSERT / INSERT_UPDATE / REPLACE
 - **列映射导入**：支持文件列到表列的自定义映射（DB2 风格），可按位置或按名称映射
 - **元数据查询**：`imex list` 只读查看库、表、视图、列、索引、触发器、例程与事件，结果按对齐表格输出，可写 `--output` 文件
 - **对象定义导出**：`imex show tab|vws|trg|evt|prc|fcn <名称>` 打印单个对象在服务器上的 `CREATE` 语句原文，只补终止符，不重写文本
@@ -26,7 +26,7 @@
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
-- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，支持 `export`/`import` 的 `-f del` 与 `-f parquet`（单线程、`--mode insert`）和 `list` 的七个对象；达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，支持 `export`/`import` 的 `-f del` 与 `-f parquet`（单线程、`--mode insert|replace`）和 `list` 的四个对象。`show`、`-f sql`、并行、`--session-var` 等 MySQL 专有能力在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
+- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，`list` 给七个对象；导出侧仍限单线程，`show` 与 `--no-hex-blob` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export`/`import` 支持 `-f del|parquet`（单线程、`--mode insert|replace`）和 `list` 的四个对象，`show`、`-f sql`、并行导出、`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -63,7 +63,7 @@ docker run -d --name imex-mysql -e MYSQL_ROOT_PASSWORD=secret \
 IMEX_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/imex_it' make test-live
 ```
 
-覆盖 DEL/SQL/Parquet 往返、insert/insert_update/replace/create 模式、列映射、并行导出与并行导入、日志文件。
+覆盖 DEL/SQL/Parquet 往返、insert/insert_update/replace 模式、列映射、并行导出与并行导入、日志文件。
 
 ### 交叉编译
 
@@ -133,16 +133,17 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
   --mode insert_update \
   -t users
 
-# 从 SQL 文件创建表并导入（create 模式也需 -t 指定新表名）
-# SQL 导出只带数据，建表语句由 `imex show tab` 取，两个文件拼起来才是自带结构的导出
+# 自带结构的 SQL：建表语句由 `imex show tab` 取，数据由 export 取，拼起来是一份完整 dump
 imex show tab users -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users_ddl.sql
 imex export -h 127.0.0.1 -u root -p password -D mydb \
   -o /backup/users_data.sql -f sql -q "SELECT * FROM users"
 cat /backup/users_ddl.sql /backup/users_data.sql > /backup/users.sql
+# 这份拼接文件交给标准 mysql 客户端可一次建表并灌数据；imex import 不重放 DDL，
+# 它跳过文件里的 CREATE 语句，只导入 INSERT，因此要先用上面的 DDL 把表建好，再以 insert 模式导入
 imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/users.sql -f sql \
-  --mode create -t users
+  --mode insert -t users
 ```
 
 ## 命令说明
@@ -163,7 +164,7 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 | `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明）；`--engine dm` 时它就是达梦的账号，不能为空，为空在建连之前退出 2 | `IMEX_USER` | `root` |
 | `--password` | `-p` | 数据库密码 | `IMEX_PASSWORD` | 空 |
 | `--database` | `-D` | 数据库名；`--engine dm` 时它是模式名，既写进驱动的 `schema` 参数，也是目录查询过滤的 `OWNER` | `IMEX_DATABASE` | 空 |
-| `--session-var` | | 导出前设置的会话变量（`name=value`，可重复，见下方说明）；`--engine pg` 与 `--engine dm` 下整个选项被拒（退出 2） | | 空 |
+| `--session-var` | | 导出前设置的会话变量（`name=value`，可重复，见下方说明）；`--engine pg` 与 MySQL 同一口径生效（每条新物理连接执行 `SET name = value`），`--engine dm` 下整个选项被拒（退出 2） | | 空 |
 | `--connect-timeout` | | 建连（TCP dial）超时，落到驱动的 `timeout` | | `5s` |
 | `--socket-read-timeout` | | 单次 socket 读超时，落到驱动的 `readTimeout` | | `300s` |
 | `--socket-write-timeout` | | 单次 socket 写超时，落到驱动的 `writeTimeout` | | `300s` |
@@ -202,9 +203,9 @@ imex export ... --threads 4 \
   -q "SELECT * FROM users"
 ```
 
-- 变量以 DSN 附加参数方式注入，驱动会在**每一条新建物理连接**上自动执行对应 `SET`，因此主连接、并行导出的每个分片连接、并行导入的每个工作线程连接都一致生效，不受连接池复用影响。
-- 值按 SQL 字面量自动处理：纯数字与 `ON/OFF/TRUE/FALSE/DEFAULT/NULL` 原样传入，其余加单引号（内部单引号双写）。值中禁止反引号、注释序列（`/*`、`--`）与反斜杠，防止破坏或注入 SET 语句。
-- 变量名须匹配 `[A-Za-z][A-Za-z0-9_]*`；与工具/驱动内部 DSN 参数同名（`charset`、`parseTime`、`tls`、`timeout` 等 29 个）会被拒绝——这份保留清单属于 MySQL 驱动的连接串词汇，由方言层交出（`internal/backend/dsn_mysql.go`），`--engine pg` 与 `--engine dm` 下 `--session-var` 整个被拒绝（见下方 PG 与达梦两节），因此解析器本身不认识引擎。连接/文件字符集由 `--default-charset` 统一掌管，会话级字符集变量 `character_set_client` / `character_set_connection` / `character_set_results` 同样被拒绝——否则会以会话变量绕过该不变量（如 `character_set_results=gbk` 会转码二进制列造成损坏）。未知变量名会在连接阶段由服务端报错，便于尽早发现拼写错误。
+- 变量在**每一条新建物理连接**上生效，不受连接池复用影响：MySQL 侧由驱动把这些值放进 DSN 附加参数、在建连时自动执行对应 `SET`；`--engine pg` 走同一语义的另一条通道——pgx 的 AfterConnect 钩子在每条新物理连接上依次执行 `SET name = value`。两者都是「每连接一条 SET」，因此主连接、并行导出的每个分片连接、并行导入的每个工作线程连接都一致生效。`--engine dm` 仍不支持（见下方达梦一节）。
+- 值按 SQL 字面量自动处理（MySQL 与 pg 共用这一份解析）：纯数字与 `ON/OFF/TRUE/FALSE/DEFAULT/NULL` 原样传入，其余加单引号（内部单引号双写）。值中禁止反引号、注释序列（`/*`、`--`）与反斜杠，防止破坏或注入 SET 语句。
+- 变量名须匹配 `[A-Za-z][A-Za-z0-9_]*`；与工具/驱动内部参数同名的会被拒绝，且**保留清单按引擎不同**：MySQL 侧是 go-sql-driver 的连接串词汇（`charset`、`parseTime`、`tls`、`timeout` 等，由方言层交出，`internal/backend/dsn_mysql.go`），pg 侧是 libpq/pgx 的连接关键字（`host`、`port`、`dbname`、`user`、`password`、`sslmode`、`connect_timeout` 等）加上工具自己掌控的 GUC（`client_encoding`、`statement_timeout`），清单由 `internal/backend/postgres.go` 交出。这些保留名在连库之前即被 `parseSessionVars` 拒绝，因此解析器本身不认识引擎——它向方言层要一张表。连接/文件字符集由 `--default-charset` 统一掌管，会话级字符集变量 `character_set_client` / `character_set_connection` / `character_set_results` 在 MySQL 侧同样被拒绝——否则会以会话变量绕过该不变量（如 `character_set_results=gbk` 会转码二进制列造成损坏）。未知变量名会在连接阶段由服务端报错，便于尽早发现拼写错误。
 - 运行日志只打印变量**名**（`names=[sql_mode foreign_key_checks]`），**不打印值**——值可能包含密码/密钥等敏感信息，与失败 SQL 默认脱敏的原则一致。
 
 **字符集与二进制编码（`--default-charset` / `--hex-blob`）：**
@@ -293,8 +294,9 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 |------|------|--------|
 | `--statement-size` | 单条 INSERT 语句最大字节数（只有 `--extended-insert` 时是攒批上限；默认单行布局下一行无法再拆，超过它只记一次告警） | `8388608`（8MiB） |
 | `--extended-insert` | 把多行合并进一条 INSERT（按 `--statement-size` 分组，等价 mysqldump 默认行为）；若 `--statement-size` 低于单行语句宽度则一条也合不成，产物退回每行一条 INSERT 并记一次告警 | `false` |
+| `--sql-dialect` | 指定 `-f sql` 产物写哪种 SQL 语法：`auto`（默认）跟随所连引擎——MySQL 引擎逐字节保持既有 MySQL 语法、PostgreSQL 引擎写 pg 语法；`mysql`/`pg` 显式指定，**与连的哪个引擎无关**（一个 MySQL 库可以刻意产出 pg dump）。pg 语法用双引号标识符、`'\x..'::bytea` 表二进制、含控制字符的串写 `E'..'`、布尔写 `true`/`false`；MySQL 语法用反引号、`0x` 十六进制、反斜杠转义。仅 `--format sql` 生效（其它格式下传入是用法错误退出 2）；非法值 `invalid --sql-dialect "x": must be one of auto/mysql/pg` 退出 2。达梦无写侧方言、回落到 MySQL 语法，但其 `-f sql` 路径在建连前就被拒 | `auto` |
 
-> SQL 导出只写数据语句：一行 `SET NAMES` 加每行一条 `INSERT`，**不含任何 DDL**。文件的另一半——建表语句——由 `imex show tab` 交回，它是本工具唯一读 `SHOW CREATE TABLE` 的地方，两者拼起来就是自带结构的导出（见上文 create 模式示例与「show - 对象定义导出」一节）。`--create` 与 `--no-data` 已直接删除、不留别名，传入即 `unknown flag: --create` / `unknown flag: --no-data` 并退出 2（`--no-create`、`--single-row-insert` 此前已按同一口径移除）。因为产物只描述数据，`--format sql` 仍只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。`-q`（含 `-q @file` 从文件读入的语句）里若表名带了 schema（`db.tbl`），导出只按裸表名写 `INSERT`，并行路径的分片键探测、统计读取与采样边界仍以查询点名的 schema 为准（见「并行导出」一节），因此不会再出现把连接的 `--database` 二次拼接导致的 `Error 1054/1146`。`import --mode create` 依赖文件里的 `CREATE TABLE`，本工具的 SQL 产物不再提供它，须由 `show tab` 补上；`mysqldump` 等外部工具的文件照旧直接可用。
+> SQL 导出只写数据语句：逐行 `INSERT`，**不含任何前导，也不含任何 DDL**（历史上的 `SET NAMES` 前导已移除，以便同一份文件跨 MySQL/PostgreSQL/达梦 通用回放）。文件的另一半——建表语句——由 `imex show tab` 交回，它是本工具唯一读 `SHOW CREATE TABLE` 的地方，两者拼起来就是自带结构的 dump（见上文自带结构 SQL 示例与「show - 对象定义导出」一节）。`--create` 与 `--no-data` 已直接删除、不留别名，传入即 `unknown flag: --create` / `unknown flag: --no-data` 并退出 2（`--no-create`、`--single-row-insert` 此前已按同一口径移除）。因为产物只描述数据，`--format sql` 仍只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。`-q`（含 `-q @file` 从文件读入的语句）里若表名带了 schema（`db.tbl`），导出只按裸表名写 `INSERT`，并行路径的分片键探测、统计读取与采样边界仍以查询点名的 schema 为准（见「并行导出」一节），因此不会再出现把连接的 `--database` 二次拼接导致的 `Error 1054/1146`。导入侧 `--mode create` 已连同其建表语义一并移除（传入即 `invalid --mode "create"`，退出码 2）：imex 不重放 DDL，导入 SQL 文件时它跳过 `CREATE` 语句只灌 `INSERT`，要建表就先用 `show tab` 产出的 DDL 在目标库建好、再以 `--mode insert` 导入；`mysqldump` 等外部工具含 `CREATE TABLE` 的文件同样照此处理，建表交给标准客户端、imex 只负责数据。
 
 ### import - 数据导入
 
@@ -302,7 +304,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；SQL 文件首行的 `SET NAMES` 头仅供标准 `mysql` 客户端使用，imex 导入以本参数为准。`--engine pg` 时 `--session-var` 与 `-f sql` 以及 `--mode create` 会被拒绝（退出码 `2`，见「PostgreSQL 引擎」）；`--mode replace` 与 `--mode insert_update` 与 `--threads` 可用，但 replace 在 pg 侧只是 `DELETE FROM`（没有可关的引用检查）、insert_update 要求表上有一把唯一的键（见下）。`--engine dm` 时 `--session-var` 与 `-f sql` 以及 `--mode create`、`--mode insert_update` 全部退出 `2`，可用的是 `-f del|parquet` 的 `--mode insert|replace`（见「达梦引擎」）。
+连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；现行 SQL 产物已不含 `SET NAMES` 前导，imex 导入仍以本参数为准，读旧文件时那一行会被跳过。`--mode create` 已从三个引擎整体移除（传入即 `invalid --mode "create"`，退出码 2），建表交给你自己的客户端，imex 只灌数据。`--engine pg` 时 `--session-var` 与 MySQL 同一口径生效（每条新物理连接上执行 `SET name = value`，见「PostgreSQL 引擎」），`-f sql` 会被拒绝（退出码 `2`）；`--mode replace` 与 `--mode insert_update` 与 `--threads` 可用，但 replace 在 pg 侧只是 `DELETE FROM`（没有可关的引用检查）、insert_update 要求表上有一把唯一的键（见下）。`--engine dm` 时 `--session-var` 仍被拒绝（退出码 `2`，`SET <name>=<value>` 是会话语法翻译不过去）且 `-f sql`、`--mode insert_update` 同样退出 `2`，可用的是 `-f del|parquet` 的 `--mode insert|replace`（见「达梦引擎」）。
 
 **导入选项：**
 
@@ -311,7 +313,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 | `--input` | `-i` | 输入文件路径 | 无（必填） |
 | `--format` | `-f` | 输入格式（del/sql/parquet） | `del` |
 | `--mode` | `-M` | 导入模式 | `insert` |
-| `--table` | `-t` | 目标表名（insert/replace/insert_update 必填；create 模式可省略，自动取 SQL 文件中 CREATE 语句的表名，指定则作为新表名重写） | 无 |
+| `--table` | `-t` | 目标表名（`insert`/`replace`/`insert_update` 三种模式均必填；`--mode create` 已移除，不再有"省略则取 SQL 文件建表语句表名"的分支） | 无 |
 | `--columns` | `-c` | 列映射（见下方说明） | 空 |
 | `--messages` | `-m` | 把全部日志记录**追加**到该文件，终端不再打印（文件内容就是命令行日志本身；已存在的内容保留） | 空 |
 | `--progress-interval` | | 定时进度日志的间隔（必须 > 0 且 ≥ 100ms，否则用法错误退出码 2） | `5s` |
@@ -336,7 +338,8 @@ imex import [连接选项] [导入选项] [修饰选项]
 | `insert` | 追加数据到表 |
 | `insert_update` | 插入新行或更新主键匹配的行 |
 | `replace` | 删除表所有数据后**普通 INSERT**（不是 MySQL 的 `REPLACE INTO`） |
-| `create` | 创建表并导入数据（仅 SQL 格式） |
+
+> 历史上的 `--mode create`（建表后导入）已从三个引擎整体移除——imex 导入不重放 DDL。给出 `--mode create` 在校验阶段（建连之前）即 `invalid --mode "create": must be one of insert/insert_update/replace`、退出 2。SQL 文件里的 `CREATE TABLE` 会被读取器跳过、只导 `INSERT`；要建表先用 `imex show tab` 取 DDL、用标准客户端执行，再以 `--mode insert` 导入。
 
 > `replace` 是**全量替换**，不是按唯一键逐行覆盖：先 `SET FOREIGN_KEY_CHECKS=0`，再用一条 `DELETE FROM <表>` 清空目标表，随后数据行仍按普通的 `INSERT INTO … VALUES (…),(…)` 写入。与 MySQL 的 `REPLACE INTO` 有三处实质差别：① 文件里没有的行会被删掉（`REPLACE INTO` 只替换键冲突的行、其余保留）；② 文件内主键/唯一键重复时第二条仍然报 `1062`（`REPLACE INTO` 会静默删旧行再插入、最后一条生效）；③ 那条 `DELETE` 是自动提交的单条语句、不在导入事务里，因此**它之后的任何失败（列超长、断连等）都会留下一个空表**，需要重跑。需要"按键覆盖、不动其它行"时用 `--mode insert_update`。清空用 `DELETE` 而不是 `TRUNCATE`，是因为后者隐式提交、不能回滚，且表被外键引用时可能直接失败。
 
@@ -471,7 +474,7 @@ imex list tab -D mydb --no-col-names | awk '{print $2}' | while read -r t; do
 done
 ```
 
-回放限制（本机 MariaDB 10.6.23 实测，见需求文档 2.6 与 3.6）：**目前只有表定义能直接回放**（`imex show tab` 的产物喂 `imex import -f sql -M create` 端到端验证通过）。其余五类只保证文本正确——`imex import` 的 SQL 读取器只执行 `CREATE TABLE`/`CREATE TEMPORARY` 与 `INSERT`，其它语句一律跳过，因此一份只含触发器或视图 DDL 的文件会被「文件里没有可导入的数据」拒绝；复合体触发器与存储过程还多一层：读取器按顶层 `;` 切句、`DELIMITER` 只被跳过而不生效（同款文本喂 mysql 客户端会报 `ERROR 1064`）。补齐非建表 DDL 的回放通道与 `DELIMITER` 支持属 import 侧，单独一轮。
+回放限制（本机 MariaDB 10.6.23 实测，见需求文档 2.6 与 3.6）：**`imex import` 不重放任何 DDL**——`--mode create` 已随整体移除，SQL 读取器只识别并执行 `INSERT`，把 `CREATE TABLE`/`CREATE TEMPORARY` 与一切其它语句一律跳过。因此 `imex show tab` 的产物不能经 `imex import` 建表：它是给你自己核对或喂标准客户端（`mysql`/`psql`）用的建表文本。六个 kind 都只保证文本正确；触发器、视图、存储过程与函数还各有一层方言差异（`DELIMITER`、跨库引用等），标准客户端能读但 `imex` 一律跳过其 DDL。补齐非建表 DDL 的自动化通道与 `DELIMITER` 支持属 import 侧，单独一轮。
 
 ### version - 版本信息
 
@@ -569,17 +572,16 @@ imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 
 `--mode insert_update` 的冲突键由目录表读出而不是猜：有主键用主键（其余唯一键另记一条 warn，因为 `ON CONFLICT (a)` 不会在 `b` 的冲突上触发而 MySQL 会）；无主键但只有一把唯一键就用它；无主键且有**两把以上**唯一键则退出 `1`，并且发生在写入任何数据之前。没有主键也没有任何唯一键时语句退回普通 `INSERT` 并给出 warn（重复导入会翻倍），与 MySQL 侧同口径。PostgreSQL 对新行和被改行都记 1 行受影响，`RowsAffected` 分不出插入与更新，所以这条语句带 `RETURNING (xmax = 0)` 逐行回执，`inserted`/`updated` 按回执计数、`unchanged` 由「文件行数 − 回执行数」得出；子句末尾另有 `IS DISTINCT FROM` 守卫，值已经完全相同的行不改写，实测那一行的 `xmin` 与 `ctid` 都不动，与 MySQL 记 0 受影响行的口径一致。文件里**同一个冲突键出现两次**时两引擎不同：这些行落进同一条语句时 PostgreSQL 拒绝执行（`ON CONFLICT DO UPDATE command cannot affect row a second time`，`SQLSTATE 21000`）、整个导入回滚并退出 `1`，MySQL 则按文件顺序逐行应用、最后一条生效；给同一份文件加 `--batch-size 1` 后两侧结果与计数一致，工具不替你重排或去掉文件里的行。
 
-**不能用的**（连库之前就被拦下，退出码 `2`，文案点名原因；这张表就是方言层的数据，见 `internal/backend/refusals_postgres.go`——按 export / import / list / show 四条命令各存一份有序规则，MySQL 那份为空，`cmd` 只负责把命中的规则套进同一句模板）：
+**不能用的**（连库之前就被拦下，退出码 `2`，文案点名原因；这张表就是方言层的数据，见 `internal/backend/refusals_postgres.go`——按 export / import / list / show 四条命令各存一份有序规则，MySQL 那份为空，`cmd` 只负责把命中的规则套进同一句模板）。**导入侧 (`--engine pg`) 已无任何拒绝规则**，下表只是导出侧、list、show：
 
 | 命令 / 选项 | 拒绝理由 |
 |-------------|----------|
-| `show`（六个 kind 全部） | PostgreSQL 没有 `SHOW CREATE` 语句族，产物也回放不进 `imex import -f sql`；取定义请用 `pg_dump` |
+| `show`（六个 kind 全部） | PostgreSQL 没有 `SHOW CREATE` 语句族，且 imex 不重放 DDL，取定义请用 `pg_dump` |
 | `list evt` | PostgreSQL 没有事件调度器，定时作业在 `cron` 或 `pgAgent` 里 |
-| `export/import -f sql` | 产物是 MySQL 方言（`SET NAMES`、反引号、`ON DUPLICATE KEY UPDATE`），PostgreSQL 读不进去 |
 | `export --threads > 1` | 并行导出靠 `MOD()` 与 `LIMIT … OFFSET` 切分片，只有 MySQL 方言，且 pg 侧尚未实测吞吐（导入侧的 `--threads` 已放行，见上） |
-| `--mode create` | 它跑的是 SQL 文件里来自 MySQL dump 的 `CREATE TABLE` 文本，而本工具在 pg 侧也导不出那种文本；请自行建表后用 `--mode insert` |
-| `--session-var` | 会话参数名与 `SET` 语法两边不同形，不猜 |
-| `--no-hex-blob` | `bytea` 走文本协议时裸 NUL 报 `SQLSTATE 22021`，pg 侧恒用 `0x` 十六进制，关不掉 |
+| `export --no-hex-blob` | `bytea` 走文本协议时裸 NUL 报 `SQLSTATE 22021`，pg 侧恒用 `0x` 十六进制，关不掉 |
+
+曾经被拒、现已放行的：`-f sql` 随 `--sql-dialect` 增量打通（导出按 pg 方言写、导入由方言无关读取器解析后重新绑定，不再整体拒绝）；`--session-var` 与 MySQL 同一口径生效（每条新物理连接执行 `SET`，见上「会话变量」）；`--mode create` 则不是引擎级拒绝，而是从三个引擎整体移除的非法值（任何引擎传入都 `invalid --mode "create"`、退出 2）。
 
 **取值写法与 MySQL 不同**（这是 pg 的原生文本，不是转译成 MySQL 样式）：`boolean` → `t`/`f`；`timestamp` → `2026-01-31 09:26:15.123456`；`timestamptz` → `2026-01-31 09:26:15.123456+08`；`date` → `2026-01-31`；`real`/`double precision` → Go 最短往返写法；特殊值 `infinity`/`-infinity` 原样透传，`±Inf`/`NaN` 写成 `Infinity`/`-Infinity`/`NaN`；`bit(n)`/`bit varying(n)` → 比特串本身（`10100101`、`101`，与 `psql -t -A` 一致；变更记录 129 之前它被当成二进制列打成 `0x3130313030313031`，即那串 ASCII 的十六进制）；NULL 是一个**空字段**（两个分隔符之间没有内容，与 MySQL 侧同一套 DEL 布局规则，不是 `-`）；`bytea` 恒为 `0x…`。
 
@@ -611,14 +613,15 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 
 | 命令 / 选项 | 拒绝理由 |
 |-------------|----------|
-| `show`（六个 kind 全部） | 定义靠 `SHOW CREATE` 语句族取，达梦 Oracle 模式不从同一份目录给这些东西，产物也回放不进 `imex import -f sql`；请用你自己的 DDL |
+| `show`（六个 kind 全部） | 定义靠 `SHOW CREATE` 语句族取，达梦 Oracle 模式不从同一份目录给这些东西，且 imex 不重放 DDL；请用你自己的 DDL |
 | `list` 的 `views`/`triggers`/`routines`/`events` | 这四个对象没对达梦 Oracle 模式目录测过，给不出与 MySQL 同形的列。注意 `list tables --type view` 可用——被拒的是列不齐的那个对象，不是 `DBA_VIEWS` 那张表 |
 | `export/import -f sql` | SQL 写出器发的是 MySQL 反引号与 MySQL 转义文本，达梦读不进去；SQL 解析器同样走 MySQL 语句语法 |
 | `export --threads > 1` | 并行导出的分片没对达梦测过，用 `--threads 1` |
 | `--mode insert_update` | 方言层的 upsert 在达梦上根本没实现，绕过 CLI 直接调库的调用方同样失败 |
-| `--mode create` | 它跑的是 SQL 文件里来自 MySQL dump 的 `CREATE TABLE` 文本，而本工具在达梦侧也导不出那种文本；请自行建表后用 `--mode insert` |
 | `--session-var` | `SET <name>=<value>` 是 MySQL 会话语法，本工具不翻译，请写进服务器或角色的配置 |
 | `--no-hex-blob` | 达梦拒绝文本值里出现 NUL 字节，二进制列恒以 `0x` 十六进制写出，关不掉 |
+
+> `--mode create` 不在上表：它不是达梦级拒绝，而是从三个引擎整体移除的非法值（任何引擎传入都 `invalid --mode "create"`、退出 2）。`--session-var` 在 pg 侧已随本版本放行，达梦侧仍未翻译、保持拒绝。
 
 **取值写法**：驱动对每一个日期时间类型都交回 Go 的 `time.Time`，工具把它重排成达梦自己打印的样子——Oracle 模式的 `DATE` 带时分秒，写成 `2026-01-31 09:26:15`（按日期处理就会把时间部分丢掉）；`TIMESTAMP`/`DATETIME`/`DATETIME2` 同形后跟最多六位小数、尾零不印；`TIME` 写成 `15:04:05`；四个 `WITH TIME ZONE` 类型在各自形态后**保留偏移、不折成 UTC**，服务器给 `2024-05-06T07:08:09.123456+08:00`，文件里就是 `2024-05-06 07:08:09.123456+08:00`。`BIT`/`BOOLEAN` 一律写成一个数字（`1`/`0`）。二进制列（`BLOB`/`RAW`/`LONG RAW`/`BINARY`/`VARBINARY`/`LONGVARBINARY`/`IMAGE`）恒为 `0x…`。`+Inf`/`-Inf`/`NaN` 照达梦存的样子写出，不做归一。NULL 是一个空字段、空串是 `""`，与 MySQL 侧同一套 DEL 布局规则。
 
@@ -821,7 +824,7 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 | `--parquet-compression` | `none`/`snappy`/`zstd` 三选一；仅 `--format parquet` 生效 | 非法值 `invalid --parquet-compression "gzip": must be one of none/snappy/zstd`、格式越界 `--parquet-compression can only be used with --format parquet`，均退出码 2 |
 | `encrypt` 的位置参数 | 恰好 1 个（密码明文） | `imex encrypt accepts 1 argument(s), received N`，退出码 2 |
 
-关联校验：`--statement-size`/`--extended-insert` 仅对 `--format sql` 生效（`--create`/`--no-data` 已随「SQL 导出只导数据」一并删除，不再登记，传入即为未知选项）（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode create` 仅支持 `--format sql`；导出侧 `-q` 必填，`-q @文件` 从文件读取 SQL（文件不存在、内容为空或 `@` 后缺路径均为用法错误，退出码 2）。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。另有一类**按执行路径判定**的越界：`export --threads>1` 时显式给出 `--batch-size` 或 `--pipeline-buffer` 即为用法错误（退出码 2），因为它对分片流式路径不改变任何输出；该校验排在 `--threads`→`--batch-size`→`--pipeline-buffer` 的顺序里，因此非法的 `--threads` 或非法的选项值仍先于冲突报出。另有两类**跨选项 / 跨服务器**的判定：DEL 的四个文本修饰 `--char-del`/`--col-del`/`--row-del`/`--escape` 之间必须互不相同（例外只有 `--escape` 与 `--char-del` 同值，即默认的双写转义；`--no-char-del`、`--no-escape` 各自免除相关项），同值写出的文件无法回读，因此按 char→col→row→escape 的固定顺序取第一条冲突报用法错误（退出码 2），同一条组合在导出与导入两侧判定一致；`--threads` 与目标库 `@@max_connections`、并行导入重放缓冲总量的关系则不是范围能表达的，连上库之后各记一条 `warn`（见上表）。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
+关联校验：`--statement-size`/`--extended-insert` 仅对 `--format sql` 生效（`--create`/`--no-data` 已随「SQL 导出只导数据」一并删除，不再登记，传入即为未知选项）（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode` 的三个合法值为 `insert`/`insert_update`/`replace`（历史上的 `create` 已整体移除，传入即 `invalid --mode "create"`，退出 2）；导出侧 `-q` 必填，`-q @文件` 从文件读取 SQL（文件不存在、内容为空或 `@` 后缺路径均为用法错误，退出码 2）。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。另有一类**按执行路径判定**的越界：`export --threads>1` 时显式给出 `--batch-size` 或 `--pipeline-buffer` 即为用法错误（退出码 2），因为它对分片流式路径不改变任何输出；该校验排在 `--threads`→`--batch-size`→`--pipeline-buffer` 的顺序里，因此非法的 `--threads` 或非法的选项值仍先于冲突报出。另有两类**跨选项 / 跨服务器**的判定：DEL 的四个文本修饰 `--char-del`/`--col-del`/`--row-del`/`--escape` 之间必须互不相同（例外只有 `--escape` 与 `--char-del` 同值，即默认的双写转义；`--no-char-del`、`--no-escape` 各自免除相关项），同值写出的文件无法回读，因此按 char→col→row→escape 的固定顺序取第一条冲突报用法错误（退出码 2），同一条组合在导出与导入两侧判定一致；`--threads` 与目标库 `@@max_connections`、并行导入重放缓冲总量的关系则不是范围能表达的，连上库之后各记一条 `warn`（见上表）。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
 
 ### OceanBase 租户连接
 
@@ -871,7 +874,7 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
   -q "SELECT * FROM users"
 ```
 
-导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`create`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 `--progress-interval`（默认 **5 秒**）打印一次进度：`rate` 是**自开始以来的总速率**（已处理 ÷ 已用时长，平滑，反映整体快慢），`interval_rate` 是**上一个进度点到这一个进度点之间的区间速率**（两次快照之差，反映此刻吞吐与抖动；两者无倍率关系，长跑时看 `interval_rate` 判断当前快不快、看 `rate` 判断整体多少），另打印已处理条数与 `elapsed`。所有耗时字段（进度里的 `elapsed` 与汇总里的 `duration`）固定以**秒**为单位、保留**三位小数**（`842ms` 写成 `0.842s`、90 秒写成 `90.000s`），不再随量级在 `ms`/`s`/`m` 之间切换，跨记录可以直接相减比较。结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。**汇总恒为本次运行的最后一条记录**：写汇总之前先停掉进度计时器，而停止会等待正在写的那条进度落笔，因此不会再出现 `completed` 之后跟一条 `progress` 的读感。反过来说，**运行时长不足一个间隔时一条进度也不会打印**：首个计时点要等满一个间隔才触发，停止只等在写的那条记录、不空等剩余间隔，所以一个 3 行的小表 6 ms 就结束，日志里只有横幅、配置与汇总（实测），把间隔调成 `200ms` 后同一类长跑（100 万行）则每 200 ms 一条、共 29 条进度，最后一条仍是 `export completed`。
+导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 `--progress-interval`（默认 **5 秒**）打印一次进度：`rate` 是**自开始以来的总速率**（已处理 ÷ 已用时长，平滑，反映整体快慢），`interval_rate` 是**上一个进度点到这一个进度点之间的区间速率**（两次快照之差，反映此刻吞吐与抖动；两者无倍率关系，长跑时看 `interval_rate` 判断当前快不快、看 `rate` 判断整体多少），另打印已处理条数与 `elapsed`。所有耗时字段（进度里的 `elapsed` 与汇总里的 `duration`）固定以**秒**为单位、保留**三位小数**（`842ms` 写成 `0.842s`、90 秒写成 `90.000s`），不再随量级在 `ms`/`s`/`m` 之间切换，跨记录可以直接相减比较。结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。**汇总恒为本次运行的最后一条记录**：写汇总之前先停掉进度计时器，而停止会等待正在写的那条进度落笔，因此不会再出现 `completed` 之后跟一条 `progress` 的读感。反过来说，**运行时长不足一个间隔时一条进度也不会打印**：首个计时点要等满一个间隔才触发，停止只等在写的那条记录、不空等剩余间隔，所以一个 3 行的小表 6 ms 就结束，日志里只有横幅、配置与汇总（实测），把间隔调成 `200ms` 后同一类长跑（100 万行）则每 200 ms 一条、共 29 条进度，最后一条仍是 `export completed`。
 
 **阶段计时**：汇总里的 `duration` 不再是一个笼统总数。单线程导出拆成 `connect`（拨号 + ping + 一致性快照，在 `Export` 之前发生，故不计入 `duration`）、`setup`、`first_row`（发起查询到第一行返回，含建文件与写表头——大表的 filesort、锁等待、冷缓冲池都在这里现形）、`write`（第一行到写最后一行）、`finish`（footer + close，parquet 的末段编码也在这一段）；这四段相加即为 `duration`（毫秒取整）。单线程导入拆成 `connect`、`setup`、`header`（打开文件到解析完表头）、`read`（读文件并解析，不含等队列）、`send`（执行 INSERT）、`wait_empty`（写侧等数据）、`wait_full`（读侧等空位）：`read+wait_full` 是读协程的视角、`send+wait_empty` 是写侧的视角，两组各自接近 `duration`，**不能四段相加**。并行导出的每个分片记 `rows`/`duration`/`rate`，并行导入的每个 worker 同样记 `rows`/`duration`/`rate`。实测 20 万行 DEL：导出 `duration=0.160s connect=0.001s setup=0.000s first_row=0.004s write=0.152s finish=0.003s`；导入 `duration=1.875s read=0.409s send=1.391s wait_full=1.364s wait_empty=0.002s`（读侧 `0.409+1.364≈1.77s`，写侧 `1.391+0.002≈1.39s`）。
 
@@ -1041,12 +1044,11 @@ parquet-tools schema /backup/users.parquet
 ### SQL 格式
 
 ```sql
-/*!40101 SET NAMES utf8mb4 */;
 INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (1,'Alice','alice@example.com','2026-01-01 10:00:00');
 INSERT INTO `users` (`id`, `name`, `email`, `created_at`) VALUES (2,'Bob','bob@example.com','2026-01-02 11:00:00');
 ```
 
-产物**只有数据**：一行 `SET NAMES` 字符集前导（`imex import` 会跳过它，标准 mysql 客户端用它设定连接字符集）加上逐行 `INSERT`，没有任何 DDL 与分节注释。建表语句由 `imex show tab users -D mydb -o users_ddl.sql` 单独取，要一个自带结构的文件就把两个产物拼起来（`cat users_ddl.sql users.sql > full.sql`，喂 `imex import -f sql --mode create` 实测可行）。
+产物**只有数据**：逐行 `INSERT`，**不含任何前导**（历史上曾写一行 `/*!40101 SET NAMES utf8mb4 */;`，为让同一份 SQL 文件跨 MySQL/PostgreSQL/达梦 通用回放而移除；`imex import` 仍会跳过旧文件里的这类前导语句），没有任何 DDL 与分节注释。建表语句由 `imex show tab users -D mydb -o users_ddl.sql` 单独取，要一个自带结构的文件就把两个产物拼起来（`cat users_ddl.sql users.sql > full.sql`）：这份拼接文件交给标准 `mysql`/`psql` 客户端可一次建表并灌数据，而 `imex import` 不重放 DDL，它跳过 `CREATE` 只导 `INSERT`，所以先用建表语句把表建好、再以 `--mode insert` 导入即可。
 
 SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended-insert` 的布局），`--extended-insert` 才把多行合并进一条语句。攒批交给导入侧是刻意的分工：导入器把语句拆成行后按 `--batch-size` 重新组批，文件是单行还是合并布局，服务端收到的语句一模一样（实测 20,000 行、`--batch-size 1000`：单行文件 20,000 条语句与合并文件 1 条语句都只产生 20 条服务端 INSERT）。合并布局在导出侧换到的只有体积——100 万行窄表实测：单行 2.5 s / 峰值内存 33 MB / 278,790,434 B（gzip 28,247,005 B），合并 2.7 s / 70 MB / 153,792,809 B（gzip 27,050,101 B，19 条语句）；代价是导入侧要一次性解析整条语句，同一份数据在 `--batch-size 1000` 下峰值内存 44 MB（单行）对 216 MB（合并）。
 

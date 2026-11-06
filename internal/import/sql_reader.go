@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -28,17 +29,16 @@ import (
 // its own data and the rows in flight are bounded by the chunk, not by the size
 // of the largest statement in the file.
 type SQLReader struct {
-	rd          *recordReader
-	stmt        []byte // scratch for a statement spanning several lines
-	columns     []string
-	createStmts []string        // captured CREATE TABLE statements for create mode
-	cur         insertCursor    // parse position inside the INSERT being read
-	pending     [][]interface{} // rows parsed from the current INSERT, not yet returned
-	hasData     bool            // ReadHeader found at least one INSERT statement
-	// unrecognized records a statement ReadHeader could not classify as DDL,
-	// INSERT or dump preamble (SET/LOCK/...). A file made only of preamble is an
-	// empty dump, but one carrying other text is not: the import has to say so
-	// instead of finishing with 0 rows.
+	rd      *recordReader
+	stmt    []byte // scratch for a statement spanning several lines
+	columns []string
+	cur     insertCursor    // parse position inside the INSERT being read
+	pending [][]interface{} // rows parsed from the current INSERT, not yet returned
+	// unrecognized records a statement ReadHeader could not classify as an
+	// INSERT or dump preamble (SET/LOCK/...). A file made only of preamble and
+	// a CREATE TABLE line (a data-only dump of an empty table, or mysqldump's
+	// DDL for it) is an empty dump, but one carrying other text is not: the
+	// import has to say so instead of finishing with 0 rows.
 	unrecognized bool
 }
 
@@ -50,12 +50,12 @@ func NewSQLReader(r *bufio.Reader) *SQLReader {
 }
 
 // ReadHeader advances to the first INSERT statement, extracting the column
-// list and buffering its rows. CREATE TABLE statements encountered along the
-// way are captured for create mode.
+// list and buffering its rows. A CREATE TABLE line a foreign dump carries is
+// skipped: imex replays no DDL, so the reader only looks for the INSERTs.
 //
-// A file with CREATE statements but no INSERTs (a `show tab` definition file) is
-// not an error: it returns no columns and HasData() reports false, so create mode
-// can still apply the captured structure.
+// A file carrying preamble and CREATE but no INSERT (a data-only dump of an
+// empty table) is not an error: it returns io.EOF with only-preamble set, and
+// the importer reports it as an empty file rather than a failure.
 func (s *SQLReader) ReadHeader() ([]string, error) {
 	for {
 		stmt, ok := s.nextStatement()
@@ -63,22 +63,18 @@ func (s *SQLReader) ReadHeader() ([]string, error) {
 			if err := s.rd.Err(); err != nil {
 				return nil, errors.Wrap(err, "failed to read SQL file")
 			}
-			if len(s.createStmts) > 0 {
-				return nil, nil
-			}
 			return nil, io.EOF
 		}
 
 		head := bytes.TrimLeft(stmt, " \t")
 		switch {
 		case hasPrefixFold(head, "CREATE TABLE"), hasPrefixFold(head, "CREATE TEMPORARY"):
-			// CREATE statements are kept for create mode, so they outlive the
-			// statement window and must be copied. A file carries a handful.
-			s.createStmts = append(s.createStmts, string(stmt))
+			// DDL from a foreign dump: recognized and skipped, never replayed, so
+			// it does not count as unrecognized text either.
+			continue
 		case hasPrefixFold(head, "INSERT "):
 			cols := s.extractColumns(stmt)
 			s.columns = cols
-			s.hasData = true
 			// The statement is parsed chunk by chunk from here on, so the header
 			// only points the cursor at it: a one-million-row INSERT must not be
 			// materialised before the importer has taken its first batch.
@@ -96,16 +92,12 @@ func (s *SQLReader) ReadHeader() ([]string, error) {
 	}
 }
 
-// HasData reports whether ReadHeader found an INSERT statement. It is false for
-// a structure-only SQL file.
-func (s *SQLReader) HasData() bool { return s.hasData }
-
 // OnlyPreamble reports whether everything ReadHeader skipped was dump preamble
-// (SET/LOCK/UNLOCK/USE/START/COMMIT/...). Together with a nil header that means
-// the file is an empty dump — the shape a data-only export of an empty table
-// has, `/*!40101 SET NAMES utf8mb4 */;` and nothing else — so importing it is a
-// no-op rather than an error. Text the reader cannot classify makes this false,
-// so a mistyped or truncated file still fails loudly.
+// (SET/LOCK/UNLOCK/USE/START/COMMIT/...) or a CREATE TABLE line. Together with a
+// nil header that means the file is an empty dump — the shape a data-only export
+// of an empty table has, `/*!40101 SET NAMES utf8mb4 */;` and nothing else — so
+// importing it is a no-op rather than an error. Text the reader cannot classify
+// makes this false, so a mistyped or truncated file still fails loudly.
 func (s *SQLReader) OnlyPreamble() bool { return !s.unrecognized }
 
 // nextStatement assembles one complete SQL statement (terminated by a top-level
@@ -270,11 +262,6 @@ func indexFold(b []byte, keyword string) int {
 	return -1
 }
 
-// GetCreateStatements returns captured CREATE TABLE statements
-func (s *SQLReader) GetCreateStatements() []string {
-	return s.createStmts
-}
-
 // ReadRow returns the next buffered VALUES tuple, advancing through statements
 // and parsing new INSERTs as needed.
 func (s *SQLReader) ReadRow() ([]interface{}, error) {
@@ -297,9 +284,9 @@ func (s *SQLReader) ReadRow() ([]interface{}, error) {
 		switch {
 		case hasPrefixFold(head, "INSERT "):
 			s.cur.reset(stmt, len(s.columns))
-		case hasPrefixFold(head, "CREATE TABLE"), hasPrefixFold(head, "CREATE TEMPORARY"):
-			s.createStmts = append(s.createStmts, string(stmt))
 		default:
+			// A CREATE TABLE or other statement between INSERTs is skipped; imex
+			// replays no DDL.
 			continue
 		}
 	}
@@ -545,16 +532,36 @@ func parseValueList(dst []interface{}, body []byte, text string, textBase, expec
 		}
 
 		var val interface{}
-		if q := body[i]; q == '\'' || q == '"' {
+		// PostgreSQL E'' literal: a leading E/e before the opening quote marks a
+		// string whose backslash escapes are decoded regardless of the server's
+		// standard_conforming_strings. A MySQL dump has no bare leading E before a
+		// quote, so this branch cannot be taken by MySQL text.
+		if (body[i] == 'E' || body[i] == 'e') && i+1 < n && (body[i+1] == '\'' || body[i+1] == '"') {
+			q := body[i+1]
+			contentEnd, next, collapsed, _ := literalScan(body, i+2, q)
+			inner := string(body[i+2 : contentEnd])
+			if collapsed {
+				inner = collapseDoubledQuotes(body[i+2:contentEnd], q)
+			}
+			val = pgUnescape(inner)
+			i = next
+		} else if q := body[i]; q == '\'' || q == '"' {
 			// Quoted string literal: capture content without the delimiters.
 			contentEnd, next, collapsed, escaped := literalScan(body, i+1, q)
 			raw := body[i+1 : contentEnd]
-			switch {
-			case collapsed:
+			if isByteaCast(body[next:]) {
+				// A closing quote followed by ::bytea is a PostgreSQL binary
+				// literal, not a text value: decode the hex payload.
+				val = decodeByteaLiteral(raw)
+				next += len("::bytea")
+				if next > n {
+					next = n
+				}
+			} else if collapsed {
 				val = unescapeSQLString(collapseDoubledQuotes(raw, q))
-			case escaped:
+			} else if escaped {
 				val = unescapeSQLString(string(raw))
-			default:
+			} else {
 				val = text[textBase+i+1 : textBase+contentEnd]
 			}
 			i = next
@@ -737,4 +744,121 @@ func unescapeSQLString(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// isByteaCast reports whether b begins with the PostgreSQL type annotation
+// "::bytea" (case-insensitive) that the writer appends to a hex binary literal.
+func isByteaCast(b []byte) bool {
+	const cast = "::bytea"
+	if len(b) < len(cast) {
+		return false
+	}
+	for i := 0; i < len(cast); i++ {
+		c := b[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != cast[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// decodeByteaLiteral turns the text between the quotes of a '\x41'::bytea
+// literal into bytes. The \x prefix is optional for tolerance; an empty body is
+// an empty (non-nil) slice, matching the SQL writer, and malformed hex is
+// handed back raw so the caller can still try to bind it.
+func decodeByteaLiteral(raw []byte) []byte {
+	if len(raw) >= 2 && raw[0] == '\\' && (raw[1] == 'x' || raw[1] == 'X') {
+		raw = raw[2:]
+	}
+	if len(raw) == 0 {
+		return []byte{}
+	}
+	if len(raw)%2 != 0 {
+		return append([]byte(nil), raw...)
+	}
+	dst := make([]byte, len(raw)/2)
+	if _, err := hex.Decode(dst, raw); err != nil {
+		return append([]byte(nil), raw...)
+	}
+	return dst
+}
+
+// pgUnescape decodes the body of a PostgreSQL E” literal: the C-style escapes
+// \n \r \t \b \f \v, a doubled backslash, an escaped quote, \xNN hexadecimal and
+// \NNN octal, and any other backslash sequence as its literal character (the
+// rule PostgreSQL applies by dropping the backslash). It is reached only from the
+// E” branch, so MySQL text is unaffected.
+func pgUnescape(s string) string {
+	if !strings.ContainsAny(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		nxt := s[i+1]
+		switch {
+		case nxt == 'n':
+			b.WriteByte('\n')
+			i++
+		case nxt == 'r':
+			b.WriteByte('\r')
+			i++
+		case nxt == 't':
+			b.WriteByte('\t')
+			i++
+		case nxt == 'b':
+			b.WriteByte('\b')
+			i++
+		case nxt == 'f':
+			b.WriteByte('\f')
+			i++
+		case nxt == 'v':
+			b.WriteByte('\v')
+			i++
+		case nxt == '\\':
+			b.WriteByte('\\')
+			i++
+		case nxt == '\'':
+			b.WriteByte('\'')
+			i++
+		case nxt == '"':
+			b.WriteByte('"')
+			i++
+		case nxt == 'x' || nxt == 'X':
+			if i+3 < len(s) && isHexDigit(s[i+2]) && isHexDigit(s[i+3]) {
+				if v, err := strconv.ParseUint(s[i+2:i+4], 16, 8); err == nil {
+					b.WriteByte(byte(v))
+					i += 3
+					continue
+				}
+			}
+			b.WriteByte('x')
+			i++
+		case nxt >= '0' && nxt <= '7':
+			j := i + 1
+			v := 0
+			for k := 0; j < len(s) && s[j] >= '0' && s[j] <= '7' && k < 3; j++ {
+				v = v*8 + int(s[j]-'0')
+				k++
+			}
+			b.WriteByte(byte(v))
+			i = j - 1
+		default:
+			b.WriteByte(nxt)
+			i++
+		}
+	}
+	return b.String()
+}
+
+// isHexDigit reports whether c is 0-9, a-f or A-F.
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }

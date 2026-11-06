@@ -537,6 +537,7 @@ Flags:
       --shard-key string                Column used to shard a parallel export; defaults to the primary key
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+      --sql-dialect string              SQL dump grammar (auto/mysql/pg) (only with --format sql) (default "auto")
       --statement-size int              Max bytes per merged INSERT (only with --format sql) (default 8388608)
       --threads int                     Number of parallel export tasks (1 = no parallelism) (default 1)
       --timestamp-fmt string            Timestamp format (only with --format del) (default "yyyy-MM-dd HH:mm:ss")
@@ -564,9 +565,10 @@ Examples:
   imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del --mode insert_update -t users
 
-  # Create table from SQL file
+  # Import a SQL dump (any CREATE/DDL lines are skipped; only the INSERT data
+  # is loaded, into a table that must already exist)
   imex import -h 127.0.0.1 -u root -p pass -D mydb \
-    -i /backup/users.sql -f sql --mode create
+    -i /backup/users.sql -f sql -t users
 
 Usage:
   imex import [flags]
@@ -592,7 +594,7 @@ Flags:
   -i, --input string                    Input file path (required)
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
-  -M, --mode string                     insert, insert_update, replace (clears the table), create (default "insert")
+  -M, --mode string                     insert, insert_update, replace (clears the table) (default "insert")
       --no-char-del                     Do not use string delimiter (only with --format del)
       --no-col-names                    First line is not column names (only with --format del)
       --no-escape                       Disable escaping (only with --format del)
@@ -1160,7 +1162,7 @@ Features:
   - Customizable delimiters and format options
   - Secure password encryption (AES-256-GCM)
   - Command log file (--messages)
-  - Multiple import modes (insert, insert_update, replace, create)
+  - Multiple import modes (insert, insert_update, replace)
   - Parallel export/import with pipeline optimization
   - Column mapping for flexible data import
   - Smart JOIN detection for parallel export

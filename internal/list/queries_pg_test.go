@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -288,8 +289,12 @@ func TestPGInfoSchemaScoping(t *testing.T) {
 // TestPGLiveServer runs the built queries against a real PostgreSQL server when
 // IMEX_TEST_PG_DSN is set. It creates fixture objects in schema imex_list_it
 // AND public, and verifies:
-//   - with -D pgprobe: only public-schema objects are returned
+//   - with -D set to the DSN database: only public-schema objects are returned
 //   - without -D: both imex_list_it and public objects are returned
+//
+// The scoped tests read the database name from the DSN instead of hardcoding it,
+// so -D always names the database the connection actually opened and the
+// current_database() = $N filter matches regardless of how the server is named.
 func TestPGLiveServer(t *testing.T) {
 	dsn := os.Getenv("IMEX_TEST_PG_DSN")
 	if dsn == "" {
@@ -307,13 +312,24 @@ func TestPGLiveServer(t *testing.T) {
 		t.Fatalf("failed to ping: %v", err)
 	}
 
+	// Derive the connected database from the DSN so the -D scoped queries match
+	// what current_database() reports at runtime.
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse IMEX_TEST_PG_DSN: %v", err)
+	}
+	dbName := strings.TrimPrefix(u.Path, "/")
+	if dbName == "" {
+		t.Fatal("IMEX_TEST_PG_DSN must name a database in its URL path")
+	}
+
 	// Create fixture schema and objects if they don't exist.
 	setupFixtures(t, db)
 
-	// Test 1: -D pgprobe scopes to current_schema() = 'public'.
+	// Test 1: -D set to the DSN database scopes to current_schema() = 'public'.
 	t.Run("scoped_to_public", func(t *testing.T) {
 		cfg := pgListCfg(ObjectTables)
-		cfg.Database = "pgprobe" // matches the DSN database
+		cfg.Database = dbName // matches the database the DSN opened
 		query, args, columns, err := buildPGQuery(cfg)
 		if err != nil {
 			t.Fatalf("buildPGQuery failed: %v", err)
@@ -413,22 +429,22 @@ func TestPGLiveServer(t *testing.T) {
 		minRows int
 	}{
 		{"databases", pgListCfg(ObjectDatabases), 1},
-		{"tables_scoped", func() *config.ListConfig { c := pgListCfg(ObjectTables); c.Database = "pgprobe"; return c }(), 1},
-		{"views_scoped", func() *config.ListConfig { c := pgListCfg(ObjectViews); c.Database = "pgprobe"; return c }(), 1},
+		{"tables_scoped", func() *config.ListConfig { c := pgListCfg(ObjectTables); c.Database = dbName; return c }(), 1},
+		{"views_scoped", func() *config.ListConfig { c := pgListCfg(ObjectViews); c.Database = dbName; return c }(), 1},
 		{"columns_scoped", func() *config.ListConfig {
 			c := pgListCfg(ObjectColumns)
-			c.Database = "pgprobe"
+			c.Database = dbName
 			c.Table = "rt_probe"
 			return c
 		}(), 1},
 		{"indexes_scoped", func() *config.ListConfig {
 			c := pgListCfg(ObjectIndexes)
-			c.Database = "pgprobe"
+			c.Database = dbName
 			c.Table = "rt_probe"
 			return c
 		}(), 1},
-		{"triggers_scoped", func() *config.ListConfig { c := pgListCfg(ObjectTriggers); c.Database = "pgprobe"; return c }(), 1},
-		{"routines_scoped", func() *config.ListConfig { c := pgListCfg(ObjectRoutines); c.Database = "pgprobe"; return c }(), 1},
+		{"triggers_scoped", func() *config.ListConfig { c := pgListCfg(ObjectTriggers); c.Database = dbName; return c }(), 1},
+		{"routines_scoped", func() *config.ListConfig { c := pgListCfg(ObjectRoutines); c.Database = dbName; return c }(), 1},
 	}
 	for _, tt := range objects {
 		t.Run("live_"+tt.name, func(t *testing.T) {
@@ -499,7 +515,8 @@ func setupFixtures(t *testing.T, db *sql.DB) {
 		`CREATE OR REPLACE PROCEDURE imex_list_it.p1() LANGUAGE plpgsql AS $$ BEGIN NULL; END; $$`,
 		"COMMENT ON COLUMN imex_list_it.t1.name IS 'the name column'",
 
-		// public schema fixtures (so scoped queries with -D pgprobe find something).
+		// public schema fixtures (so scoped queries with -D on the connected
+		// database find something in the public schema).
 		`CREATE TABLE IF NOT EXISTS public.rt_probe (
 			id serial PRIMARY KEY,
 			label text

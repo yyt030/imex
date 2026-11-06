@@ -147,54 +147,49 @@ func TestSQLReader_NullValue(t *testing.T) {
 	}
 }
 
-func TestSQLReader_CreateStatements(t *testing.T) {
+func TestSQLReader_SkipsCreateBeforeInsert(t *testing.T) {
+	// imex replays no DDL, so a CREATE TABLE line a foreign dump carries is
+	// skipped and the reader advances to the INSERT after it.
 	input := "CREATE TABLE `t` (`id` INT);\nINSERT INTO `t` (`id`) VALUES (1);\n"
-	r := bufio.NewReader(strings.NewReader(input))
-	sr := NewSQLReader(r)
-
-	_, err := sr.ReadHeader()
-	if err != nil {
-		t.Fatalf("ReadHeader: %v", err)
-	}
-	stmts := sr.GetCreateStatements()
-	if len(stmts) != 1 {
-		t.Fatalf("expected 1 CREATE stmt, got %d", len(stmts))
-	}
-	if !strings.Contains(stmts[0], "CREATE TABLE") {
-		t.Fatalf("unexpected CREATE stmt: %s", stmts[0])
-	}
-}
-
-func TestSQLReader_StructureOnly(t *testing.T) {
-	// A definition file — `imex show tab` output, or a mysqldump --no-data style
-	// file — carries CREATE statements but no INSERTs. ReadHeader
-	// must report the structure without erroring (the importer's create mode
-	// applies it), and isStructureOnlySQL must recognize that state.
-	input := "-- Table structure\nCREATE TABLE `t` (`id` INT) ENGINE=InnoDB;\n"
 	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
 
 	cols, err := sr.ReadHeader()
 	if err != nil {
-		t.Fatalf("ReadHeader on structure-only file: %v", err)
+		t.Fatalf("ReadHeader: %v", err)
 	}
-	if len(cols) != 0 {
-		t.Fatalf("expected no columns, got %v", cols)
+	if len(cols) != 1 || cols[0] != "id" {
+		t.Fatalf("expected column [id] from the INSERT after the skipped CREATE, got %v", cols)
 	}
-	if sr.HasData() {
-		t.Fatal("HasData true for structure-only file")
+	row, err := sr.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow: %v", err)
 	}
-	if !isStructureOnlySQL(sr) {
-		t.Fatal("isStructureOnlySQL false for captured CREATEs without rows")
+	if len(row) != 1 || row[0] != "1" {
+		t.Fatalf("expected row [1], got %v", row)
+	}
+}
+
+func TestSQLReader_CreateOnlyIsEOF(t *testing.T) {
+	// A definition-only file — `imex show tab` output, or a mysqldump --no-data
+	// dump — carries CREATE statements but no INSERTs. With create mode gone the
+	// reader no longer stops to apply that structure: it skips the DDL and reports
+	// end of file, so the importer treats it as an empty dump rather than a
+	// create-table run. A CREATE is still recognised text, so OnlyPreamble stays
+	// true and the empty-file no-op path is chosen over a loud failure.
+	input := "-- Table structure\nCREATE TABLE `t` (`id` INT) ENGINE=InnoDB;\n"
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+
+	if _, err := sr.ReadHeader(); err != io.EOF {
+		t.Fatalf("expected io.EOF for a create-only file, got %v", err)
+	}
+	if !sr.OnlyPreamble() {
+		t.Fatal("a skipped CREATE must not mark the file unrecognized")
 	}
 
-	// A file with neither CREATE nor INSERT must still be an EOF error, so the
-	// importer reports "no importable data" rather than silently succeeding.
+	// A file with neither CREATE nor INSERT must also be an EOF error.
 	empty := NewSQLReader(bufio.NewReader(strings.NewReader("SET NAMES utf8mb4;\n")))
 	if _, err := empty.ReadHeader(); err != io.EOF {
 		t.Fatalf("expected io.EOF for contentless file, got %v", err)
-	}
-	if isStructureOnlySQL(empty) {
-		t.Fatal("isStructureOnlySQL true without CREATE statements")
 	}
 }
 

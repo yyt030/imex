@@ -115,23 +115,20 @@ func TestLive_ExportCreateAndNoDataAreUnknown(t *testing.T) {
 		}
 	}
 
-	// What the single remaining product is: the charset line plus INSERTs, with
-	// no DDL and no section comments.
+	// What the single remaining product is: INSERT statements from the first
+	// line, with no preamble, no DDL and no section comments.
 	data := filepath.Join(env.dir, "createlayout.sql")
 	if text, code := env.runExportCLI(t, "-f", "sql", "-q", "SELECT * FROM `"+src+"`", "-o", data); code != 0 {
 		t.Fatalf("export exit %d\n%s", code, text)
 	}
 	content := readFile(t, data)
-	for _, forbidden := range []string{"CREATE TABLE", "DROP TABLE", "-- Table structure", "-- Data for"} {
+	for _, forbidden := range []string{"CREATE TABLE", "DROP TABLE", "-- Table structure", "-- Data for", "SET NAMES", "40101"} {
 		if strings.Contains(content, forbidden) {
 			t.Errorf("a SQL export must not contain %q:\n%s", forbidden, firstLines(content, 8))
 		}
 	}
-	if !strings.HasPrefix(content, "/*!40101 SET NAMES ") {
-		t.Errorf("a SQL export must start with the charset line:\n%s", firstLines(content, 8))
-	}
-	if !strings.Contains(content, "INSERT INTO `"+src+"`") {
-		t.Errorf("a SQL export must carry the rows:\n%s", firstLines(content, 8))
+	if !strings.HasPrefix(content, "INSERT INTO `"+src+"`") {
+		t.Errorf("a SQL export must start at the first INSERT:\n%s", firstLines(content, 8))
 	}
 }
 

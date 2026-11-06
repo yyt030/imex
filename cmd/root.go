@@ -41,7 +41,7 @@ Features:
   - Customizable delimiters and format options
   - Secure password encryption (AES-256-GCM)
   - Command log file (--messages)
-  - Multiple import modes (insert, insert_update, replace, create)
+  - Multiple import modes (insert, insert_update, replace)
   - Parallel export/import with pipeline optimization
   - Column mapping for flexible data import
   - Smart JOIN detection for parallel export`,

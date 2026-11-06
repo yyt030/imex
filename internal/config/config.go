@@ -9,8 +9,39 @@ const (
 	ImportModeInsert       ImportMode = "insert"
 	ImportModeInsertUpdate ImportMode = "insert_update"
 	ImportModeReplace      ImportMode = "replace"
-	ImportModeCreate       ImportMode = "create"
 )
+
+// SQLDialect is the value of --sql-dialect: the SQL grammar a `-f sql` dump is
+// written in. The point is portability, not which server the run connects to, so
+// the type lives next to the format constants rather than next to backend.Engine,
+// and a MySQL source may deliberately emit a PostgreSQL dump.
+type SQLDialect string
+
+const (
+	// SQLDialectAuto (the default) resolves to the running engine's own dialect.
+	// A MySQL engine keeps the historical MySQL grammar byte for byte, so an
+	// existing run changes nothing until the option is named.
+	SQLDialectAuto SQLDialect = "auto"
+	// SQLDialectMySQL writes the MySQL grammar: backquoted identifiers, 0x hex
+	// literals and MySQL backslash escaping.
+	SQLDialectMySQL SQLDialect = "mysql"
+	// SQLDialectPG writes the PostgreSQL grammar: double-quoted identifiers,
+	// '\x..'::bytea for binary, E'..' for strings carrying control characters
+	// and true/false for a boolean value.
+	SQLDialectPG SQLDialect = "pg"
+)
+
+// ValidSQLDialect reports whether name is one --sql-dialect accepts.
+// cmd/validate.go turns a false into a usage error; the writer treats an
+// unregistered value defensively by resolving it to MySQL, never to PG.
+func ValidSQLDialect(name string) bool {
+	switch SQLDialect(name) {
+	case SQLDialectAuto, SQLDialectMySQL, SQLDialectPG:
+		return true
+	default:
+		return false
+	}
+}
 
 // LogLevel represents the logging level.
 type LogLevel string
@@ -175,10 +206,16 @@ type ExportConfig struct {
 	// (verified against the server's general log), so merging on the export side
 	// only inflates the file and makes the reader materialise a whole statement.
 	ExtendedInsert bool
+	// SQLDialect is --sql-dialect: the SQL grammar the writer emits for -f sql
+	// ("auto", "mysql", "pg"). It is deliberately independent of the connected
+	// engine, so a MySQL run can produce a dump meant to be replayed on
+	// PostgreSQL. "auto" resolves to the engine's own dialect.
+	SQLDialect string
 	// No DDL fields here on purpose: a SQL export is data-only, and table
-	// definitions are read by `imex show tab` instead. The import side still
-	// accepts CREATE TABLE from a file (--mode create), because such files come
-	// from show's own product or from another tool, not from this writer.
+	// definitions are read by `imex show tab` instead. The SQL import reader still
+	// skips a CREATE TABLE line a foreign dump carries, but it no longer replays
+	// DDL: imex moves rows into an existing table, and creating the schema is the
+	// job of the engine's own dump tool or your migrations.
 
 	// ParquetCompression is the page-compression codec for --format parquet
 	// (none, snappy or zstd). Only the Parquet writer reads it; the DEL and SQL
@@ -281,6 +318,7 @@ func NewExportConfig() *ExportConfig {
 		DelModifier:        defaultDelModifier(),
 		StatementSize:      DefaultStatementSize,
 		ParquetCompression: ParquetCompressionNone,
+		SQLDialect:         string(SQLDialectAuto),
 		Threads:            1,
 		BatchSize:          DefaultBatchSize,
 		PipelineBuffer:     DefaultPipelineBuffer,

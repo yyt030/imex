@@ -17,8 +17,8 @@ func TestRefusalTablesAreInReportingOrder(t *testing.T) {
 		c    Command
 		want []string // option labels, in order
 	}{
-		{CmdExport, []string{"--format sql", "--threads", "--no-hex-blob", "--session-var"}},
-		{CmdImport, []string{"--format sql", "--mode create", "--session-var"}},
+		{CmdExport, []string{"--threads", "--no-hex-blob"}},
+		{CmdImport, nil},
 		{CmdList, []string{"list events"}},
 		{CmdShow, []string{"show table"}},
 	}
@@ -65,8 +65,10 @@ func engineScopeName(c Command) string {
 }
 
 // TestRefusalPredicatesFireOnValueNotDefault pins which input trips which rule, and
-// equally that a run's shipped defaults trip nothing: the presence-only rules read
-// the bool cmd folded in, so `--session-var` left alone must stay usable.
+// equally that a run's shipped defaults trip nothing: every remaining pg rule
+// fires on a value, so a run that leaves the options at their shipped defaults is
+// never refused. --session-var is no longer a refusal on pg at all — the engine
+// honours it the way MySQL does — so it is not in the table.
 func TestRefusalPredicatesFireOnValueNotDefault(t *testing.T) {
 	byLabel := map[string]func(RunOptions) bool{}
 	for _, c := range []Command{CmdExport, CmdImport, CmdList, CmdShow} {
@@ -79,18 +81,11 @@ func TestRefusalPredicatesFireOnValueNotDefault(t *testing.T) {
 		o      RunOptions
 		want   bool
 	}{
-		{"--format sql", RunOptions{Format: "sql"}, true},
-		{"--format sql", RunOptions{Format: "del"}, false},
-		{"--format sql", RunOptions{Format: "parquet"}, false},
 		{"--threads", RunOptions{Threads: 1}, false},
 		{"--threads", RunOptions{Threads: 2}, true},
 		{"--threads", RunOptions{Threads: 0}, false},
 		{"--no-hex-blob", RunOptions{NoHexBlob: true}, true},
 		{"--no-hex-blob", RunOptions{NoHexBlob: false}, false},
-		{"--session-var", RunOptions{SessionVar: true}, true},
-		{"--session-var", RunOptions{}, false},
-		{"--mode create", RunOptions{Mode: "create"}, true},
-		{"--mode create", RunOptions{Mode: "replace"}, false},
 		{"list events", RunOptions{Object: "events"}, true},
 		{"list events", RunOptions{Object: "tables"}, false},
 		{"show table", RunOptions{ShowKind: "view"}, true},

@@ -140,12 +140,15 @@ type Backend interface {
 	Open(cfg *config.Config) (*sql.DB, error)
 
 	// IsReservedConnParam reports whether a --session-var name is already owned by
-	// this engine's connection string — either the tool sets it itself or the driver
-	// parses it as a connection setting — so the value would never reach the server
-	// as a session variable. The question is engine vocabulary: these are the MySQL
-	// driver's parameter names, and a DSN-less dialect has nothing to reserve. cmd
-	// asks it before the parser in internal/common, which cannot import this
-	// package, rejects the name.
+	// this engine's connection or by the tool — a parameter the driver parses
+	// itself, or a value the tool sets for its own contract. Such a name is
+	// rejected up front, because a --session-var of it would either never reach
+	// the session (the driver consumes it) or would silently undo what the tool
+	// promised (a session SET overriding the tool's own GUC). The question is
+	// engine vocabulary: MySQL reserves its driver's DSN parameter names, pg
+	// reserves its driver keywords plus the client_encoding/statement_timeout it
+	// sets. cmd asks it before the parser in internal/common, which cannot import
+	// this package, rejects the name.
 	IsReservedConnParam(name string) bool
 
 	// QuoteIdent quotes one identifier (a table or column name) the way this
@@ -261,6 +264,13 @@ type Backend interface {
 	// engine-vocabulary, and return the tool's own vocabulary.
 	ColumnKinds(colTypes []*sql.ColumnType) []common.ColumnKind
 	BinaryFlags(colTypes []*sql.ColumnType) []bool
+
+	// BooleanFlags marks the columns this engine treats as boolean. It is read
+	// only by the SQL writer's PostgreSQL dialect, which must spell a boolean as
+	// true/false rather than the driver's "t"/"f" text that the DEL and Parquet
+	// writers already rely on. MySQL and Dameng report none: their boolean lives
+	// in a numeric/BIT column whose text the other dialects re-bind on import.
+	BooleanFlags(colTypes []*sql.ColumnType) []bool
 
 	// MetadataKind and MetadataBinary do the same two classifications for the
 	// type words a catalogue view reports (information_schema.DATA_TYPE and

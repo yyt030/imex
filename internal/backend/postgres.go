@@ -6,13 +6,15 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
@@ -105,16 +107,23 @@ func StatementTimeout(cfg *config.Config) time.Duration {
 	return d
 }
 
-// Open builds a PostgreSQL connection URL and returns the lazy *sql.DB, matching
-// sql.Open's contract exactly: nothing is dialled here, so the caller's
-// PingWithRetry stays the single place a connectivity failure is decided and
-// reported.
+// Open builds a PostgreSQL connection URL, parses it into a pgx ConnConfig and
+// returns the lazy *sql.DB, matching sql.Open's contract exactly: nothing is
+// dialled here, so the caller's PingWithRetry stays the single place a
+// connectivity failure is decided and reported.
 //
 // sslmode=disable is deliberate. It is the same promise the tool already makes
 // for MySQL (requirements 8.4: transport is plaintext TCP, TLS must be
 // terminated outside the tool). Left unset, pgx negotiates a TLS attempt on
 // every connection and would silently upgrade a run that the documentation says
 // is plaintext.
+//
+// --session-var values are applied the way MySQL applies them: a "SET <name> =
+// <value>" statement run on every NEW physical connection, here through pgx's
+// AfterConnect hook rather than the go-sql-driver's DSN-parameter handler
+// (which PostgreSQL's wire protocol has no equivalent of). The hook fires
+// inside the first real connection, so Open stays lazy and a bad value still
+// surfaces through PingWithRetry, exactly like a bad MySQL session variable does.
 func (postgresBackend) Open(cfg *config.Config) (*sql.DB, error) {
 	s, err := connectURL(cfg)
 	if err != nil {
@@ -123,7 +132,44 @@ func (postgresBackend) Open(cfg *config.Config) (*sql.DB, error) {
 	// The error is returned unwrapped: every caller already wraps an Open failure
 	// with "failed to connect to database", and saying it twice would change the
 	// text an operator reads for an unreachable server.
-	return sql.Open("pgx", s)
+	cc, err := pgx.ParseConfig(s)
+	if err != nil {
+		return nil, err
+	}
+	if apply := pgSessionVarApply(cfg.Vars); apply != nil {
+		return stdlib.OpenDB(*cc, stdlib.OptionAfterConnect(apply)), nil
+	}
+	return stdlib.OpenDB(*cc), nil
+}
+
+// pgSessionVarApply builds the AfterConnect callback that replays --session-var
+// values as SET statements on a freshly dialled connection, or nil when the run
+// named none (so Open stays on the plain path and attaches no hook). Names are
+// sorted so the statements run in a stable order; the values arrive already
+// SQL-literal-quoted from internal/common, exactly the form MySQL's driver drops
+// into its own combined SET, so the grammar each engine sees is the one it
+// speaks. A name the tool or the driver owns never reaches here: cmd rejects it
+// in ParseSessionVars before the connection is ever built.
+func pgSessionVarApply(vars map[string]string) func(context.Context, *pgx.Conn) error {
+	if len(vars) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(vars))
+	for name := range vars {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return func(ctx context.Context, conn *pgx.Conn) error {
+		for _, name := range names {
+			if _, err := conn.Exec(ctx, "SET "+name+" = "+vars[name]); err != nil {
+				// Returned unwrapped: pgx already carries the server's SQLSTATE and
+				// message, and a SET failure is a connectivity-time error the caller
+				// reports through the same path as any other dial failure.
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 // connectURL spells the DSN Open() hands to pgx. It is separate from Open only so
@@ -158,13 +204,45 @@ func connectURL(cfg *config.Config) (string, error) {
 	return u.String(), nil
 }
 
-// IsReservedConnParam is false for every name, because this engine's connection
-// string has no parameter the tool owns under a MySQL-shaped name: connectURL
-// writes sslmode, client_encoding, statement_timeout and connect_timeout, and
-// --session-var is refused on this engine before the CLI ever parses a name
-// (cmd/engine.go). Answering honestly here rather than reusing MySQL's list is
-// the point — a third engine must not inherit this dialect's vocabulary.
-func (postgresBackend) IsReservedConnParam(string) bool { return false }
+// pgReservedConnParams are the --session-var names this engine cannot honour as a
+// session variable because the value would never take effect as written, or
+// would silently undo something the tool already decided. Two groups:
+//
+//   - the connection parameters pgx consumes itself — its own keyword list, the
+//     same reason reservedMySQLDSNParams exists for the MySQL driver. A name in
+//     here would be read as a connection setting, and a "SET <name>" of it either
+//     fails or changes something other than the session the operator meant;
+//   - the two GUCs connectURL sets for the tool's own contract, client_encoding
+//     (from --default-charset) and statement_timeout (from the socket timeouts).
+//     Those DO carry through to the server, which is exactly why they must be
+//     reserved: a session "SET" would overwrite the value the tool promises.
+//
+// Every other GUC name is honoured by the AfterConnect SET, so search_path,
+// timezone, application_name and the work-*/timeout family are settable, but not
+// through a name that collides with the connection or the tool's own settings.
+var pgReservedConnParams = map[string]bool{
+	// pgx/libpq connection parameters (consumed by the driver, not the session)
+	"host": true, "port": true, "database": true, "dbname": true,
+	"user": true, "password": true, "passfile": true, "connect_timeout": true,
+	"sslmode": true, "sslkey": true, "sslcert": true, "sslcertmode": true,
+	"sslrootcert": true, "sslnegotiation": true, "sslpassword": true, "sslsni": true,
+	"krbspn": true, "krbsrvname": true, "target_session_attrs": true,
+	"service": true, "servicefile": true, "min_protocol_version": true,
+	"max_protocol_version": true, "channel_binding": true, "require_auth": true,
+	"options": true,
+	// GUCs the tool itself sets on the connection
+	"client_encoding":   true,
+	"statement_timeout": true,
+}
+
+// IsReservedConnParam reports whether a --session-var name belongs to this
+// engine's connection or to the settings the tool manages, and so cannot be
+// overridden from the command line. Unlike the MySQL list — which is only the
+// driver's DSN vocabulary — this one also guards the two GUCs connectURL writes,
+// because on this engine those reach the server and a session SET would undo them.
+func (postgresBackend) IsReservedConnParam(name string) bool {
+	return pgReservedConnParams[name]
+}
 
 // QuoteIdent double-quotes one identifier, doubling any double quote inside it.
 // Unlike MySQL, PostgreSQL is case-sensitive once the name is quoted and folds an
@@ -350,10 +428,10 @@ func (postgresBackend) UpsertNeedsTarget() bool { return true }
 func (postgresBackend) FKCheckToggle() (off, on string) { return "", "" }
 
 // ShowDefinition has no rows: PostgreSQL has no SHOW CREATE, and the equivalents
-// (pg_get_functiondef, pg_index, a view's stored definition) would have to be
-// re-imported by --mode create through the SQL reader this engine also refuses.
-// cmd refuses every `imex show` kind before it dials (Refusals(CmdShow)), so this
-// answer is only reached by a library caller.
+// (pg_get_functiondef, pg_index, a view's stored definition) are DDL, which imex
+// no longer replays on import (the --mode create path was removed). cmd refuses
+// every `imex show` kind before it dials (Refusals(CmdShow)), so this answer is
+// only reached by a library caller.
 func (postgresBackend) ShowDefinition(string) (string, string, bool) { return "", "", false }
 
 // SnapshotSteps opens the read transaction. PostgreSQL has no
@@ -517,6 +595,17 @@ func (b postgresBackend) BinaryFlags(colTypes []*sql.ColumnType) []bool {
 	flags := make([]bool, len(colTypes))
 	for i, ct := range colTypes {
 		flags[i] = b.MetadataBinary(ct.DatabaseTypeName())
+	}
+	return flags
+}
+
+func (b postgresBackend) BooleanFlags(colTypes []*sql.ColumnType) []bool {
+	flags := make([]bool, len(colTypes))
+	for i, ct := range colTypes {
+		switch strings.ToUpper(strings.TrimSpace(ct.DatabaseTypeName())) {
+		case "BOOL", "BOOLEAN":
+			flags[i] = true
+		}
 	}
 	return flags
 }

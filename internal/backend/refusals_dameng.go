@@ -50,11 +50,6 @@ func (damengBackend) Refusals(c Command) []Refusal {
 				Applies: func(o RunOptions) bool { return o.Mode == string(config.ImportModeInsertUpdate) },
 			},
 			{
-				Option:  static("--mode create"),
-				Reason:  "it runs CREATE TABLE text out of a MySQL dump, which Dameng does not accept, and imex cannot export that DDL on this engine either; create the table with your own DDL and use --mode insert",
-				Applies: func(o RunOptions) bool { return o.Mode == string(config.ImportModeCreate) },
-			},
-			{
 				Option:  static("--session-var"),
 				Reason:  dmSessionVarReason,
 				Applies: func(o RunOptions) bool { return o.SessionVar },

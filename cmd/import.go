@@ -33,9 +33,10 @@ Examples:
   imex import -h 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del --mode insert_update -t users
 
-  # Create table from SQL file
+  # Import a SQL dump (any CREATE/DDL lines are skipped; only the INSERT data
+  # is loaded, into a table that must already exist)
   imex import -h 127.0.0.1 -u root -p pass -D mydb \
-    -i /backup/users.sql -f sql --mode create`,
+    -i /backup/users.sql -f sql -t users`,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Apply --default-charset override if explicitly provided.
@@ -68,8 +69,8 @@ Examples:
 		if importCfg.Input == "" {
 			return common.Usagef("--input is required")
 		}
-		if importCfg.Mode != config.ImportModeCreate && importCfg.Table == "" {
-			return common.Usagef("--table is required (except for --mode create)")
+		if importCfg.Table == "" {
+			return common.Usagef("--table is required")
 		}
 
 		// Resolve password securely.

@@ -165,11 +165,12 @@ type exportOptions struct {
 	batchSize int
 }
 
-// dumpWithDDL writes a SQL file that `import --mode create` can build a table
-// from: the definition `imex show tab` produces, followed by a data-only export.
-// A SQL export carries INSERT statements only, so assembling the two is what a
-// user does; the tests that need DDL go through the same two steps rather than
-// pretending the writer emits one.
+// dumpWithDDL writes a SQL file of the mysqldump shape: the definition `imex
+// show tab` produces, followed by a data-only export. A SQL export carries
+// INSERT statements only, so assembling the two is what a user does; the tests
+// that need a dump with DDL in it go through the same two steps rather than
+// pretending the writer emits one. imex replays no DDL, so such a file imports
+// into a table that already exists, with the CREATE line skipped by the reader.
 func (e *liveEnv) dumpWithDDL(t *testing.T, table, output string) {
 	t.Helper()
 
@@ -530,14 +531,16 @@ func TestLive_GeneratedColumnsExcluded(t *testing.T) {
 		assertSameRows(t, snapshot(src), snapshot(dst))
 	})
 
-	// The create path builds the table from the dump, generated columns and all,
-	// and then inserts into it: the same exclusion has to apply there.
-	t.Run("sql-create", func(t *testing.T) {
+	// A dump that carries DDL and data together is imported into an existing
+	// table: the reader skips the CREATE line and the generated-column exclusion
+	// applies on the ordinary INSERT path, the same way it did under create mode.
+	t.Run("sql-import-skips-DDL", func(t *testing.T) {
 		dst := env.liveTable(t, "gen_dst_create")
+		env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
 		file := filepath.Join(dir, "generated-create.sql")
 		env.dumpWithDDL(t, src, file)
 		stats := env.importFileStats(t, importOptions{
-			input: file, format: "sql", mode: config.ImportModeCreate, table: dst, threads: 1,
+			input: file, format: "sql", mode: config.ImportModeInsert, table: dst, threads: 1,
 		})
 		if stats.Inserted != 3 {
 			t.Fatalf("inserted = %d, want 3 (failed=%d)", stats.Inserted, stats.Failed)
@@ -656,15 +659,17 @@ func TestLive_ImportModes(t *testing.T) {
 		t.Fatalf("replace mode: got %v", got)
 	}
 
-	// Create mode: take the definition from show and the rows from a data-only
-	// export, then let the importer create and fill a differently named table.
+	// A DDL+data dump imported into a differently named, pre-existing table: the
+	// CREATE line is skipped and replace mode fills the target from the INSERTs.
+	// (imex no longer creates the table itself — --mode create is gone.)
 	src := env.liveTable(t, "createsrc")
 	created := env.liveTable(t, "created")
 	env.fillSource(t, src)
+	env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", created, src))
 	sqlFile := filepath.Join(dir, "create.sql")
 	env.dumpWithDDL(t, src, sqlFile)
 	env.importFile(t, importOptions{
-		input: sqlFile, format: "sql", mode: config.ImportModeCreate, table: created, commitCount: 4,
+		input: sqlFile, format: "sql", mode: config.ImportModeReplace, table: created, commitCount: 4,
 	})
 	assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, created))
 }
@@ -1116,10 +1121,10 @@ func TestLive_BatchSplitsBeforePacketLimit(t *testing.T) {
 }
 
 // TestLive_EmptySQLFileImportsZeroRows pins an empty table's own data-only SQL
-// export as importable: the file holds only `/*!40101 SET NAMES utf8mb4 */;`, so
-// there is no statement to replay and no column list to build one from. The run
-// must finish with a zero-row summary instead of rejecting the file, and it must
-// leave an existing target untouched.
+// export as importable: with the `SET NAMES` preamble gone the file is empty
+// (0 bytes), so there is no statement to replay and no column list to build one
+// from. The run must finish with a zero-row summary instead of rejecting the
+// file, and it must leave an existing target untouched.
 func TestLive_EmptySQLFileImportsZeroRows(t *testing.T) {
 	env := newLiveEnv(t)
 	dir := t.TempDir()
@@ -1135,7 +1140,7 @@ func TestLive_EmptySQLFileImportsZeroRows(t *testing.T) {
 	if info, err := os.Stat(file); err != nil {
 		t.Fatalf("stat %s: %v", file, err)
 	} else if info.Size() > 64 {
-		t.Fatalf("expected a SET-only file for an empty table, got %d bytes", info.Size())
+		t.Fatalf("expected an empty (or near-empty) file for an empty table, got %d bytes", info.Size())
 	}
 
 	stats := env.importFileStats(t, importOptions{

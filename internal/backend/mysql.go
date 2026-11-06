@@ -242,6 +242,13 @@ func (mysqlBackend) BinaryFlags(colTypes []*sql.ColumnType) []bool {
 	return binaryColumnFlags(colTypes)
 }
 
+// BooleanFlags reports none: a MySQL boolean is a tinyint(1)/BIT whose text the
+// other writers already handle, so the SQL writer never needs a boolean column
+// mark for this engine.
+func (mysqlBackend) BooleanFlags(colTypes []*sql.ColumnType) []bool {
+	return make([]bool, len(colTypes))
+}
+
 func (mysqlBackend) MetadataKind(dataType string) common.ColumnKind {
 	return classifyColumnKind(dataType)
 }

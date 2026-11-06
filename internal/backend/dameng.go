@@ -187,6 +187,12 @@ func (b damengBackend) BinaryFlags(colTypes []*sql.ColumnType) []bool {
 	return flags
 }
 
+// BooleanFlags reports none: the Dameng SQL path is refused at the CLI, so the
+// writer never asks this engine for a boolean column mark.
+func (damengBackend) BooleanFlags(colTypes []*sql.ColumnType) []bool {
+	return make([]bool, len(colTypes))
+}
+
 func (damengBackend) MetadataKind(dataType string) common.ColumnKind {
 	return classifyDamengType(dataType)
 }

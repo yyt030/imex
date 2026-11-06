@@ -49,7 +49,7 @@ func registerImportFlags(cmd *cobra.Command) {
 	// Import-specific options
 	f.StringVarP(&importCfg.Input, "input", "i", "", "Input file path (required)")
 	f.StringVarP(&importCfg.Format, "format", "f", "del", "Input file format (del/sql/parquet)")
-	f.StringVarP((*string)(&importCfg.Mode), "mode", "M", "insert", "insert, insert_update, replace (clears the table), create")
+	f.StringVarP((*string)(&importCfg.Mode), "mode", "M", "insert", "insert, insert_update, replace (clears the table)")
 	f.StringVarP(&importCfg.Table, "table", "t", "", "Target table name")
 	f.StringVarP(&importCfg.Columns, "columns", "c", "", "Target columns (one per input column) or file=table mapping (subset ok)")
 	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")

@@ -98,6 +98,7 @@ func ExportOptionScopes() OptionScopes {
 	return OptionScopes{
 		sqlOnly("statement-size"),
 		sqlOnly("extended-insert"),
+		sqlOnly("sql-dialect"),
 		parquetOnly("parquet-compression"),
 		delOnly("char-del"),
 		delOnly("col-del"),

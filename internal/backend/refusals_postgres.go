@@ -1,9 +1,5 @@
 package backend
 
-import (
-	"github.com/imex/internal/config"
-)
-
 // PostgreSQL's option refusals, one table per command, in the order `imex` has
 // always reported them.
 //
@@ -16,26 +12,20 @@ import (
 // server's.
 //
 // Each rule fires on the *value*, not on whether the option was named
-// (--format sql, --threads 4, --mode create), so a run configured by any means
-// cannot escape it. The two rules that fire on presence (--session-var) read the
-// bool cmd folded in, exactly like the format-scoped options cmd/validate.go
-// rejects, so a shipped default stays usable.
+// (--threads above 1, --no-hex-blob switched on), so a run configured by any
+// means cannot escape it. --session-var is no longer a refusal at all: this
+// engine now honours it the way MySQL does, running a SET per new connection and
+// rejecting only the names the tool or the driver owns
+// (postgresBackend.IsReservedConnParam).
 //
 // What is left working is the point of the increment: a single-threaded DEL or
 // Parquet dump of any SELECT, with the tool's own delimiters, escaping and NULL
 // spelling, read through the same sql.RawBytes pipeline MySQL uses.
 
-const pgSessionVarReason = "SET <name>=<value> is MySQL session grammar and imex does not translate it, put PostgreSQL settings in the server or role configuration"
-
 func (postgresBackend) Refusals(c Command) []Refusal {
 	switch c {
 	case CmdExport:
 		return []Refusal{
-			{
-				Option:  static("--format sql"),
-				Reason:  "the SQL writer emits MySQL INSERT text (backquoted names and MySQL escaping) that no PostgreSQL server accepts, use --format del or --format parquet",
-				Applies: func(o RunOptions) bool { return o.Format == "sql" },
-			},
 			{
 				Option:  static("--threads"),
 				Reason:  "parallel export shards the query with MySQL-only statements and has not been measured against PostgreSQL, use --threads 1",
@@ -46,38 +36,19 @@ func (postgresBackend) Refusals(c Command) []Refusal {
 				Reason:  "a PostgreSQL server rejects a NUL inside any text value (SQLSTATE 22021), so bytea columns must go out as 0x hex; imex always does it on this engine",
 				Applies: func(o RunOptions) bool { return o.NoHexBlob },
 			},
-			{
-				Option:  static("--session-var"),
-				Reason:  pgSessionVarReason,
-				Applies: func(o RunOptions) bool { return o.SessionVar },
-			},
 		}
 	case CmdImport:
-		// Only --mode create is refused, and for a reason the mode switch cannot fix:
-		// the DDL comes out of the MySQL dump reader, which this engine refuses on
-		// the other side of the same chain (see CmdShow). --mode replace empties the
-		// table with DELETE, which both engines parse, and the referential-check
-		// toggle that MySQL wraps around it is the backend's to supply — PostgreSQL
-		// has no such session setting and gets no statement rather than a failing
-		// one. --mode insert_update builds an ON CONFLICT whose target the importer
-		// reads out of the catalogue instead of guessing.
-		return []Refusal{
-			{
-				Option:  static("--format sql"),
-				Reason:  "a SQL dump is parsed with the MySQL statement grammar and carries MySQL INSERT text, import a --format del or --format parquet file instead",
-				Applies: func(o RunOptions) bool { return o.Format == "sql" },
-			},
-			{
-				Option:  static("--mode create"),
-				Reason:  "it runs CREATE TABLE text out of a MySQL dump, which PostgreSQL does not accept, and imex cannot export that DDL on this engine either; create the table with pg_dump or your own DDL and use --mode insert",
-				Applies: func(o RunOptions) bool { return o.Mode == string(config.ImportModeCreate) },
-			},
-			{
-				Option:  static("--session-var"),
-				Reason:  pgSessionVarReason,
-				Applies: func(o RunOptions) bool { return o.SessionVar },
-			},
-		}
+		// Nothing is refused on import. --session-var is honoured like MySQL's;
+		// --mode create no longer exists on any engine (imex moves rows into an
+		// existing table and replays no DDL, so schema creation is left to pg_dump
+		// or your own migrations); --format sql is read by the dialect-blind reader
+		// and re-bound through this engine's own INSERT builder rather than replayed;
+		// --mode replace empties the table with DELETE, which both engines parse, and
+		// the referential-check toggle MySQL wraps around it is the backend's to
+		// supply — PostgreSQL has no such session setting and gets no statement
+		// rather than a failing one; --mode insert_update builds an ON CONFLICT whose
+		// target the importer reads out of the catalogue instead of guessing.
+		return nil
 	case CmdList:
 		// The other seven objects come from the PostgreSQL catalogue instead of
 		// information_schema (internal/list/queries_pg.go), with the same
@@ -96,8 +67,8 @@ func (postgresBackend) Refusals(c Command) []Refusal {
 	case CmdShow:
 		// A definition is not a row: SHOW CREATE TABLE produces MySQL DDL, and the
 		// PostgreSQL equivalents (pg_get_functiondef, pg_index, a view's stored
-		// definition) would have to be re-imported by --mode create through the SQL
-		// reader this engine also refuses. Until both halves exist, the honest answer
+		// definition) are DDL that would have to be replayed on import — a path
+		// imex no longer has, since --mode create was removed. The honest answer
 		// is that the tool does not do it, and pg_dump does. One rule covers every
 		// kind, and it spells the kind into the message so a run says what it refused.
 		return []Refusal{

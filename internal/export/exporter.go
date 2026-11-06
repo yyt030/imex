@@ -117,6 +117,26 @@ func (e *Exporter) backend() backend.Backend {
 	return e.be
 }
 
+// sqlDialect resolves --sql-dialect for a `-f sql` run. An explicit mysql or pg
+// wins; auto (the default, and an empty value) follows the connected engine, so a
+// MySQL run keeps emitting MySQL bytes byte for byte and a PostgreSQL run emits
+// PostgreSQL bytes. An engine with no writer-side dialect yet (Dameng) falls back
+// to MySQL grammar, and its -f sql path is refused at the CLI before a writer is
+// ever built.
+func (e *Exporter) sqlDialect() config.SQLDialect {
+	switch config.SQLDialect(e.config.SQLDialect) {
+	case config.SQLDialectPG:
+		return config.SQLDialectPG
+	case config.SQLDialectMySQL:
+		return config.SQLDialectMySQL
+	default: // auto
+		if e.backend().Engine() == backend.EnginePG {
+			return config.SQLDialectPG
+		}
+		return config.SQLDialectMySQL
+	}
+}
+
 // Close closes the exporter and releases resources
 func (e *Exporter) Close() error {
 	if e.db != nil {
@@ -289,10 +309,12 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 		if err != nil {
 			return errors.Wrap(err, "failed to extract table name")
 		}
-		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize, e.config.DefaultCharset)
+		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetColumnKinds(e.backend().ColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
+		sqlWriter.SetDialect(e.sqlDialect())
+		sqlWriter.SetBooleanFlags(e.backend().BooleanFlags(colTypes))
 		writer = sqlWriter
 	case "parquet":
 		parquetWriter, err := NewParquetWriter(outputFile, columns, binaryFlags, e.config.ParquetCompression)
@@ -834,10 +856,12 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 		if err != nil {
 			return 0, errors.Wrap(err, "failed to extract table name")
 		}
-		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize, e.config.DefaultCharset)
+		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize)
 		sqlWriter.SetBinaryFormat(binaryFlags, hex)
 		sqlWriter.SetColumnKinds(e.backend().ColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
+		sqlWriter.SetDialect(e.sqlDialect())
+		sqlWriter.SetBooleanFlags(e.backend().BooleanFlags(colTypes))
 		writer = sqlWriter
 	default:
 		return 0, errors.Errorf("unsupported format: %s", e.config.Format)
@@ -994,8 +1018,7 @@ func (e *Exporter) writeShardStream(pipes []*shardPipe, columns []string) error 
 		if err != nil {
 			return errors.Wrap(err, "failed to extract table name")
 		}
-		sqlWriter = NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize,
-			e.config.DefaultCharset)
+		sqlWriter = NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize)
 		if err := sqlWriter.WriteHeader(columns); err != nil {
 			return errors.Wrap(err, "failed to write header")
 		}

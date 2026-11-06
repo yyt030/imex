@@ -9,7 +9,6 @@ import (
 
 	"github.com/pkg/errors"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -186,15 +185,18 @@ func (imp *Importer) Import(ctx context.Context) error {
 	fileColumns, err := reader.ReadHeader()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
-			// A data-only SQL dump of an empty table carries only the SET header
-			// (31 bytes for `/*!40101 SET NAMES utf8mb4 */;`): no INSERT to parse and
-			// no column list to build an INSERT from. There is nothing to do, and
-			// "nothing to do" is the honest success the mysql client also reports
-			// when replaying such a file — refusing it made an empty table's own
-			// export impossible to import back. Only a file whose skipped statements
-			// were all dump preamble qualifies: anything else keeps failing below.
+			// A data-only SQL dump of an empty table is now an empty file: the
+			// exporter no longer writes the `SET NAMES` preamble, so there is no
+			// INSERT to parse and no column list to build one from. (An older
+			// dump's only content was that 31-byte preamble; the reader still
+			// skips it, so both shapes reach this same path.) There is nothing to
+			// do, and "nothing to do" is the honest success the mysql client also
+			// reports when replaying such a file — refusing it made an empty
+			// table's own export impossible to import back. Only a file whose
+			// skipped statements were all dump preamble qualifies: anything else
+			// keeps failing below.
 			if r, ok := reader.(*SQLReader); ok && r.OnlyPreamble() {
-				return imp.finishNoData(startTime, "empty SQL file: no INSERT statement and no CREATE TABLE, nothing to import")
+				return imp.finishNoData(startTime, "empty SQL file: no INSERT statement, nothing to import")
 			}
 			// Reached end of file without finding any header row or INSERT:
 			// a plain EOF is meaningless to the user here.
@@ -260,13 +262,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 		readerColumns = fileColumns
 	}
 
-	// A structure-only SQL file (a `show tab` definition) carries CREATE statements
-	// but no rows: create mode applies them and finishes with 0 rows instead
-	// of demanding a column list it cannot have.
-	structureOnly := imp.cfg.Format == "sql" && imp.cfg.Mode == config.ImportModeCreate &&
-		len(targetColumns) == 0 && isStructureOnlySQL(reader)
-
-	if len(targetColumns) == 0 && !structureOnly {
+	if len(targetColumns) == 0 {
 		return errors.New("no target columns available: the input file has no header row, specify --columns/-c with the target column list")
 	}
 
@@ -274,14 +270,11 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// headers carry the original result-set column names, so an unaliased
 	// expression column exported via --query (e.g. "SELECT 1, name ...")
 	// would otherwise surface as a cryptic server error 1054 during INSERT —
-	// and in replace mode only after the table had already been emptied.
-	// SQL format is only exempt in create mode, which legitimately runs before
-	// the table exists; for every other mode the table must already be there,
-	// so the same pre-flight check applies.
-	if imp.cfg.Format != "sql" || imp.cfg.Mode != config.ImportModeCreate {
-		if err := imp.validateTargetColumns(ctx, targetColumns); err != nil {
-			return err
-		}
+	// and in replace mode only after the table had already been emptied. Every
+	// mode now writes into an existing table, so this pre-flight check applies
+	// to all three formats.
+	if err := imp.validateTargetColumns(ctx, targetColumns); err != nil {
+		return err
 	}
 
 	// insert_update relies on a UNIQUE key to decide insert-vs-update. On a
@@ -324,57 +317,6 @@ func (imp *Importer) Import(ctx context.Context) error {
 		if err := imp.deleteTable(ctx); err != nil {
 			return errors.Wrap(err, "failed to delete table data")
 		}
-	case config.ImportModeCreate:
-		if imp.cfg.Format != "sql" {
-			return errors.New("create mode only supports SQL format")
-		}
-		// Execute CREATE TABLE statements if any. When -t is given, rewrite
-		// each statement's target table name so the subsequent INSERT (built
-		// from imp.cfg.Table) lands in the same table this created. When -t is
-		// omitted, adopt the table name carried by the first CREATE statement.
-		var createStmts []string
-		if sqlReader, ok := reader.(*SQLReader); ok {
-			createStmts = sqlReader.GetCreateStatements()
-		}
-		if imp.cfg.Table == "" {
-			if len(createStmts) == 0 {
-				return errors.New("create mode requires --table when the SQL file contains no CREATE TABLE statement")
-			}
-			name := extractCreateTableName(createStmts[0])
-			if name == "" {
-				return errors.New("failed to derive table name from CREATE statement; specify --table")
-			}
-			imp.cfg.Table = name
-			common.Logger.Info("table name derived from SQL file", "table", name)
-		}
-		// A SQL export carries no DDL, so with -t the run can only work against a
-		// table that already exists. Without this check the first batch was read
-		// and INSERTed, and the server answered with the raw 1146 after the data
-		// had moved; fail before reading instead, and name both ways out.
-		if len(createStmts) == 0 {
-			exists, err := imp.tableExists(ctx)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				return errors.Errorf("create mode found no CREATE TABLE statement in the SQL file and table %q does not exist in database %q: put the `imex show tab %s` definition in front of the data, or import with --mode insert into an existing table", imp.cfg.Table, imp.cfg.Database, imp.cfg.Table)
-			}
-		}
-		for _, stmt := range createStmts {
-			stmt = rewriteCreateTableTarget(stmt, imp.cfg.Table)
-			common.LogInteractionSQL(stmt)
-			taggedStmt := common.TagSQL(stmt)
-			common.Logger.Info("create table executing")
-			if _, err := imp.db.ExecContext(ctx, taggedStmt); err != nil {
-				preview := common.SQLPreview(taggedStmt, nil)
-				common.Logger.Error("create table failed", "error", err, "sql", preview)
-				return errors.Wrapf(err, "failed to execute CREATE TABLE (SQL: %s)", preview)
-			}
-		}
-	}
-
-	if structureOnly {
-		return imp.finishNoData(startTime, "structure-only SQL file: table created, no data rows")
 	}
 
 	// Generated columns are computed by the server and must stay out of the INSERT
@@ -472,18 +414,11 @@ func (imp *Importer) Import(ctx context.Context) error {
 	return importErr
 }
 
-// isStructureOnlySQL reports whether reader is a SQL reader that finished
-// ReadHeader with captured CREATE statements but no INSERT rows.
-func isStructureOnlySQL(reader Reader) bool {
-	s, ok := reader.(*SQLReader)
-	return ok && !s.HasData() && len(s.GetCreateStatements()) > 0
-}
-
 // finishNoData ends a run that has legitimately nothing to write and reports it
 // in the same shape as a normal completion: a zero-row summary with the reason
-// in `note`. Both callers (a structure-only SQL file and a data-only SQL file
-// with no INSERT) reach it before any batch is built, so the counters are
-// untouched and the record is the last line of the run.
+// in `note`. Its caller (a data-only SQL file with no INSERT) reaches it before
+// any batch is built, so the counters are untouched and the record is the last
+// line of the run.
 func (imp *Importer) finishNoData(startTime time.Time, note string) error {
 	imp.stopMonitor()
 	total := imp.stats.Snapshot()
@@ -1612,45 +1547,4 @@ func (imp *Importer) prepareUpsert(columns []string) error {
 	imp.upsertSuffix = suffix
 	imp.upsertReturning = returning
 	return nil
-}
-
-// createTableNameRe matches the table-name token that follows
-// "CREATE [TEMPORARY] TABLE [IF NOT EXISTS]" (backtick-qualified or bare).
-var createTableNameRe = regexp.MustCompile(
-	"(?is)^(\\s*CREATE\\s+(?:TEMPORARY\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?)(\\x60[^\\x60]+\\x60|[\\w$]+)(.*)$",
-)
-
-// rewriteCreateTableTarget replaces the table name in a CREATE TABLE statement
-// with target so the subsequent INSERT (built from imp.cfg.Table) lands in the
-// same table this statement creates.
-func rewriteCreateTableTarget(stmt, target string) string {
-	if target == "" {
-		return stmt
-	}
-	m := createTableNameRe.FindStringSubmatch(stmt)
-	if m == nil {
-		return stmt
-	}
-	name := m[2]
-	if idx := strings.LastIndexByte(name, '.'); idx >= 0 {
-		name = name[:idx+1] + "`" + target + "`"
-	} else {
-		name = "`" + target + "`"
-	}
-	return m[1] + name + m[3]
-}
-
-// extractCreateTableName returns the bare table name from a CREATE TABLE
-// statement (schema qualification stripped, backticks removed), or "" when
-// the statement doesn't match.
-func extractCreateTableName(stmt string) string {
-	m := createTableNameRe.FindStringSubmatch(stmt)
-	if m == nil {
-		return ""
-	}
-	name := strings.Trim(m[2], "`")
-	if idx := strings.LastIndexByte(name, '.'); idx >= 0 {
-		name = name[idx+1:]
-	}
-	return name
 }

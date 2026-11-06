@@ -133,12 +133,15 @@ func checkExportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.
 // checkImportEngineOptions folds the import run into backend.RunOptions and asks
 // the dialect which option it refuses.
 //
-// Only --mode create trips a rule, and the reason lives with the rule
-// (refusals_postgres.go). What is deliberately still allowed is the other two
-// modes: --mode replace empties the table with DELETE, which both engines parse,
-// and the referential-check toggle around it is the backend's to supply or omit;
-// --mode insert_update builds an ON CONFLICT whose target the importer reads out
-// of the catalogue instead of guessing.
+// On the pg path nothing trips a rule now: --session-var is honoured like MySQL's
+// (each name reaching a SET on the connection, or the reserved-name rejection in
+// parseSessionVars), --format sql is read by the dialect-blind reader, --mode
+// create is gone engine-blind, and the two remaining modes are what the port
+// measures. What is deliberately still allowed by design is the modes
+// themselves: --mode replace empties the table with DELETE, which both engines
+// parse, and the referential-check toggle around it is the backend's to supply or
+// omit; --mode insert_update builds an ON CONFLICT whose target the importer
+// reads out of the catalogue instead of guessing.
 func checkImportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.ImportConfig) error {
 	o := backend.RunOptions{
 		Format:     cfg.Format,
@@ -175,9 +178,11 @@ func checkShowEngineOptions(e backend.Engine, kind string) error {
 
 // parseSessionVars runs --session-var values through the shared parser with the
 // reserved-name list of the engine this run resolved. The list belongs to the
-// dialect: those names are the MySQL driver's own DSN parameters, and an engine
-// whose connection string carries none of them reserves none
-// (Backend.IsReservedConnParam). internal/common cannot import backend, so the
+// dialect: those names are the ones the connection string or the tool already
+// owns — the MySQL driver's DSN parameters, and on pg the driver keywords plus
+// the client_encoding/statement_timeout the tool sets itself
+// (Backend.IsReservedConnParam). An engine with no such names would reserve none;
+// every engine here has some. internal/common cannot import backend, so the
 // predicate travels as a value.
 func parseSessionVars(engine string, pairs []string) (map[string]string, error) {
 	return common.ParseSessionVars(pairs, backend.Lookup(engine).IsReservedConnParam)

@@ -168,10 +168,10 @@ func TestCLIMatrix(t *testing.T) {
 			errSubstr: "--extended-insert can only be used with --format sql",
 		},
 		{
-			name:      "mode create with format del rejected",
+			name:      "mode create is now an invalid mode",
 			args:      []string{"import", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-i", "/tmp/in.del", "-t", "users", "--mode", "create", "-f", "del"},
 			wantErr:   true,
-			errSubstr: "--mode create can only be used with --format sql",
+			errSubstr: `invalid --mode "create": must be one of insert/insert_update/replace`,
 		},
 		{
 			name:      "global log-format bogus rejected",

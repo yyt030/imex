@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/imex/internal/common"
+	"github.com/imex/internal/config"
 )
 
 // SQLWriter writes data rows as INSERT statements. It never writes DDL: table
@@ -28,7 +29,6 @@ type SQLWriter struct {
 	row        []byte
 	batchCount int
 	colList    []byte // cached INSERT prefix, including the column list
-	charset    string // connection charset for SET NAMES header
 	// binaryFlags[i] marks column i as a binary column (BLOB/BINARY/etc).
 	// When hexBlob is true, binary columns are written as 0x... hex literals.
 	binaryFlags []bool
@@ -46,18 +46,34 @@ type SQLWriter struct {
 	// detect the layout silently collapsing to one INSERT per row.
 	mergedTuples int
 	everMerged   bool
+	// dialect is the SQL grammar the writer emits. The zero value ("") and
+	// SQLDialectMySQL both mean MySQL, so a writer configured by no caller
+	// produces the historical bytes unchanged; only SQLDialectPG switches the
+	// identifier quoting, the binary literal, the boolean spelling and the string
+	// escaping.
+	dialect config.SQLDialect
+	// boolFlags[i] marks column i as a boolean column, supplied by
+	// SetBooleanFlags. Only the PostgreSQL dialect reads it, to spell a value
+	// true/false instead of the driver's "t"/"f" text (which the DEL and Parquet
+	// writers already depend on and which a bare INSERT cannot carry to PG).
+	boolFlags []bool
 }
 
+// isPG reports whether the writer is emitting the PostgreSQL grammar.
+func (s *SQLWriter) isPG() bool { return s.dialect == config.SQLDialectPG }
+
+// SetBooleanFlags marks which columns the PostgreSQL dialect should write as
+// true/false. It is ignored by every other dialect.
+func (s *SQLWriter) SetBooleanFlags(flags []bool) { s.boolFlags = flags }
+
 // NewSQLWriter creates a new SQL format writer. It writes the rows of one
-// result set as INSERT statements and nothing else; charset is the connection
-// charset used for the SET NAMES header line.
-func NewSQLWriter(w io.Writer, tableName string, columns []string, statementSize int, charset string) *SQLWriter {
+// result set as INSERT statements and nothing else.
+func NewSQLWriter(w io.Writer, tableName string, columns []string, statementSize int) *SQLWriter {
 	return &SQLWriter{
 		bw:            bufio.NewWriterSize(w, 256*1024),
 		tableName:     tableName,
 		columns:       columns,
 		statementSize: statementSize,
-		charset:       charset,
 	}
 }
 
@@ -76,6 +92,15 @@ func (s *SQLWriter) SetColumnKinds(kinds []common.ColumnKind) {
 	s.kinds = kinds
 }
 
+// SetDialect selects the SQL grammar the writer emits. Leaving it unset, or
+// passing MySQL, keeps every byte the historical writer produced; PostgreSQL
+// switches identifier quoting, the binary literal, the boolean spelling and the
+// string escaping. It must be called before the first row so the cached column
+// list is built in the chosen grammar.
+func (s *SQLWriter) SetDialect(d config.SQLDialect) {
+	s.dialect = d
+}
+
 func (s *SQLWriter) columnKind(idx int) common.ColumnKind {
 	if idx >= 0 && idx < len(s.kinds) {
 		return s.kinds[idx]
@@ -83,13 +108,20 @@ func (s *SQLWriter) columnKind(idx int) common.ColumnKind {
 	return common.KindUnknown
 }
 
-// WriteHeader writes the self-describing SET NAMES charset line.
+// WriteHeader is intentionally empty. The dump used to open with a MySQL
+// version-conditional `/*!40101 SET NAMES <charset> */;` preamble. That line is
+// inert for a reader that treats `/* ... */` as a comment but it is still MySQL
+// session grammar, and a file that has to replay unchanged on MySQL, PostgreSQL
+// and Dameng cannot carry it, so the product is now a plain sequence of INSERT
+// statements and nothing else. The header stays a method because Writer is the
+// interface the exporter drives for every format, and it still flushes nothing:
+// there is simply no preamble byte to emit.
 //
-// This mirrors mysqldump's --set-charset behavior: the standard mysql client uses
-// it to set the connection charset, and imex's own importer skips this line.
+// The import path is unchanged and still skips the legacy preamble statements
+// (SET NAMES / LOCK / UNLOCK), so files written by earlier versions keep
+// importing; this only stops the exporter from producing them.
 func (s *SQLWriter) WriteHeader(columns []string) error {
-	_, err := fmt.Fprintf(s.bw, "/*!40101 SET NAMES %s */;\n", s.charset)
-	return err
+	return nil
 }
 
 // SetSingleRowInsert selects the layout the exporter uses by default: one INSERT
@@ -145,19 +177,38 @@ func (s *SQLWriter) ensureColList() {
 		return
 	}
 	buf := make([]byte, 0, 64)
-	buf = append(buf, "INSERT INTO `"...)
-	buf = append(buf, s.tableName...)
-	buf = append(buf, "` ("...)
+	buf = append(buf, "INSERT INTO "...)
+	buf = s.appendIdent(buf, s.tableName)
+	buf = append(buf, " ("...)
 	for i, col := range s.columns {
 		if i > 0 {
 			buf = append(buf, ',', ' ')
 		}
-		buf = append(buf, '`')
-		buf = append(buf, col...)
-		buf = append(buf, '`')
+		buf = s.appendIdent(buf, col)
 	}
 	buf = append(buf, ") VALUES "...)
 	s.colList = buf
+}
+
+// appendIdent writes one identifier in the dialect's quoting. MySQL backquotes
+// the name verbatim, byte for byte as the writer has always done; PostgreSQL
+// double-quotes it and doubles any embedded double quote so a name that carries
+// a quote survives the round trip.
+func (s *SQLWriter) appendIdent(dst []byte, name string) []byte {
+	if !s.isPG() {
+		dst = append(dst, '`')
+		dst = append(dst, name...)
+		return append(dst, '`')
+	}
+	dst = append(dst, '"')
+	for i := 0; i < len(name); i++ {
+		if name[i] == '"' {
+			dst = append(dst, '"', '"')
+			continue
+		}
+		dst = append(dst, name[i])
+	}
+	return append(dst, '"')
 }
 
 // appendValueTuple hands the tuple built in row to the output: in batched
@@ -320,17 +371,23 @@ func (s *SQLWriter) appendSQLValue(dst []byte, val interface{}, colIdx int) []by
 		return append(dst, "NULL"...)
 	}
 
-	// Binary column with hex encoding: write as 0x... literal.
-	// Empty binary values write as 0x (zero-length hex literal), not '' or NULL.
+	// Binary column with hex encoding: MySQL writes 0x..., PostgreSQL writes
+	// '\x..'::bytea. Empty binary values keep a zero-length literal in each
+	// dialect (0x and '\x'::bytea), not '' or NULL.
 	if s.hexBlob && colIdx < len(s.binaryFlags) && s.binaryFlags[colIdx] {
 		switch v := val.(type) {
 		case []byte:
-			dst = append(dst, '0', 'x')
-			return hex.AppendEncode(dst, v)
+			return s.appendBinaryLiteral(dst, v)
 		case string:
-			dst = append(dst, '0', 'x')
-			return hex.AppendEncode(dst, []byte(v))
+			return s.appendBinaryLiteral(dst, []byte(v))
 		}
+	}
+
+	// PostgreSQL boolean column: spell true/false. The driver hands over "t"/"f"
+	// text after CellFixups, and a bare t/f in a VALUES list is read as a column
+	// reference by PostgreSQL, so the mark is what makes the dump replayable.
+	if s.isPG() && colIdx < len(s.boolFlags) && s.boolFlags[colIdx] {
+		return append(dst, pgBoolLiteral(val)...)
 	}
 
 	// Numeric columns are emitted as bare SQL literals. The driver returns
@@ -349,9 +406,9 @@ func (s *SQLWriter) appendSQLValue(dst []byte, val interface{}, colIdx int) []by
 
 	switch v := val.(type) {
 	case []byte:
-		return appendQuotedSQL(dst, bytesToString(v))
+		return s.appendStringLiteral(dst, bytesToString(v))
 	case string:
-		return appendQuotedSQL(dst, v)
+		return s.appendStringLiteral(dst, v)
 	case time.Time:
 		dst = append(dst, '\'')
 		dst = append(dst, v.Format("2006-01-02 15:04:05")...)
@@ -381,13 +438,69 @@ func (s *SQLWriter) appendSQLValue(dst []byte, val interface{}, colIdx int) []by
 	case float64:
 		return strconv.AppendFloat(dst, v, 'f', -1, 64)
 	case bool:
+		if s.isPG() {
+			if v {
+				return append(dst, "true"...)
+			}
+			return append(dst, "false"...)
+		}
 		if v {
 			return append(dst, '1')
 		}
 		return append(dst, '0')
 	default:
-		return appendQuotedSQL(dst, fmt.Sprintf("%v", v))
+		return s.appendStringLiteral(dst, fmt.Sprintf("%v", v))
 	}
+}
+
+// appendBinaryLiteral writes a binary column value in the dialect's hex form:
+// MySQL 0x..., PostgreSQL '\x..'::bytea. An empty value becomes 0x and
+// '\x'::bytea respectively, never ” or NULL.
+func (s *SQLWriter) appendBinaryLiteral(dst, v []byte) []byte {
+	if s.isPG() {
+		dst = append(dst, '\'', '\\', 'x')
+		dst = hex.AppendEncode(dst, v)
+		dst = append(dst, '\'', ':', ':')
+		return append(dst, "bytea"...)
+	}
+	dst = append(dst, '0', 'x')
+	return hex.AppendEncode(dst, v)
+}
+
+// appendStringLiteral dispatches a text value to the dialect's escaper.
+func (s *SQLWriter) appendStringLiteral(dst []byte, str string) []byte {
+	if s.isPG() {
+		return appendQuotedSQLPG(dst, str)
+	}
+	return appendQuotedSQL(dst, str)
+}
+
+// pgBoolLiteral reduces a boolean column's value to PostgreSQL's true/false
+// spelling. The export path hands over the driver's "t"/"f" text (after
+// CellFixups) or a real Go bool; anything that is not one of the explicit false
+// words is treated as true, matching how PostgreSQL casts its own boolean text.
+func pgBoolLiteral(val interface{}) []byte {
+	var s string
+	switch v := val.(type) {
+	case []byte:
+		s = string(v)
+	case sql.RawBytes:
+		s = string(v)
+	case string:
+		s = v
+	case bool:
+		if v {
+			return []byte("true")
+		}
+		return []byte("false")
+	default:
+		return []byte("true")
+	}
+	switch s {
+	case "", "f", "F", "false", "FALSE", "False", "0":
+		return []byte("false")
+	}
+	return []byte("true")
 }
 
 // escapeBytes marks the bytes appendQuotedSQL rewrites, one lookup per byte
@@ -447,18 +560,63 @@ func appendQuotedSQL(dst []byte, s string) []byte {
 	return append(dst, '\'')
 }
 
+// hasPGEscapes reports whether s carries a byte appendQuotedSQLPG has to rewrite.
+// It reuses the MySQL escape set, which already marks NUL, and a value that trips
+// it is written as an E” literal so PostgreSQL, whose default
+// standard_conforming_strings=on would otherwise read a backslash as a literal,
+// decodes the same bytes back.
+func hasPGEscapes(s string) bool { return hasNeedEscape(s) }
+
+// appendQuotedSQLPG appends a PostgreSQL string literal. A value with nothing to
+// escape is a plain '...' with the single quote doubled internally. A value
+// carrying a control byte or a backslash is written as E'...' with C-style
+// escapes: \n, \r, \t for those controls, \\ for a backslash, ” or \' for a
+// quote, and \xNN for the two bytes MySQL spells as \0 and \Z (NUL and 0x1A) so
+// PostgreSQL sees the byte it means rather than a digit or letter.
+func appendQuotedSQLPG(dst []byte, s string) []byte {
+	if !hasPGEscapes(s) {
+		dst = append(dst, '\'')
+		dst = append(dst, s...)
+		return append(dst, '\'')
+	}
+	dst = append(dst, 'E', '\'')
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\'':
+			dst = append(dst, '\'', '\'')
+		case '\n':
+			dst = append(dst, '\\', 'n')
+		case '\r':
+			dst = append(dst, '\\', 'r')
+		case '\t':
+			dst = append(dst, '\\', 't')
+		case 0:
+			dst = append(dst, '\\', 'x', '0', '0')
+		case 0x1a:
+			dst = append(dst, '\\', 'x', '1', 'a')
+		default:
+			dst = append(dst, c)
+		}
+	}
+	return append(dst, '\'')
+}
+
 // appendRawSQLValue is appendSQLValue for the sql.RawBytes fast path.
 func (s *SQLWriter) appendRawSQLValue(dst []byte, val sql.RawBytes, colIdx int) []byte {
 	if val == nil {
 		return append(dst, "NULL"...)
 	}
-	// Binary column with hex encoding: write as 0x... literal.
+	// Binary column with hex encoding: 0x... (MySQL) or '\x..'::bytea (PG).
 	if s.hexBlob && colIdx < len(s.binaryFlags) && s.binaryFlags[colIdx] {
-		dst = append(dst, '0', 'x')
-		return hex.AppendEncode(dst, val)
+		return s.appendBinaryLiteral(dst, []byte(val))
+	}
+	if s.isPG() && colIdx < len(s.boolFlags) && s.boolFlags[colIdx] {
+		return append(dst, pgBoolLiteral(val)...)
 	}
 	if s.columnKind(colIdx) == common.KindNumber {
 		return append(dst, val...)
 	}
-	return appendQuotedSQL(dst, bytesToString(val))
+	return s.appendStringLiteral(dst, bytesToString(val))
 }

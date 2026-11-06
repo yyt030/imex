@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -307,42 +306,6 @@ func TestShowCLIUsageErrors(t *testing.T) {
 				t.Errorf("error text leaked to stdout:\n%s", stdout)
 			}
 		})
-	}
-}
-
-// TestShowCLITableReplayIsThePointOfTheSemicolon feeds a definition straight back
-// through `imex import -f sql`, which is why the command adds a terminator. Only
-// tables replay this way: import's SQL reader understands CREATE TABLE statements,
-// and the other five kinds are a known gap (docs/requirements.md 3.6).
-func TestShowCLITableReplay(t *testing.T) {
-	env := newCLILive(t)
-	fix := newShowFixtures(t, env)
-
-	path := filepath.Join(env.dir, fix.table+".sql")
-	out, errOut, code := env.runShowCLI(t, "tab", fix.table, "-o", path)
-	if code != 0 {
-		t.Fatalf("exit %d, stderr:\n%s", code, errOut)
-	}
-	if out != "" {
-		t.Errorf("--output must keep stdout empty, got:\n%s", out)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("definition file: %v", err)
-	}
-
-	env.exec(t, "DROP TABLE `"+fix.table+"`")
-
-	text, code := env.runImportCLI(t, "-f", "sql", "-M", "create", "-i", path)
-	if code != 0 {
-		t.Fatalf("replay exit %d, output:\n%s", code, text)
-	}
-	var n int
-	if err := env.db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
-		env.liveEnv.base.Database, fix.table).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Errorf("table not recreated by the definition file")
 	}
 }
 

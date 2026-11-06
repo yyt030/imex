@@ -69,6 +69,8 @@ func registerExportFlags(cmd *cobra.Command) {
 	// SQL format modifiers
 	f.IntVar(&exportCfg.StatementSize, "statement-size", config.DefaultStatementSize, "Max bytes per merged INSERT")
 	f.BoolVar(&exportCfg.ExtendedInsert, "extended-insert", false, "Merge rows into multi-row INSERTs")
+	f.StringVar(&exportCfg.SQLDialect, "sql-dialect", string(config.SQLDialectAuto),
+		"SQL dump grammar (auto/mysql/pg)")
 
 	// Parquet format modifiers
 	f.StringVar(&exportCfg.ParquetCompression, "parquet-compression", config.ParquetCompressionNone,

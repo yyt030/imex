@@ -41,8 +41,6 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-
-	"github.com/imex/internal/config"
 )
 
 // cliBinary is built once per test run by TestMain and reused by every case.
@@ -910,79 +908,47 @@ func TestOptionMatrixDataOnlySQLExport(t *testing.T) {
 		assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
 	})
 
-	// The definition on its own is still a valid create-mode input, which is what
-	// `show tab` + `import -M create` promises.
-	t.Run("show tab 的结构 + mode create", func(t *testing.T) {
-		ddl := filepath.Join(env.dir, "structure_only.sql")
+	// A foreign dump that carries DDL alongside the data (the shape `show tab` +
+	// a data export make, or mysqldump produces) is still importable into an
+	// existing table: the reader skips the CREATE line and re-binds the INSERTs.
+	// imex replays no DDL, so the target must already be there.
+	t.Run("含 CREATE 的 dump 跳过 DDL 并照常导入", func(t *testing.T) {
+		ddl := filepath.Join(env.dir, "skip_ddl.sql")
 		if out, errOut, code := env.runShowCLI(t, "tab", src, "-o", ddl); code != 0 {
 			t.Fatalf("show tab: exit %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
 		}
-		dst := env.liveTable(t, "struct_dst")
-		env.cliImport(t, dst, "sql", ddl, "--mode", string(config.ImportModeCreate))
-		if n := env.rowCount(t, dst); n != 0 {
-			t.Errorf("structure-only import left %d rows, want 0", n)
-		}
-	})
-
-	// The two products concatenated are the self-contained dump --create used to
-	// be: create the table and fill it from one file.
-	t.Run("结构 + 数据 + mode create", func(t *testing.T) {
-		ddl := filepath.Join(env.dir, "full_ddl.sql")
-		if out, errOut, code := env.runShowCLI(t, "tab", src, "-o", ddl); code != 0 {
-			t.Fatalf("show tab: exit %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
-		}
-		data := env.cliExport(t, src, "sql", "full_data.sql")
-		file := filepath.Join(env.dir, "full.sql")
+		data := env.cliExport(t, src, "sql", "skip_data.sql")
+		file := filepath.Join(env.dir, "skip.sql")
 		body := readFile(t, ddl) + readFile(t, data)
 		if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
 			t.Fatalf("write combined dump: %v", err)
 		}
-		dst := env.liveTable(t, "full_dst")
-		env.cliImport(t, dst, "sql", file, "--mode", string(config.ImportModeCreate))
+		dst := env.liveTable(t, "skip_dst")
+		env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
+		env.cliImport(t, dst, "sql", file, "--mode", "replace")
 		assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
 	})
 
-	t.Run("仅数据 + mode create 必须明确失败", func(t *testing.T) {
-		file := env.cliExport(t, src, "sql", "data_only_for_create.sql")
-		dst := env.liveTable(t, "data_create_dst")
+	// --mode create is gone: it is now an invalid mode value, so a run that names
+	// it fails at validation with exit 2 before touching the server, and creates
+	// no table.
+	t.Run("mode create 现在退出 2", func(t *testing.T) {
+		file := env.cliExport(t, src, "sql", "gone_create.sql")
+		dst := env.liveTable(t, "gone_dst")
 		out, code := env.runImportCLI(t, "-i", file, "-t", dst, "-f", "sql", "--mode", "create")
-		if code != 1 {
-			t.Fatalf("data-only file with --mode create must exit 1, got %d\n%s", code, out)
+		if code != 2 {
+			t.Fatalf("--mode create must exit 2 (invalid mode), got %d\n%s", code, out)
 		}
-		// The failure has to name the missing DDL and the way out, not arrive as
-		// the server's raw 1146 after the first batch was already sent. The advice
-		// can no longer be "re-export with --create": that option is gone.
-		for _, want := range []string{
-			"create mode found no CREATE TABLE statement",
-			"does not exist in database",
-			"imex show tab",
-			"--mode insert into an existing table",
-		} {
-			if !strings.Contains(out, want) {
-				t.Errorf("error must mention %q, got:\n%s", want, firstLines(out, 4))
-			}
-		}
-		if strings.Contains(out, "--create") {
-			t.Errorf("the error must not point at a removed option:\n%s", firstLines(out, 4))
-		}
-		if strings.Contains(out, "1146") {
-			t.Errorf("data-only create mode must fail before the first INSERT, got server error 1146:\n%s", firstLines(out, 4))
+		if !strings.Contains(out, "must be one of insert/insert_update/replace") {
+			t.Errorf("error must reject create as an invalid mode, got:\n%s", firstLines(out, 4))
 		}
 		var exists int
 		if err := env.db.QueryRow("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", dst).Scan(&exists); err != nil {
 			t.Fatalf("verify target table absence: %v", err)
 		}
 		if exists != 0 {
-			t.Errorf("the failed create-mode import created table %q", dst)
+			t.Errorf("a rejected --mode create must not create table %q", dst)
 		}
-	})
-
-	t.Run("仅数据 + mode create 对已存在的表照旧导入", func(t *testing.T) {
-		file := env.cliExport(t, src, "sql", "data_only_for_existing_create.sql")
-		dst := env.liveTable(t, "data_create_existing_dst")
-		env.exec(t, fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", dst, src))
-		env.cliImport(t, dst, "sql", file, "--mode", string(config.ImportModeCreate))
-		assertSameRows(t, env.snapshotTable(t, src), env.snapshotTable(t, dst))
 	})
 }
 

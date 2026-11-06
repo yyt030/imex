@@ -114,6 +114,17 @@ func validateParquetCompression(codec string) error {
 	return nil
 }
 
+// validateSQLDialect checks the --sql-dialect name before the writer sees it, so
+// a typo is a usage error (exit 2) rather than a file written in a grammar nobody
+// chose. The scope check (validateOptionScopes) already refuses the option with a
+// non-sql format, so a run that reaches here and names a bad value is a real typo.
+func validateSQLDialect(dialect string) error {
+	if !config.ValidSQLDialect(dialect) {
+		return common.Usagef("invalid --sql-dialect %q: must be one of auto/mysql/pg", dialect)
+	}
+	return nil
+}
+
 // validateLogFormat checks that the log format is valid.
 func validateLogFormat(format string) error {
 	if !common.ValidLogFormat(format) {
@@ -204,15 +215,12 @@ func validateFormat(format string) error {
 	}
 }
 
-// validateMode checks that the import mode is valid and compatible with the format.
+// validateMode checks that the import mode is valid.
 func validateMode(mode string, format string) error {
 	switch mode {
-	case "insert", "insert_update", "replace", "create":
+	case "insert", "insert_update", "replace":
 	default:
-		return common.Usagef("invalid --mode %q: must be one of insert/insert_update/replace/create", mode)
-	}
-	if mode == "create" && format != "sql" {
-		return common.Usagef("--mode create can only be used with --format sql")
+		return common.Usagef("invalid --mode %q: must be one of insert/insert_update/replace", mode)
 	}
 	return nil
 }
@@ -356,6 +364,9 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 		return err
 	}
 	if err := validateParquetCompression(cfg.ParquetCompression); err != nil {
+		return err
+	}
+	if err := validateSQLDialect(cfg.SQLDialect); err != nil {
 		return err
 	}
 	if err := validateCharset(cfg.DefaultCharset, cfg.Format, backend.Must(e)); err != nil {

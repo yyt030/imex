@@ -70,12 +70,6 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			want: `invalid --engine "oracle": must be one of mysql/pg/dm`,
 		},
 		{
-			name: "export_format_sql",
-			sub:  "export",
-			args: pgExportFlags("-f", "sql"),
-			want: "--format sql is not supported with --engine pg: the SQL writer emits MySQL INSERT text (backquoted names and MySQL escaping) that no PostgreSQL server accepts, use --format del or --format parquet",
-		},
-		{
 			name: "export_threads",
 			sub:  "export",
 			args: pgExportFlags("--threads", "4"),
@@ -88,34 +82,10 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			want: "--no-hex-blob is not supported with --engine pg: a PostgreSQL server rejects a NUL inside any text value (SQLSTATE 22021), so bytea columns must go out as 0x hex; imex always does it on this engine",
 		},
 		{
-			name: "export_session_var",
-			sub:  "export",
-			args: pgExportFlags("--session-var", "sql_mode=STRICT_ALL_TABLES"),
-			want: "--session-var is not supported with --engine pg: SET <name>=<value> is MySQL session grammar and imex does not translate it, put PostgreSQL settings in the server or role configuration",
-		},
-		{
 			name: "export_charset",
 			sub:  "export",
 			args: pgExportFlags("--default-charset", "nonsense"),
 			want: `invalid --default-charset "nonsense" with --engine pg: PostgreSQL has no such client encoding (supported: utf8mb4, latin1, gbk, gb18030, ascii)`,
-		},
-		{
-			name: "import_format_sql",
-			sub:  "import",
-			args: pgImportFlags("-f", "sql"),
-			want: "--format sql is not supported with --engine pg: a SQL dump is parsed with the MySQL statement grammar and carries MySQL INSERT text, import a --format del or --format parquet file instead",
-		},
-		{
-			name: "import_mode_create",
-			sub:  "import",
-			args: pgImportFlags("--mode", "create"),
-			want: "--mode create is not supported with --engine pg: it runs CREATE TABLE text out of a MySQL dump, which PostgreSQL does not accept, and imex cannot export that DDL on this engine either; create the table with pg_dump or your own DDL and use --mode insert",
-		},
-		{
-			name: "import_session_var",
-			sub:  "import",
-			args: pgImportFlags("--session-var", "sql_mode=STRICT_ALL_TABLES"),
-			want: "--session-var is not supported with --engine pg: SET <name>=<value> is MySQL session grammar and imex does not translate it, put PostgreSQL settings in the server or role configuration",
 		},
 		{
 			name: "import_charset",
@@ -174,12 +144,6 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			sub:  "import",
 			args: dmImportFlags("--mode", "insert_update"),
 			want: "--mode insert_update is not supported with --engine dm: the Dameng backend does not implement upsert in this MVP, use --mode insert or --mode replace",
-		},
-		{
-			name: "dm_import_mode_create",
-			sub:  "import",
-			args: dmImportFlags("--mode", "create"),
-			want: "--mode create is not supported with --engine dm: it runs CREATE TABLE text out of a MySQL dump, which Dameng does not accept, and imex cannot export that DDL on this engine either; create the table with your own DDL and use --mode insert",
 		},
 		{
 			name: "dm_import_session_var",
@@ -278,6 +242,50 @@ func TestListAndShowRefusals(t *testing.T) {
 	}
 }
 
+// TestPGExportOptionsAreAccepted is the export half of the same discipline: the
+// --sql-dialect increment makes a SQL dump reachable on --engine pg, so the
+// export_format_sql refusal has to land here rather than vanish without a
+// counter-assertion, and --session-var is honoured the way MySQL honours it (a
+// real name that is not tool- or driver-owned reaches the server as a SET).
+// --threads and --no-hex-blob stay refusals and are restated so accepting one of
+// them later is a deliberate edit.
+func TestPGExportOptionsAreAccepted(t *testing.T) {
+	accepted := []struct {
+		name string
+		args []string
+	}{
+		{"export_sql_auto", pgExportFlags("-f", "sql", "-o", "/tmp/imex-engine-test.sql")},
+		{"export_sql_pg", pgExportFlags("-f", "sql", "--sql-dialect", "pg", "-o", "/tmp/imex-engine-test.sql")},
+		{"export_sql_mysql_grammar", pgExportFlags("-f", "sql", "--sql-dialect", "mysql", "-o", "/tmp/imex-engine-test.sql")},
+		{"export_parquet", pgExportFlags("-f", "parquet", "-o", "/tmp/imex-engine-test.parquet")},
+		{"export_session_var", pgExportFlags("--session-var", "work_mem=64MB", "--session-var", "application_name=imex")},
+	}
+	for _, c := range accepted {
+		t.Run(c.name, func(t *testing.T) {
+			if err := validateOnly(t, "export", c.args); err != nil {
+				t.Errorf("pg export refused %v: %v", c.args, err)
+			}
+		})
+	}
+
+	still := []struct {
+		name string
+		args []string
+	}{
+		{"threads", pgExportFlags("-f", "sql", "--threads", "4")},
+		{"no_hex_blob", pgExportFlags("--no-hex-blob")},
+		{"bad_dialect", pgExportFlags("-f", "sql", "--sql-dialect", "oracle")},
+		{"dialect_without_sql", pgExportFlags("-f", "del", "--sql-dialect", "pg")},
+	}
+	for _, c := range still {
+		t.Run(c.name, func(t *testing.T) {
+			if err := validateOnly(t, "export", c.args); err == nil {
+				t.Errorf("%s must still be refused on --engine pg", c.name)
+			}
+		})
+	}
+}
+
 // TestPGImportOptionsAreAccepted pins the other half of the import matrix: the
 // options --engine pg now serves. A refusal case deleted from the table above has
 // to reappear here, or nothing at all says which side the option belongs on.
@@ -295,6 +303,8 @@ func TestPGImportOptionsAreAccepted(t *testing.T) {
 		{"import_insert_update", pgImportFlags("--mode", "insert_update")},
 		{"import_insert_update_with_threads", pgImportFlags("--mode", "insert_update", "--threads", "4")},
 		{"import_parquet", pgImportFlags("-f", "parquet", "-i", "/tmp/imex-engine-test.parquet")},
+		{"import_sql", pgImportFlags("-f", "sql", "-i", "/tmp/imex-engine-test.sql")},
+		{"import_session_var", pgImportFlags("--session-var", "work_mem=64MB")},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -304,19 +314,65 @@ func TestPGImportOptionsAreAccepted(t *testing.T) {
 		})
 	}
 
-	// The three the pg path still cannot serve, restated so a future acceptance
-	// has to be a deliberate edit here rather than a deletion above.
-	still := []optCase{
-		{"format_sql", pgImportFlags("-f", "sql")},
-		{"mode_create", pgImportFlags("--mode", "create")},
-		{"session_var", pgImportFlags("--session-var", "sql_mode=ALL")},
+	// Nothing is refused on the pg import path any more. --format sql moved to the
+	// accepted list with the --sql-dialect increment (the reader parses the dump and
+	// the importer re-binds it), --mode create is gone engine-blind (an invalid mode
+	// value on every engine, asserted in TestCreateModeIsGone, not an engine-specific
+	// refusal), and --session-var is now honoured the way MySQL honours it — a
+	// tool- or driver-owned name like client_encoding fails in the parser, not as an
+	// engine refusal, so it is pinned separately in TestPGSessionVarReservedNames.
+}
+
+// TestCreateModeIsGone locks the removal of --mode create: it is now an invalid
+// mode value, engine-blind, rejected with the same message on the default engine
+// and on pg. A mode that once mapped to a real code path must not linger as a
+// silently-accepted no-op; giving it has to fail at validation, before any dial.
+func TestCreateModeIsGone(t *testing.T) {
+	want := `invalid --mode "create": must be one of insert/insert_update/replace`
+	cases := []struct {
+		name string
+		sub  string
+		args []string
+	}{
+		{"mysql", "import", append(append([]string{"-h", "127.0.0.1", "-P", "3306", "-u", "root", "-p", "pw", "-D", "mydb"}, "-i", "/tmp/x.sql", "-t", "rt", "-f", "sql"), "--mode", "create")},
+		{"pg", "import", pgImportFlags("--mode", "create")},
 	}
-	for _, c := range still {
+	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if err := validateOnly(t, "import", c.args); err == nil {
-				t.Errorf("%s must still be refused on --engine pg", c.name)
+			err := validateOnly(t, c.sub, c.args)
+			if err == nil || err.Error() != want {
+				t.Fatalf("%s --mode create = %v, want %q", c.name, err, want)
+			}
+			if !common.IsUsageError(err) {
+				t.Errorf("%s --mode create must exit 2, got %q", c.name, err)
 			}
 		})
+	}
+}
+
+// TestPGSessionVarReservedNames pins the parser-side half of honouring
+// --session-var on pg: a name the connection or the tool owns is rejected before
+// the connection is built, exactly as on MySQL, while an ordinary GUC name is
+// accepted and handed to the backend to SET. This is not the exit-2 engine
+// refusal (that is gone) but the shared ParseSessionVars check, so it drives the
+// parser directly rather than through a refusal table.
+func TestPGSessionVarReservedNames(t *testing.T) {
+	reserved := []string{"client_encoding=UTF8", "statement_timeout=5000", "sslmode=disable", "host=127.0.0.1", "user=root"}
+	for _, pair := range reserved {
+		if _, err := parseSessionVars("pg", []string{pair}); err == nil {
+			t.Errorf("pg --session-var %q must be rejected as tool/driver-owned", pair)
+		}
+	}
+	allowed := []string{"work_mem=64MB", "application_name=imex", "search_path=app", "timezone=UTC", "synchronous_commit=off"}
+	vars, err := parseSessionVars("pg", allowed)
+	if err != nil {
+		t.Fatalf("pg must accept ordinary GUC names, got %v", err)
+	}
+	// Values arrive SQL-literal-quoted, the same form MySQL hands to its SET:
+	// numbers and the keywords default/on/off/true/false stay bare, the rest is
+	// single-quoted. pgSessionVarApply turns these into "SET <name> = <value>".
+	if vars["work_mem"] != "'64MB'" || vars["synchronous_commit"] != "off" || vars["application_name"] != "'imex'" {
+		t.Errorf("pg session-var values mis-quoted: %+v", vars)
 	}
 }
 
@@ -332,7 +388,7 @@ func TestMySQLOptionsAreUntouched(t *testing.T) {
 	}{
 		{"export_sql_threads_sessionvar", "export", append(append([]string{}, base...), "-o", "/tmp/x.sql", "-q", "SELECT 1", "-f", "sql", "--threads", "4", "--session-var", "sql_mode=ALL", "--no-hex-blob")},
 		{"export_default_engine", "export", append(append([]string{}, base...), "-o", "/tmp/x.sql", "-q", "SELECT 1", "-f", "sql", "--threads", "4")},
-		{"import_modes", "import", append(append([]string{}, base...), "-i", "/tmp/x.sql", "-t", "rt", "-f", "sql", "--mode", "create")},
+		{"import_modes", "import", append(append([]string{}, base...), "-i", "/tmp/x.sql", "-t", "rt", "-f", "sql", "--mode", "replace")},
 		{"import_replace_threads", "import", append(append([]string{}, base...), "-i", "/tmp/x.del", "-t", "rt", "--mode", "replace", "--threads", "8", "--session-var", "sql_mode=ALL")},
 		{"import_insert_update", "import", append(append([]string{}, base...), "-i", "/tmp/x.del", "-t", "rt", "--mode", "insert_update")},
 	}
