@@ -281,11 +281,13 @@ type Backend interface {
 	// BooleanFlags marks the columns this engine treats as boolean. The SQL
 	// writer reads it for whichever --sql-dialect is active and spells such a
 	// column in that dialect's literal form (true/false for PostgreSQL, 1/0 for
-	// MySQL and Dameng) instead of passing the driver's raw "t"/"f" text through,
-	// which a VALUES list would otherwise read back as a column reference. MySQL
-	// and Dameng report none: their boolean text ("1"/"0") already loads as-is on
-	// every target, so only PostgreSQL — whose driver yields "t"/"f" — needs the
-	// mark.
+	// MySQL and Dameng) instead of passing the driver's raw text through, which
+	// a VALUES list would otherwise read back as a column reference or, for a
+	// digit, quote as a string. PostgreSQL and Dameng each flag their unambiguous
+	// boolean type (BOOL/BOOLEAN). MySQL reports none: a MySQL boolean is
+	// tinyint(1) and the result metadata cannot tell it from any other tinyint,
+	// so flagging it would spell integer columns as booleans — a genuine type
+	// boundary, not an oversight.
 	BooleanFlags(colTypes []*sql.ColumnType) []bool
 
 	// MetadataKind and MetadataBinary do the same two classifications for the

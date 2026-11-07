@@ -206,6 +206,14 @@ func isDamengBinaryType(name string) bool {
 	return t.binary
 }
 
+// isDamengBooleanType reports whether a Dameng Oracle-mode type name denotes the
+// native BOOLEAN column. Only BOOLEAN — not BIT, which the type table also folds
+// to a single digit for the DEL/parquet path but which is a bit-string rather
+// than a boolean, so the SQL writer must keep rendering it as a number.
+func isDamengBooleanType(name string) bool {
+	return normalizeDamengTypeName(name) == "BOOLEAN"
+}
+
 // damengBindOf answers how a value must reach the driver for one Dameng type
 // name. The second result is false for a name the table does not know at all,
 // which is the only case that leaves the value exactly as it arrived.

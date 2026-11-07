@@ -254,3 +254,30 @@ func TestDamengTypeTableSingleSource(t *testing.T) {
 		t.Error("an unknown type name must not answer the bind question")
 	}
 }
+
+// TestDamengBooleanTypeClassification pins the one question the SQL writer needs
+// from the Dameng backend: only the native BOOLEAN column is a boolean. BIT is a
+// bit-string and must stay a number; the integer and float families must never
+// be mistaken for booleans (unlike MySQL, whose tinyint(1) is undecidable from
+// result metadata). Normalisation must survive case, padding and a length suffix.
+func TestDamengBooleanTypeClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"BOOLEAN", true},
+		{"boolean", true},
+		{"  BOOLEAN  ", true},
+		{"BIT", false},
+		{"INT", false},
+		{"INTEGER", false},
+		{"NUMBER(10,2)", false},
+		{"TINYINT", false},
+		{"VARCHAR", false},
+		{"TIMESTAMP(6) WITH TIME ZONE", false},
+	} {
+		if got := isDamengBooleanType(tc.name); got != tc.want {
+			t.Errorf("isDamengBooleanType(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

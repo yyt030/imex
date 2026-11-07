@@ -187,10 +187,21 @@ func (b damengBackend) BinaryFlags(colTypes []*sql.ColumnType) []bool {
 	return flags
 }
 
-// BooleanFlags reports none: the Dameng SQL path is refused at the CLI, so the
-// writer never asks this engine for a boolean column mark.
-func (damengBackend) BooleanFlags(colTypes []*sql.ColumnType) []bool {
-	return make([]bool, len(colTypes))
+// BooleanFlags marks Dameng's native BOOLEAN columns so the SQL writer spells
+// them in the active --sql-dialect's boolean literal (true/false for PostgreSQL,
+// 1/0 for MySQL and Dameng). Without the mark the dump carries the driver's
+// one-digit text as a QUOTED STRING ('1'/'0') in every dialect — non-canonical
+// and inconsistent with how a PostgreSQL BOOLEAN source renders under the same
+// dialect. It only loads because each target happens to coerce the string; the
+// writer must still emit the canonical token. Dameng's BOOLEAN is an unambiguous
+// catalog type, so flagging it cannot misread an integer the way MySQL's
+// tinyint(1) can; BIT is deliberately not marked (see isDamengBooleanType).
+func (b damengBackend) BooleanFlags(colTypes []*sql.ColumnType) []bool {
+	flags := make([]bool, len(colTypes))
+	for i, ct := range colTypes {
+		flags[i] = isDamengBooleanType(ct.DatabaseTypeName())
+	}
+	return flags
 }
 
 func (damengBackend) MetadataKind(dataType string) common.ColumnKind {
