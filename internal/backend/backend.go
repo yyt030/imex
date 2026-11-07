@@ -41,6 +41,15 @@ const (
 	// Dameng Go driver. Only Oracle mode is supported; the MySQL-compatible
 	// mode is out of scope for this first cut.
 	EngineDM Engine = "dm"
+	// EngineGauss is the GaussDB family (GaussDB / openGauss), which speaks the
+	// PostgreSQL wire protocol and is driven through pgx like EnginePG, but whose
+	// `show` path reads native Gauss functions (pg_get_tabledef) that a stock
+	// PostgreSQL server does not have.
+	//
+	// EXPERIMENTAL SPIKE: it is deliberately kept out of engineOrder, so it is
+	// accepted by Parse and resolvable from backends, but is NOT listed in the
+	// --engine help text or the oracle. It is not a released engine yet.
+	EngineGauss Engine = "gauss"
 )
 
 // engineOrder is the order --engine values are listed in help text and in the
@@ -69,6 +78,10 @@ func Parse(s string) (Engine, error) {
 		return EnginePG, nil
 	case EngineDM, "dameng":
 		return EngineDM, nil
+	case EngineGauss, "gaussdb", "opengauss":
+		// Accepted here but absent from engineOrder, so --engine gauss resolves
+		// while the value stays unlisted in the help text and the oracle (spike).
+		return EngineGauss, nil
 	default:
 		return "", errors.Errorf("invalid --engine %q: must be one of %s", s, strings.Join(Engines(), "/"))
 	}
@@ -294,18 +307,30 @@ type Backend interface {
 	// IMEX_PORT named one.
 	DefaultPort() int
 
-	// ShowDefinition names the statement and the result column that print one
-	// schema object's definition, keyed by the object word the CLI uses ("table",
-	// "view", "trigger", "event", "procedure", "function"). ok is false for an
-	// engine that has no such statement; its table is empty because cmd refuses
-	// the command first (Refusals(CmdShow)) and the refusal, not a half-statement,
-	// is the operator's answer.
+	// ShowDefinition returns the complete, ready-to-run query and the result
+	// column that print one schema object's definition, keyed by the object word
+	// the CLI uses ("table", "view", "trigger", "event", "procedure", "function").
+	// schema and name are the resolved halves from show.SplitName, so the backend
+	// owns the object reference its dialect actually needs. ok is false for an
+	// engine (or kind) that cannot be printed; cmd refuses it first through
+	// Refusals(CmdShow), and the refusal, not a half-statement, is the operator's
+	// answer.
 	//
-	// The statement is server-visible SQL (contract face ⑤) and the row shape it
-	// returns is the server's, which is why both live here: before round 133
-	// internal/show carried MySQL's six statements itself, so a second engine could
+	// The query is server-visible SQL (contract face ⑤) and the row shape it
+	// returns is the server's, which is why both live here. It carries the whole
+	// statement (not just a verb prefix) because dialects differ in form: MySQL is
+	// `SHOW CREATE TABLE <ref>`, whereas a Gauss table definition is a catalog call
+	// `SELECT pg_get_tabledef('<ref>')`. MySQL's emitted bytes are unchanged by
+	// this shape: it still spells verb + " " + quoted reference. Before round 133
+	// internal/show carried MySQL's statements itself, so a second engine could
 	// only be taught by editing the command package.
-	ShowDefinition(object string) (statement, column string, ok bool)
+	//
+	// hasTerminator reports whether the definition text the query returns already
+	// ends in its own semicolon. MySQL's SHOW CREATE does not, so the tool appends
+	// one (the bytes import expects); a Gauss pg_get_*def call does, and appending
+	// again would print `;;`. It is a per-kind property, not a per-engine one,
+	// which is why it travels with the query rather than as a separate method.
+	ShowDefinition(object, schema, name string) (query, column string, hasTerminator, ok bool)
 
 	// Refusals returns, in reporting order, the options of one command this engine
 	// cannot serve. cmd folds the run's flag values and the two presence-only facts
@@ -389,6 +414,7 @@ var backends = map[Engine]Backend{
 	EngineMySQL: mysqlBackend{},
 	EnginePG:    postgresBackend{},
 	EngineDM:    damengBackend{},
+	EngineGauss: gaussBackend{},
 }
 
 // Get returns the backend for one engine. The returned value is a stateless

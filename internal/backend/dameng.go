@@ -208,7 +208,9 @@ func (damengBackend) DefaultPort() int { return 5236 }
 func (damengBackend) HexBlobMandatory() bool { return true }
 
 // ShowDefinition refuses every kind in the first cut.
-func (damengBackend) ShowDefinition(string) (string, string, bool) { return "", "", false }
+func (damengBackend) ShowDefinition(string, string, string) (string, string, bool, bool) {
+	return "", "", false, false
+}
 
 // KnownCharset reuses the MySQL charset vocabulary. The file encoding decision
 // lives in the tool, and the driver does not expose a per-connection charset

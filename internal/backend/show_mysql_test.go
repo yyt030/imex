@@ -17,21 +17,29 @@ func TestShowDefinitions(t *testing.T) {
 		"procedure": {"SHOW CREATE PROCEDURE", "Create Procedure"},
 		"function":  {"SHOW CREATE FUNCTION", "Create Function"},
 	}
+	// The verb prefix is contract face ⑤ and must stay byte-exact; the query now
+	// carries the reference too, so it is verb + " " + the quoted name.
+	name := "t"
+	ref := mysql.QuoteIdent(name)
 	for object, w := range want {
-		stmt, column, ok := mysql.ShowDefinition(object)
+		query, column, hasTerm, ok := mysql.ShowDefinition(object, "", name)
 		if !ok {
 			t.Errorf("mysql ShowDefinition(%q): not ok", object)
 			continue
 		}
-		if stmt != w[0] || column != w[1] {
-			t.Errorf("mysql ShowDefinition(%q) = (%q, %q), want (%q, %q)", object, stmt, column, w[0], w[1])
+		if wantQuery := w[0] + " " + ref; query != wantQuery || column != w[1] {
+			t.Errorf("mysql ShowDefinition(%q) = (%q, %q), want (%q, %q)", object, query, column, wantQuery, w[1])
+		}
+		// SHOW CREATE returns no terminator, so the tool must still append one.
+		if hasTerm {
+			t.Errorf("mysql ShowDefinition(%q): hasTerminator = true, want false", object)
 		}
 	}
 
-	if _, _, ok := mysql.ShowDefinition("database"); ok {
+	if _, _, _, ok := mysql.ShowDefinition("database", "", name); ok {
 		t.Error("mysql ShowDefinition(database): want not ok, there is no SHOW CREATE DATABASE in the registry")
 	}
-	if stmt, column, ok := Must(EnginePG).ShowDefinition("table"); ok || stmt != "" || column != "" {
-		t.Errorf("pg ShowDefinition(table) = (%q, %q, %v), want the empty refusal", stmt, column, ok)
+	if query, column, hasTerm, ok := Must(EnginePG).ShowDefinition("table", "", name); ok || query != "" || column != "" || hasTerm {
+		t.Errorf("pg ShowDefinition(table) = (%q, %q, %v, %v), want the empty refusal", query, column, hasTerm, ok)
 	}
 }

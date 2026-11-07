@@ -23,11 +23,22 @@ var showDefinitions = map[string]struct {
 	"function":  {"SHOW CREATE FUNCTION", "Create Function"},
 }
 
-// ShowDefinition answers from the MySQL statement table.
-func (mysqlBackend) ShowDefinition(object string) (string, string, bool) {
+// ShowDefinition answers from the MySQL statement table, building the same
+// verb + " " + quoted-reference bytes the show package emitted before round
+// 133. schema and name are the resolved reference halves; an empty schema
+// leaves the name unqualified, which the server resolves in the connection's
+// own database — exactly what the old show.qualify did.
+//
+// MySQL's SHOW CREATE returns no terminator, so hasTerminator is false and the
+// tool still appends the `imex import -f sql`-readable `;`.
+func (m mysqlBackend) ShowDefinition(object, schema, name string) (string, string, bool, bool) {
 	d, ok := showDefinitions[object]
 	if !ok {
-		return "", "", false
+		return "", "", false, false
 	}
-	return d.Statement, d.Column, true
+	ref := m.QuoteIdent(name)
+	if schema != "" {
+		ref = m.QuoteIdent(schema) + "." + ref
+	}
+	return d.Statement + " " + ref, d.Column, false, true
 }

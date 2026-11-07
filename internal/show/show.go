@@ -168,7 +168,7 @@ func qualify(be backend.Backend, schema, object string) string {
 // Like `list`, the statement is recorded through common.LogInteractionSQL before
 // it goes out, so a default-level log shows what was asked of the server.
 func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *config.ShowConfig, out io.Writer) (int, error) {
-	statement, column, ok := be.ShowDefinition(kind.Full)
+	query, column, hasTerminator, ok := be.ShowDefinition(kind.Full, cfg.Schema, cfg.Object)
 	if !ok {
 		// Unreachable through the CLI: cmd asks Refusals(CmdShow) before it dials,
 		// so an engine with no definition statement never gets here. The branch is
@@ -176,10 +176,9 @@ func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *co
 		// a refusal, not a statement with no verb.
 		return 0, errors.Errorf("show %s is not supported by engine %s", kind.Full, be.Engine())
 	}
-	stmt := statement + " " + qualify(be, cfg.Schema, cfg.Object)
-	common.LogInteractionSQL(stmt)
+	common.LogInteractionSQL(query)
 
-	rows, err := db.QueryContext(ctx, common.TagSQL(stmt))
+	rows, err := db.QueryContext(ctx, common.TagSQL(query))
 	if err != nil {
 		return 0, errors.Wrap(err, "definition query failed")
 	}
@@ -189,8 +188,8 @@ func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *co
 	if err != nil {
 		return 0, errors.Wrap(err, "failed to read definition columns")
 	}
-	if len(columns) < 2 {
-		return 0, errors.Errorf("%s returned no definition column", statement)
+	if len(columns) < 1 {
+		return 0, errors.Errorf("%s returned no definition column", query)
 	}
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
@@ -210,10 +209,18 @@ func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *co
 
 	definition, ok := pickDefinition(columns, values, column)
 	if !ok {
-		return 0, errors.Errorf("%s returned no definition column (columns: %s)", statement, strings.Join(columns, ", "))
+		return 0, errors.Errorf("%s returned no definition column (columns: %s)", query, strings.Join(columns, ", "))
 	}
 
-	text := definition + ";\n"
+	// The server returns no terminator on MySQL's SHOW CREATE, so the tool adds
+	// the `;` that `imex import -f sql` reads statements ending with. A dialect
+	// whose definition text already ends in `;` (Gauss pg_get_tabledef) reports
+	// hasTerminator and is left alone, otherwise the operator would see `;;`.
+	text := definition
+	if !hasTerminator {
+		text += ";"
+	}
+	text += "\n"
 	n, err := out.Write([]byte(text))
 	if err != nil {
 		return n, errors.Wrap(err, "failed to write definition")

@@ -34,12 +34,12 @@ func TestKindRegistryIsConsistent(t *testing.T) {
 		// The statement and the result column are the dialect's now (round 133);
 		// what this package still owns is the CLI vocabulary, and every kind it
 		// registers has to be one the engine can actually print.
-		stmt, column, ok := be.ShowDefinition(k.Full)
+		query, column, _, ok := be.ShowDefinition(k.Full, "", "users")
 		if !ok {
 			t.Errorf("kind %q: engine %s has no definition statement", k.Short, be.Engine())
 		}
-		if !strings.HasPrefix(stmt, "SHOW CREATE ") {
-			t.Errorf("kind %q: statement = %q", k.Short, stmt)
+		if !strings.HasPrefix(query, "SHOW CREATE ") {
+			t.Errorf("kind %q: statement = %q", k.Short, query)
 		}
 		if column == "" {
 			t.Errorf("kind %q: no definition column", k.Short)
@@ -242,7 +242,7 @@ func TestPickDefinition(t *testing.T) {
 	}
 	for _, tc := range shapes {
 		t.Run(tc.name, func(t *testing.T) {
-			_, column, ok := backend.Must(backend.EngineMySQL).ShowDefinition(tc.name)
+			_, column, _, ok := backend.Must(backend.EngineMySQL).ShowDefinition(tc.name, "", "")
 			if !ok {
 				t.Fatalf("engine has no definition statement for %q", tc.name)
 			}

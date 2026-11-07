@@ -432,7 +432,9 @@ func (postgresBackend) FKCheckToggle() (off, on string) { return "", "" }
 // no longer replays on import (the --mode create path was removed). cmd refuses
 // every `imex show` kind before it dials (Refusals(CmdShow)), so this answer is
 // only reached by a library caller.
-func (postgresBackend) ShowDefinition(string) (string, string, bool) { return "", "", false }
+func (postgresBackend) ShowDefinition(string, string, string) (string, string, bool, bool) {
+	return "", "", false, false
+}
 
 // SnapshotSteps opens the read transaction. PostgreSQL has no
 // START TRANSACTION WITH CONSISTENT SNAPSHOT (it is a MySQL/MariaDB extension),

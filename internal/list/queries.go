@@ -44,8 +44,9 @@ func Objects() []string {
 // the PostgreSQL connection (cmd parses case-insensitively) but the MySQL
 // catalog, which is a server error rather than a different answer.
 var queryBuilders = map[backend.Engine]func(*config.ListConfig) (string, []any, []string, error){
-	backend.EnginePG: buildPGQuery,
-	backend.EngineDM: buildDMQuery,
+	backend.EnginePG:    buildPGQuery,
+	backend.EngineDM:    buildDMQuery,
+	backend.EngineGauss: buildPGQuery,
 }
 
 // BuildQuery returns the statement, its bound arguments and the output column
