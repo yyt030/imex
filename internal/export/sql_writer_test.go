@@ -593,3 +593,117 @@ func TestAppendQuotedSQLEscaping(t *testing.T) {
 		}
 	}
 }
+
+// TestSQLWriter_DMDialect pins the Dameng/Oracle grammar byte for byte, using
+// only the forms the live DM8 disql probe confirmed the server accepts:
+// double-quoted identifiers, single-quote doubling with a literal backslash and
+// literal control bytes in strings (no backslash escapes), and HEXTORAW('..')
+// for binary. The empty-binary value must render as HEXTORAW(”), not NULL.
+func TestSQLWriter_DMDialect(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "T1", []string{"ID", "NAME", "DATA"}, config.DefaultStatementSize)
+	w.SetSingleRowInsert(true)
+	w.SetDialect(config.SQLDialectDM)
+	w.SetBinaryFormat([]bool{false, false, true}, true) // DATA is binary, hex forced
+	if err := w.WriteHeader([]string{"ID", "NAME", "DATA"}); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if err := w.WriteRow([]interface{}{7, "it's a\\b", []byte{0x41, 0x42}}); err != nil {
+		t.Fatalf("WriteRow: %v", err)
+	}
+	if err := w.WriteRow([]interface{}{8, "", []byte{}}); err != nil {
+		t.Fatalf("WriteRow empty: %v", err)
+	}
+	if err := w.WriteRow([]interface{}{9, nil, nil}); err != nil {
+		t.Fatalf("WriteRow null: %v", err)
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatalf("WriteFooter: %v", err)
+	}
+	want := "INSERT INTO \"T1\" (\"ID\", \"NAME\", \"DATA\") VALUES (7,'it''s a\\b',HEXTORAW('4142'));\n" +
+		"INSERT INTO \"T1\" (\"ID\", \"NAME\", \"DATA\") VALUES (8,'',HEXTORAW(''));\n" +
+		"INSERT INTO \"T1\" (\"ID\", \"NAME\", \"DATA\") VALUES (9,NULL,NULL);\n"
+	if got := buf.String(); got != want {
+		t.Errorf("DM dump mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestAppendQuotedSQLDM asserts the Oracle escaper keeps every byte except a
+// lone single quote literal, which is why a backslash or a control character
+// must NOT be turned into a MySQL-style escape.
+func TestAppendQuotedSQLDM(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"abc", "'abc'"},
+		{"it's", "'it''s'"},
+		{`a\b`, "'a\\b'"},  // backslash stays literal, no MySQL escape
+		{`a"b`, "'a\"b'"},  // embedded double quote stays literal
+		{"a\nb", "'a\nb'"}, // newline emitted verbatim
+		{"a\tb", "'a\tb'"}, // tab emitted verbatim
+		{"", "''"},
+	}
+	for _, tt := range cases {
+		if got := string(appendQuotedSQLDM(nil, tt.in)); got != tt.want {
+			t.Errorf("appendQuotedSQLDM(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// writeBoolRow renders one boolean column through the writer in the given
+// dialect, with boolFlags marking that column as boolean, and returns the file.
+func writeBoolRow(t *testing.T, d config.SQLDialect, val interface{}) string {
+	t.Helper()
+	var buf bytes.Buffer
+	w := NewSQLWriter(&buf, "t", []string{"b"}, config.DefaultStatementSize)
+	w.SetSingleRowInsert(true)
+	w.SetDialect(d)
+	w.SetBooleanFlags([]bool{true})
+	if err := w.WriteRow([]interface{}{val}); err != nil {
+		t.Fatalf("WriteRow: %v", err)
+	}
+	if err := w.WriteFooter(); err != nil {
+		t.Fatalf("WriteFooter: %v", err)
+	}
+	return buf.String()
+}
+
+// TestSQLWriter_CrossDialectBool pins the fix for the defect where a
+// PostgreSQL-sourced boolean column exported in a non-PG dialect wrote the raw
+// driver token ("t"/"f") into the VALUES list, which the target then read back
+// as a column reference. With boolFlags set the writer must emit each dialect's
+// own valid literal, whatever value representation the driver handed over.
+func TestSQLWriter_CrossDialectBool(t *testing.T) {
+	for _, d := range []config.SQLDialect{config.SQLDialectMySQL, config.SQLDialectDM} {
+		for _, tc := range []struct {
+			val    interface{}
+			wantIn string
+		}{
+			{true, "1)"},
+			{false, "0)"},
+			{[]byte("t"), "1)"},
+			{[]byte("f"), "0)"},
+			{"t", "1)"},
+			{"false", "0)"},
+			{"true", "1)"},
+		} {
+			got := writeBoolRow(t, d, tc.val)
+			if !strings.Contains(got, tc.wantIn) {
+				t.Errorf("dialect %q, value %v: want %q in %q", d, tc.val, tc.wantIn, got)
+			}
+			// A bare t/f token must never survive into a non-PG dump.
+			if strings.Contains(got, ",t,") || strings.Contains(got, ",f,") ||
+				strings.Contains(got, "(t,") || strings.Contains(got, "(f)") ||
+				strings.HasSuffix(strings.TrimSpace(got), ",t)") ||
+				strings.HasSuffix(strings.TrimSpace(got), ",f)") {
+				t.Errorf("dialect %q, value %v: bare t/f token leaked: %q", d, tc.val, got)
+			}
+		}
+	}
+
+	// PostgreSQL dialect keeps spelling true/false (regression guard).
+	if g := writeBoolRow(t, config.SQLDialectPG, []byte("t")); !strings.Contains(g, "(true)") {
+		t.Errorf("pg dialect must spell true/false, got %q", g)
+	}
+	if g := writeBoolRow(t, config.SQLDialectPG, []byte("f")); !strings.Contains(g, "(false)") {
+		t.Errorf("pg dialect must spell true/false, got %q", g)
+	}
+}

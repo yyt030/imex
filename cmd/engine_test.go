@@ -100,20 +100,14 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			want: `invalid --engine "postgres": must be one of mysql/pg/dm`,
 		},
 
-		// --engine dm. The MVP claims del/parquet export, del/parquet import in
-		// insert/replace mode, and four list objects; everything else has to stop
-		// here rather than at the server.
+		// --engine dm. The MVP claims del/parquet/sql export (sql in the Dameng
+		// grammar), del/parquet import in insert/replace mode, and four list
+		// objects; everything else has to stop here rather than at the server.
 		{
 			name: "dm_export_engine_dm8",
 			sub:  "export",
 			args: append(append([]string{}, dmConnFlags...), "-o", "/tmp/x.del", "-q", "SELECT 1", "--engine", "dm8"),
 			want: `invalid --engine "dm8": must be one of mysql/pg/dm`,
-		},
-		{
-			name: "dm_export_format_sql",
-			sub:  "export",
-			args: dmExportFlags("-f", "sql"),
-			want: "--format sql is not supported with --engine dm: the SQL writer emits MySQL INSERT text (backquoted names and MySQL escaping) that no Dameng server accepts, use --format del or --format parquet",
 		},
 		{
 			name: "dm_export_threads",
@@ -137,7 +131,7 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			name: "dm_import_format_sql",
 			sub:  "import",
 			args: dmImportFlags("-f", "sql"),
-			want: "--format sql is not supported with --engine dm: a SQL dump is parsed with the MySQL statement grammar and carries MySQL INSERT text, import a --format del or --format parquet file instead",
+			want: "--format sql is not supported with --engine dm: imex can now export a Dameng-dialect --format sql dump, but the SQL reader still parses with the MySQL statement grammar and cannot replay a Dameng dump; import a --format del or --format parquet file, or load the dump with your own DM client",
 		},
 		{
 			name: "dm_import_mode_insert_update",
@@ -166,6 +160,18 @@ func TestEngineRefusalMatrix(t *testing.T) {
 				t.Errorf("error %q must be a usage error (exit code 2)", err)
 			}
 		})
+	}
+}
+
+// TestDMExportSQLIsNoLongerRefused pins the DM capability increment: --engine dm
+// -f sql export used to stop at the CLI with a "no Dameng server accepts"
+// refusal. Now that the SQL writer gained a Dameng/Oracle grammar it must pass
+// validation (validateExportConfig returns nil, and no connection is attempted
+// by validateOnly). The DM import path stays refused — see the matrix case
+// dm_import_format_sql — so only export is asserted open here.
+func TestDMExportSQLIsNoLongerRefused(t *testing.T) {
+	if err := validateOnly(t, "export", dmExportFlags("-f", "sql")); err != nil {
+		t.Fatalf("expected --engine dm -f sql export to validate, got: %v", err)
 	}
 }
 

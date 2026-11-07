@@ -278,11 +278,14 @@ type Backend interface {
 	ColumnKinds(colTypes []*sql.ColumnType) []common.ColumnKind
 	BinaryFlags(colTypes []*sql.ColumnType) []bool
 
-	// BooleanFlags marks the columns this engine treats as boolean. It is read
-	// only by the SQL writer's PostgreSQL dialect, which must spell a boolean as
-	// true/false rather than the driver's "t"/"f" text that the DEL and Parquet
-	// writers already rely on. MySQL and Dameng report none: their boolean lives
-	// in a numeric/BIT column whose text the other dialects re-bind on import.
+	// BooleanFlags marks the columns this engine treats as boolean. The SQL
+	// writer reads it for whichever --sql-dialect is active and spells such a
+	// column in that dialect's literal form (true/false for PostgreSQL, 1/0 for
+	// MySQL and Dameng) instead of passing the driver's raw "t"/"f" text through,
+	// which a VALUES list would otherwise read back as a column reference. MySQL
+	// and Dameng report none: their boolean text ("1"/"0") already loads as-is on
+	// every target, so only PostgreSQL — whose driver yields "t"/"f" — needs the
+	// mark.
 	BooleanFlags(colTypes []*sql.ColumnType) []bool
 
 	// MetadataKind and MetadataBinary do the same two classifications for the

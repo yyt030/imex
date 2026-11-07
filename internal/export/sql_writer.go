@@ -53,17 +53,32 @@ type SQLWriter struct {
 	// escaping.
 	dialect config.SQLDialect
 	// boolFlags[i] marks column i as a boolean column, supplied by
-	// SetBooleanFlags. Only the PostgreSQL dialect reads it, to spell a value
-	// true/false instead of the driver's "t"/"f" text (which the DEL and Parquet
-	// writers already depend on and which a bare INSERT cannot carry to PG).
+	// SetBooleanFlags from the source engine's BooleanFlags. The writer reads it
+	// for whichever --sql-dialect is active, because the driver hands booleans
+	// over as text (PostgreSQL "t"/"f" after CellFixups, Dameng "1"/"0") and a
+	// bare token in a VALUES list is parsed as a column reference by every
+	// engine. Each dialect therefore needs the value spelled in its own valid
+	// literal form (see dialectBoolLiteral); the mark is what makes the dump
+	// replayable on the target.
 	boolFlags []bool
 }
 
 // isPG reports whether the writer is emitting the PostgreSQL grammar.
 func (s *SQLWriter) isPG() bool { return s.dialect == config.SQLDialectPG }
 
-// SetBooleanFlags marks which columns the PostgreSQL dialect should write as
-// true/false. It is ignored by every other dialect.
+// isDM reports whether the writer is emitting the Dameng (Oracle-compat)
+// grammar. Like PostgreSQL it double-quotes identifiers, but it differs in the
+// two places Oracle semantics force: string literals have no backslash escape
+// (only the single quote is doubled) and binary goes out as HEXTORAW('..').
+func (s *SQLWriter) isDM() bool { return s.dialect == config.SQLDialectDM }
+
+// doubleQuotesIdent reports whether the current grammar quotes identifiers with
+// double quotes rather than MySQL backticks. Both PostgreSQL and Dameng do.
+func (s *SQLWriter) doubleQuotesIdent() bool { return s.isPG() || s.isDM() }
+
+// SetBooleanFlags marks which columns the writer should spell in the active
+// dialect's boolean literal form (true/false for PostgreSQL, 1/0 for MySQL and
+// Dameng) instead of passing the source driver's raw boolean text through.
 func (s *SQLWriter) SetBooleanFlags(flags []bool) { s.boolFlags = flags }
 
 // NewSQLWriter creates a new SQL format writer. It writes the rows of one
@@ -191,11 +206,12 @@ func (s *SQLWriter) ensureColList() {
 }
 
 // appendIdent writes one identifier in the dialect's quoting. MySQL backquotes
-// the name verbatim, byte for byte as the writer has always done; PostgreSQL
-// double-quotes it and doubles any embedded double quote so a name that carries
-// a quote survives the round trip.
+// the name verbatim, byte for byte as the writer has always done; PostgreSQL and
+// Dameng double-quote it and double any embedded double quote so a name that
+// carries a quote survives the round trip (DM8 disql confirms backticks are a
+// syntax error there and double-quoted names are case-sensitive).
 func (s *SQLWriter) appendIdent(dst []byte, name string) []byte {
-	if !s.isPG() {
+	if !s.doubleQuotesIdent() {
 		dst = append(dst, '`')
 		dst = append(dst, name...)
 		return append(dst, '`')
@@ -383,11 +399,13 @@ func (s *SQLWriter) appendSQLValue(dst []byte, val interface{}, colIdx int) []by
 		}
 	}
 
-	// PostgreSQL boolean column: spell true/false. The driver hands over "t"/"f"
-	// text after CellFixups, and a bare t/f in a VALUES list is read as a column
-	// reference by PostgreSQL, so the mark is what makes the dump replayable.
-	if s.isPG() && colIdx < len(s.boolFlags) && s.boolFlags[colIdx] {
-		return append(dst, pgBoolLiteral(val)...)
+	// Boolean column: spell the value in the grammar the writer is emitting. The
+	// driver hands booleans over as text ("t"/"f" from PostgreSQL, "1"/"0" from
+	// Dameng) or a Go bool; a bare token dropped into a VALUES list reads back
+	// as a column reference on every engine, so the mark drives not just the
+	// PostgreSQL dialect but whichever dialect is active.
+	if colIdx < len(s.boolFlags) && s.boolFlags[colIdx] {
+		return append(dst, s.dialectBoolLiteral(val)...)
 	}
 
 	// Numeric columns are emitted as bare SQL literals. The driver returns
@@ -454,9 +472,17 @@ func (s *SQLWriter) appendSQLValue(dst []byte, val interface{}, colIdx int) []by
 }
 
 // appendBinaryLiteral writes a binary column value in the dialect's hex form:
-// MySQL 0x..., PostgreSQL '\x..'::bytea. An empty value becomes 0x and
-// '\x'::bytea respectively, never ” or NULL.
+// MySQL 0x..., PostgreSQL '\x..'::bytea, Dameng HEXTORAW('..'). An empty value
+// becomes 0x, '\x'::bytea and HEXTORAW(”) respectively, never ” or NULL. The
+// live DM8 probe showed HEXTORAW is the one form accepted by both BLOB and
+// VARBINARY columns — X'..' is rejected on BLOB and silently widens to a 4-byte
+// integer, and 0x.. is VARBINARY-only — so it is the only safe choice here.
 func (s *SQLWriter) appendBinaryLiteral(dst, v []byte) []byte {
+	if s.isDM() {
+		dst = append(dst, "HEXTORAW('"...)
+		dst = hex.AppendEncode(dst, v)
+		return append(dst, '\'', ')')
+	}
 	if s.isPG() {
 		dst = append(dst, '\'', '\\', 'x')
 		dst = hex.AppendEncode(dst, v)
@@ -469,10 +495,33 @@ func (s *SQLWriter) appendBinaryLiteral(dst, v []byte) []byte {
 
 // appendStringLiteral dispatches a text value to the dialect's escaper.
 func (s *SQLWriter) appendStringLiteral(dst []byte, str string) []byte {
+	if s.isDM() {
+		return appendQuotedSQLDM(dst, str)
+	}
 	if s.isPG() {
 		return appendQuotedSQLPG(dst, str)
 	}
 	return appendQuotedSQL(dst, str)
+}
+
+// appendQuotedSQLDM appends a Dameng/Oracle-standard string literal: single
+// quotes on the outside and a lone single quote doubled inside. Oracle-mode DM
+// does NOT interpret a backslash as an escape (the live probe stored 'a\\b' as
+// two literal backslashes), so unlike the MySQL and PG writers a backslash, a
+// newline, a tab or any other byte is emitted verbatim inside the quotes. NUL
+// cannot appear in a DM text value at all — the engine refuses a NUL byte in a
+// text column and forces binary out as HEXTORAW — so there is nothing here to
+// escape it into.
+func appendQuotedSQLDM(dst []byte, s string) []byte {
+	dst = append(dst, '\'')
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\'' {
+			dst = append(dst, '\'', '\'')
+			continue
+		}
+		dst = append(dst, s[i])
+	}
+	return append(dst, '\'')
 }
 
 // pgBoolLiteral reduces a boolean column's value to PostgreSQL's true/false
@@ -501,6 +550,25 @@ func pgBoolLiteral(val interface{}) []byte {
 		return []byte("false")
 	}
 	return []byte("true")
+}
+
+// dialectBoolLiteral renders a boolean column's value in the grammar the writer
+// is emitting. It reuses pgBoolLiteral only as a driver-text-to-truth reducer
+// ("t"/"f", "1"/"0", "true"/"false", or a Go bool) and then spells that truth in
+// the active dialect's accepted form: PostgreSQL true/false, MySQL and Dameng a
+// bare 1/0 — both accept an integer literal for a boolean/BIT column, and the
+// live DM8 probe confirmed BOOLEAN is permissive about it. Emitting the raw
+// "t"/"f" text into a non-PG VALUES list would be read back as a column
+// reference, which is the cross-dialect defect this closes.
+func (s *SQLWriter) dialectBoolLiteral(val interface{}) []byte {
+	truth := pgBoolLiteral(val)
+	if s.isPG() {
+		return truth
+	}
+	if truth[0] == 't' {
+		return []byte{'1'}
+	}
+	return []byte{'0'}
 }
 
 // escapeBytes marks the bytes appendQuotedSQL rewrites, one lookup per byte
@@ -612,8 +680,8 @@ func (s *SQLWriter) appendRawSQLValue(dst []byte, val sql.RawBytes, colIdx int) 
 	if s.hexBlob && colIdx < len(s.binaryFlags) && s.binaryFlags[colIdx] {
 		return s.appendBinaryLiteral(dst, []byte(val))
 	}
-	if s.isPG() && colIdx < len(s.boolFlags) && s.boolFlags[colIdx] {
-		return append(dst, pgBoolLiteral(val)...)
+	if colIdx < len(s.boolFlags) && s.boolFlags[colIdx] {
+		return append(dst, s.dialectBoolLiteral(val)...)
 	}
 	if s.columnKind(colIdx) == common.KindNumber {
 		return append(dst, val...)

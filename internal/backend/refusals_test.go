@@ -149,3 +149,42 @@ func TestEngineNameInRefusalMessageIsTheValue(t *testing.T) {
 		t.Errorf("refusal prefix = %q", msg)
 	}
 }
+
+// TestDamengExportSQLIsNoLongerRefusedButImportStillIs pins the asymmetry the Dameng
+// --format sql feature introduced: the writer gained a Dameng grammar so export no
+// longer carries a --format sql rule, while the reader is still MySQL-grammar-only so
+// import keeps refusing it. These tables are contract face ③ (the sentence a run
+// prints), so a future edit that drops the import rule or re-adds an export rule must
+// fail here rather than change what operators see unnoticed. cmd/engine_test.go
+// asserts the whole sentences against the CLI; this pins the shape that owns them.
+func TestDamengExportSQLIsNoLongerRefusedButImportStillIs(t *testing.T) {
+	exp := Must(EngineDM).Refusals(CmdExport)
+	want := []string{"--threads", "--no-hex-blob", "--session-var"}
+	if len(exp) != len(want) {
+		t.Fatalf("dm export has %d rules, want %d", len(exp), len(want))
+	}
+	for i, r := range exp {
+		if got := r.Option(RunOptions{}); got != want[i] {
+			t.Errorf("dm export rule %d = %q, want %q", i, got, want[i])
+		}
+	}
+	// The whole point of the feature: no --format sql rule survives on export.
+	for _, r := range exp {
+		if r.Option(RunOptions{Format: "sql"}) == "--format sql" {
+			t.Errorf("dm export must no longer refuse --format sql")
+		}
+	}
+	imp := Must(EngineDM).Refusals(CmdImport)
+	var sawFormatSQL bool
+	for _, r := range imp {
+		if r.Option(RunOptions{Format: "sql"}) == "--format sql" {
+			sawFormatSQL = true
+			if !strings.Contains(r.Reason, "export") {
+				t.Errorf("dm import --format sql reason should mention the export it now allows: %q", r.Reason)
+			}
+		}
+	}
+	if !sawFormatSQL {
+		t.Errorf("dm import must still refuse --format sql; the reader cannot replay a Dameng dump")
+	}
+}

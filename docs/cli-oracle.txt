@@ -537,7 +537,7 @@ Flags:
       --shard-key string                Column used to shard a parallel export; defaults to the primary key
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
-      --sql-dialect string              SQL dump grammar (auto/mysql/pg) (only with --format sql) (default "auto")
+      --sql-dialect string              SQL dump grammar (auto/mysql/pg/dm) (only with --format sql) (default "auto")
       --statement-size int              Max bytes per merged INSERT (only with --format sql) (default 8388608)
       --threads int                     Number of parallel export tasks (1 = no parallelism) (default 1)
       --timestamp-fmt string            Timestamp format (only with --format del) (default "yyyy-MM-dd HH:mm:ss")

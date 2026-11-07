@@ -9,6 +9,12 @@ import (
 //   - import: --format del/parquet, --mode insert/replace
 //   - list: databases, tables, columns, indexes
 // Everything else is refused here so the run stops before it dials.
+//
+// --format sql export is now supported (the writer gained a Dameng/Oracle
+// grammar: double-quoted identifiers, HEXTORAW('..') binary and SQL-standard
+// string literals, all pinned against live DM8 disql). --format sql import is
+// still refused because the SQL reader still parses with the MySQL statement
+// grammar and cannot yet replay a Dameng dump.
 
 const dmSessionVarReason = "SET <name>=<value> is MySQL session grammar and imex does not translate it for Dameng; put session settings in the server or role configuration"
 
@@ -16,11 +22,6 @@ func (damengBackend) Refusals(c Command) []Refusal {
 	switch c {
 	case CmdExport:
 		return []Refusal{
-			{
-				Option:  static("--format sql"),
-				Reason:  "the SQL writer emits MySQL INSERT text (backquoted names and MySQL escaping) that no Dameng server accepts, use --format del or --format parquet",
-				Applies: func(o RunOptions) bool { return o.Format == "sql" },
-			},
 			{
 				Option:  static("--threads"),
 				Reason:  "parallel export has not been measured against Dameng, use --threads 1",
@@ -41,7 +42,7 @@ func (damengBackend) Refusals(c Command) []Refusal {
 		return []Refusal{
 			{
 				Option:  static("--format sql"),
-				Reason:  "a SQL dump is parsed with the MySQL statement grammar and carries MySQL INSERT text, import a --format del or --format parquet file instead",
+				Reason:  "imex can now export a Dameng-dialect --format sql dump, but the SQL reader still parses with the MySQL statement grammar and cannot replay a Dameng dump; import a --format del or --format parquet file, or load the dump with your own DM client",
 				Applies: func(o RunOptions) bool { return o.Format == "sql" },
 			},
 			{

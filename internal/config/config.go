@@ -29,6 +29,11 @@ const (
 	// '\x..'::bytea for binary, E'..' for strings carrying control characters
 	// and true/false for a boolean value.
 	SQLDialectPG SQLDialect = "pg"
+	// SQLDialectDM writes the Dameng (Oracle-compat) grammar: double-quoted
+	// identifiers, HEXTORAW('..') for binary, and SQL-standard string literals
+	// where the single quote is doubled and a backslash stays literal (Oracle
+	// has no backslash escape). Specifics pinned by live DM8 disql probes.
+	SQLDialectDM SQLDialect = "dm"
 )
 
 // ValidSQLDialect reports whether name is one --sql-dialect accepts.
@@ -36,7 +41,7 @@ const (
 // unregistered value defensively by resolving it to MySQL, never to PG.
 func ValidSQLDialect(name string) bool {
 	switch SQLDialect(name) {
-	case SQLDialectAuto, SQLDialectMySQL, SQLDialectPG:
+	case SQLDialectAuto, SQLDialectMySQL, SQLDialectPG, SQLDialectDM:
 		return true
 	default:
 		return false

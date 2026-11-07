@@ -127,11 +127,16 @@ func (e *Exporter) sqlDialect() config.SQLDialect {
 	switch config.SQLDialect(e.config.SQLDialect) {
 	case config.SQLDialectPG:
 		return config.SQLDialectPG
+	case config.SQLDialectDM:
+		return config.SQLDialectDM
 	case config.SQLDialectMySQL:
 		return config.SQLDialectMySQL
-	default: // auto
-		if e.backend().Engine() == backend.EnginePG {
+	default: // auto — follow the connected engine's own grammar
+		switch e.backend().Engine() {
+		case backend.EnginePG:
 			return config.SQLDialectPG
+		case backend.EngineDM:
+			return config.SQLDialectDM
 		}
 		return config.SQLDialectMySQL
 	}

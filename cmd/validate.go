@@ -120,7 +120,7 @@ func validateParquetCompression(codec string) error {
 // non-sql format, so a run that reaches here and names a bad value is a real typo.
 func validateSQLDialect(dialect string) error {
 	if !config.ValidSQLDialect(dialect) {
-		return common.Usagef("invalid --sql-dialect %q: must be one of auto/mysql/pg", dialect)
+		return common.Usagef("invalid --sql-dialect %q: must be one of auto/mysql/pg/dm", dialect)
 	}
 	return nil
 }
