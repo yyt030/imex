@@ -474,7 +474,33 @@ imex list tab -D mydb --no-col-names | awk '{print $2}' | while read -r t; do
 done
 ```
 
-回放限制（本机 MariaDB 10.6.23 实测，见需求文档 2.6 与 3.6）：**`imex import` 不重放任何 DDL**——`--mode create` 已随整体移除，SQL 读取器只识别并执行 `INSERT`，把 `CREATE TABLE`/`CREATE TEMPORARY` 与一切其它语句一律跳过。因此 `imex show tab` 的产物不能经 `imex import` 建表：它是给你自己核对或喂标准客户端（`mysql`/`psql`）用的建表文本。六个 kind 都只保证文本正确；触发器、视图、存储过程与函数还各有一层方言差异（`DELIMITER`、跨库引用等），标准客户端能读但 `imex` 一律跳过其 DDL。补齐非建表 DDL 的自动化通道与 `DELIMITER` 支持属 import 侧，单独一轮。
+对象定义（DDL）的回放不走 `imex import`——`import` 只重放 `INSERT`，把 `CREATE TABLE` 与一切其它语句一律跳过。`show` 存的建表文本请交给下一节的 `imex exec`：它按顶层 `;` 逐条执行任意 SQL，`imex show tab users -D mydb \| imex exec -D otherdb` 就把建表语句原样重放到另一张库里（自 `v0.28.0`，见「exec - 纯执行 SQL」一节）。
+
+### exec - 纯执行 SQL
+
+自 `v0.28.0`。`exec` 把任意 SQL 直接发往目标并回报每条做了什么，独立于 `export`/`import` 的数据导入导出路径——`show` 存的建表文本、临时的一条 `ALTER`、一段脚本，都从这里执行。
+
+```bash
+imex exec [连接选项] [-D 库名] [-f 文件 | '单条 SQL']     # 不给 SQL 时从标准输入读
+```
+
+SQL 来源三选一，互斥：位置参数给一条、`-f` 指定脚本、或从 stdin 读（`show` 产物直接管道进来）。文本按**引擎语法**在顶层 `;` 处切分，逐条执行、遇到第一条被服务端拒绝的即停：返回值语句打成 `list` 同款对齐表，写入语句报 `OK`／`N rows affected`／`last_insert_id`。
+
+| 选项 | 作用 |
+|------|------|
+| `-f, --file` | 从该文件读 SQL（与位置参数、stdin 互斥） |
+| `-D, --database` | 语句运行的默认库（亦 `IMEX_DATABASE`） |
+| `--engine` | `mysql`／`pg`／`dm`，决定顶层 `;` 的切分规则 |
+| `--no-col-names` | 结果集不打表头行 |
+| `-o`/`-m`/`--no-overwrite` | 与 `list`/`show` 完全同一套输出通道 |
+
+```bash
+imex exec -D mydb 'CREATE TABLE t (id INT PRIMARY KEY, name TEXT)'   # 内联一条
+imex exec -D mydb -f schema.sql                                       # 跑一份脚本
+imex show tab users -D mydb | imex exec -D otherdb                    # 重放 show 存的 DDL
+```
+
+例程定义体内自带 `;` 者须用带 `DELIMITER` 指令的脚本经 `-f` 执行——体内裸 `;` 会被读成语句结束。完整帮助见 `imex exec --help`，逐字节契约见 `docs/cli-oracle.txt` 的 `## exec` 段；设计与取证见需求文档 2.7。
 
 ### version - 版本信息
 
