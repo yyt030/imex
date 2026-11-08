@@ -218,14 +218,23 @@ func TestListAndShowRefusals(t *testing.T) {
 		}
 	}
 
+	// Only `event` is refused on pg: table/view/trigger/procedure/function are
+	// rebuilt from the catalog (show_postgres.go), and event has no object because
+	// PostgreSQL has no scheduler.
 	for _, kind := range show.Kinds() {
 		err := checkShowEngineOptions(backend.EnginePG, kind.Short)
-		want := "show " + kind.Short + " is not supported with --engine pg: definitions are read with SHOW CREATE, which PostgreSQL does not have, and imex cannot import the DDL it would produce; use pg_dump"
-		if err == nil || err.Error() != want {
-			t.Errorf("show %s refusal = %v, want %q", kind.Short, err, want)
+		if kind.Short == "evt" {
+			want := "show evt is not supported with --engine pg: PostgreSQL has no event scheduler, so there is no event definition to show; scheduled work lives in cron or pgAgent"
+			if err == nil || err.Error() != want {
+				t.Errorf("show evt refusal = %v, want %q", err, want)
+			}
+			if !common.IsUsageError(err) {
+				t.Errorf("show evt refusal must exit 2")
+			}
+			continue
 		}
-		if !common.IsUsageError(err) {
-			t.Errorf("show %s refusal must exit 2", kind.Short)
+		if err != nil {
+			t.Errorf("show %s on pg must be supported, got refusal %v", kind.Short, err)
 		}
 	}
 
@@ -615,15 +624,21 @@ func TestDMSurfaceRefusals(t *testing.T) {
 		}
 	}
 
-	const dmShowReason = "definitions are read with SHOW CREATE, which Dameng Oracle mode does not provide through the same catalog, and imex cannot import the DDL it would produce; use your own DDL"
+	const dmShowEvtReason = "Dameng Oracle mode has no event scheduler, so there is no event definition to show; scheduled work lives in the DM job package"
 	for _, kind := range show.Kinds() {
 		err := checkShowEngineOptions(backend.EngineDM, kind.Short)
-		want := "show " + kind.Short + " is not supported with --engine dm: " + dmShowReason
-		if err == nil || err.Error() != want {
-			t.Errorf("show %s refusal = %v, want %q", kind.Short, err, want)
+		if kind.Short == "evt" {
+			want := "show evt is not supported with --engine dm: " + dmShowEvtReason
+			if err == nil || err.Error() != want {
+				t.Errorf("show evt refusal = %v, want %q", err, want)
+			}
+			if !common.IsUsageError(err) {
+				t.Errorf("show evt refusal must exit 2")
+			}
+			continue
 		}
-		if !common.IsUsageError(err) {
-			t.Errorf("show %s refusal must exit 2", kind.Short)
+		if err != nil {
+			t.Errorf("show %s on dm must be supported, got refusal %v", kind.Short, err)
 		}
 	}
 

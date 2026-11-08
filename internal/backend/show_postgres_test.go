@@ -1,0 +1,86 @@
+package backend
+
+import (
+	"strings"
+	"testing"
+)
+
+// TestPostgresShowDefinitions pins the PostgreSQL catalog queries: which kinds
+// are printable, the result column that carries the text, whether the returned
+// definition already ends in its own terminator, and that a crafted name stays
+// inert inside the SQL literal. These are contract face ⑤ (the exact bytes the
+// server is asked) and were verified by round-trip against a live PG 14 instance.
+func TestPostgresShowDefinitions(t *testing.T) {
+	pg := Must(EnginePG)
+
+	// Per-kind: expected column, hasTerminator, and a substring that must appear.
+	cases := []struct {
+		object        string
+		wantColumn    string
+		wantHasTerm   bool
+		wantSubstring string
+	}{
+		{"table", "tabledef", true, "CREATE TABLE"},
+		{"view", "viewdef", false, "pg_get_viewdef"},
+		{"trigger", "trigdef", false, "pg_get_triggerdef"},
+		{"procedure", "routinedef", false, "prokind = 'p'"},
+		{"function", "routinedef", false, "prokind = 'f'"},
+	}
+	for _, c := range cases {
+		query, column, hasTerm, ok := pg.ShowDefinition(c.object, "myschema", "myobj")
+		if !ok {
+			t.Errorf("pg ShowDefinition(%q): not ok", c.object)
+			continue
+		}
+		if column != c.wantColumn {
+			t.Errorf("pg ShowDefinition(%q) column = %q, want %q", c.object, column, c.wantColumn)
+		}
+		if hasTerm != c.wantHasTerm {
+			t.Errorf("pg ShowDefinition(%q) hasTerminator = %v, want %v", c.object, hasTerm, c.wantHasTerm)
+		}
+		if !strings.Contains(query, c.wantSubstring) {
+			t.Errorf("pg ShowDefinition(%q) query = %q, want it to contain %q", c.object, query, c.wantSubstring)
+		}
+		// The schema and the object must reach the literal, quoted.
+		if !strings.Contains(query, "'myschema'") || !strings.Contains(query, "'myobj'") {
+			t.Errorf("pg ShowDefinition(%q) query = %q, want the schema and name literals", c.object, query)
+		}
+	}
+
+	// event has no object to print on PostgreSQL.
+	if _, _, _, ok := pg.ShowDefinition("event", "", "e"); ok {
+		t.Error("pg ShowDefinition(event): want not ok, PostgreSQL has no event scheduler")
+	}
+
+	// An empty schema resolves in the connection's own database.
+	query, _, _, _ := pg.ShowDefinition("table", "", "t")
+	if !strings.Contains(query, "current_schema()") {
+		t.Errorf("pg ShowDefinition(table, no schema) = %q, want current_schema()", query)
+	}
+
+	// A crafted name is inert: the single quote is doubled and never ends the
+	// literal early.
+	query, _, _, _ = pg.ShowDefinition("table", "", "a'); DROP TABLE t--")
+	if strings.Contains(query, "'a'); DROP") {
+		t.Errorf("pg ShowDefinition: crafted name escaped to %q, want the quote doubled", query)
+	}
+	if !strings.Contains(query, "''") {
+		t.Errorf("pg ShowDefinition: crafted name = %q, want the doubled-quote escape", query)
+	}
+}
+
+// TestPostgresShowDefinitionGaussStillScopes checks that adding ShowDefinition
+// to the embedded postgresBackend did not widen the Gauss spike: gauss overrides
+// the method to table-only, so an inherited engine keeps the full set while
+// gauss refuses the non-table kinds.
+func TestPostgresShowDefinitionGaussStillScopes(t *testing.T) {
+	g := Must(EngineGauss)
+	if _, _, _, ok := g.ShowDefinition("table", "", "t"); !ok {
+		t.Error("gauss ShowDefinition(table): want ok (spike still prints tables)")
+	}
+	for _, kind := range []string{"view", "trigger", "procedure", "function"} {
+		if _, _, _, ok := g.ShowDefinition(kind, "", "x"); ok {
+			t.Errorf("gauss ShowDefinition(%q): want not ok, spike is table-only", kind)
+		}
+	}
+}

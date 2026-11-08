@@ -39,7 +39,4 @@ func TestShowDefinitions(t *testing.T) {
 	if _, _, _, ok := mysql.ShowDefinition("database", "", name); ok {
 		t.Error("mysql ShowDefinition(database): want not ok, there is no SHOW CREATE DATABASE in the registry")
 	}
-	if query, column, hasTerm, ok := Must(EnginePG).ShowDefinition("table", "", name); ok || query != "" || column != "" || hasTerm {
-		t.Errorf("pg ShowDefinition(table) = (%q, %q, %v, %v), want the empty refusal", query, column, hasTerm, ok)
-	}
 }

@@ -427,15 +427,6 @@ func (postgresBackend) UpsertNeedsTarget() bool { return true }
 // silently detached.
 func (postgresBackend) FKCheckToggle() (off, on string) { return "", "" }
 
-// ShowDefinition has no rows: PostgreSQL has no SHOW CREATE, and the equivalents
-// (pg_get_functiondef, pg_index, a view's stored definition) are DDL, which imex
-// no longer replays on import (the --mode create path was removed). cmd refuses
-// every `imex show` kind before it dials (Refusals(CmdShow)), so this answer is
-// only reached by a library caller.
-func (postgresBackend) ShowDefinition(string, string, string) (string, string, bool, bool) {
-	return "", "", false, false
-}
-
 // SnapshotSteps opens the read transaction. PostgreSQL has no
 // START TRANSACTION WITH CONSISTENT SNAPSHOT (it is a MySQL/MariaDB extension),
 // but a plain BEGIN at REPEATABLE READ already gives the same guarantee: the

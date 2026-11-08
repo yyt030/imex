@@ -65,17 +65,16 @@ func (postgresBackend) Refusals(c Command) []Refusal {
 			},
 		}
 	case CmdShow:
-		// A definition is not a row: SHOW CREATE TABLE produces MySQL DDL, and the
-		// PostgreSQL equivalents (pg_get_functiondef, pg_index, a view's stored
-		// definition) are DDL that would have to be replayed on import — a path
-		// imex no longer has, since --mode create was removed. The honest answer
-		// is that the tool does not do it, and pg_dump does. One rule covers every
-		// kind, and it spells the kind into the message so a run says what it refused.
+		// Definitions are printable: table/view/trigger/procedure/function are
+		// rebuilt from the catalog (see show_postgres.go), so only `event` is
+		// refused — PostgreSQL has no event scheduler, so there is no object of
+		// that kind to print, exactly as `list events` is refused above. The kind
+		// arrives as the CLI's short name.
 		return []Refusal{
 			{
 				Option:  func(o RunOptions) string { return "show " + o.ShowKind },
-				Reason:  "definitions are read with SHOW CREATE, which PostgreSQL does not have, and imex cannot import the DDL it would produce; use pg_dump",
-				Applies: func(o RunOptions) bool { return o.ShowKind != "" },
+				Reason:  "PostgreSQL has no event scheduler, so there is no event definition to show; scheduled work lives in cron or pgAgent",
+				Applies: func(o RunOptions) bool { return o.ShowKind == "evt" || o.ShowKind == "event" },
 			},
 		}
 	}

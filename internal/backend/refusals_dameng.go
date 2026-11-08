@@ -71,11 +71,15 @@ func (damengBackend) Refusals(c Command) []Refusal {
 			},
 		}
 	case CmdShow:
+		// Definitions are printable through DBMS_METADATA.GET_DDL (see
+		// show_dameng.go), so only `event` is refused: DM8 Oracle mode has no
+		// MySQL-style event scheduler, so there is no event object to show. The
+		// kind arrives as the CLI's short name.
 		return []Refusal{
 			{
 				Option:  func(o RunOptions) string { return "show " + o.ShowKind },
-				Reason:  "definitions are read with SHOW CREATE, which Dameng Oracle mode does not provide through the same catalog, and imex cannot import the DDL it would produce; use your own DDL",
-				Applies: func(o RunOptions) bool { return o.ShowKind != "" },
+				Reason:  "Dameng Oracle mode has no event scheduler, so there is no event definition to show; scheduled work lives in the DM job package",
+				Applies: func(o RunOptions) bool { return o.ShowKind == "evt" || o.ShowKind == "event" },
 			},
 		}
 	}

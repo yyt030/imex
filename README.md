@@ -26,7 +26,7 @@
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
-- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，`list` 给七个对象；导出侧仍限单线程，`show` 与 `--no-hex-blob` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export`/`import` 支持 `-f del|parquet`（单线程、`--mode insert|replace`）和 `list` 的四个对象，`show`、`-f sql`、并行导出、`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
+- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；导出侧仍限单线程，`--no-hex-blob` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export`/`import` 支持 `-f del|parquet`（单线程、`--mode insert|replace`）和 `list` 的四个对象，`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`-f sql`、并行导出、`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -447,7 +447,7 @@ imex list tables -u root -p pass -D shop -o /backup/shop_tables.txt
 imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 ```
 
-`show` 打印**一个**对象在服务器上保存的 `CREATE` 语句原文，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。表的建表语句也只在这里取得——`export -f sql` 的产物是纯数据，全工具读 `SHOW CREATE TABLE` 的地方只有 `show tab`。六个 kind 一律三个字母。`show` 整个命令依赖 MySQL 的 `SHOW CREATE` 语句族，因此 `--engine pg` 下六个 kind 全部退出 `2`（PostgreSQL 没有对应语句，即便拼出 DDL 也回放不进 `imex import -f sql`），取定义请用 `pg_dump`；`--engine dm` 下六个 kind 同样全部退出 `2`（达梦 Oracle 模式不从同一份目录给这些定义，请用你自己的 DDL）：
+`show` 打印**一个**对象在服务器上保存的定义，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。表的建表语句也只在这里取得——`export -f sql` 的产物是纯数据，全工具取建表文本的地方只有 `show tab`。六个 kind 一律三个字母。三个引擎都取，只是取法不同：MySQL 走 `SHOW CREATE` 语句族；PostgreSQL 没有 `SHOW CREATE`，定义由系统目录重建（列、类型、默认值、约束经 `format_type`/`pg_get_constraintdef` 拼回，视图/函数/存储过程/触发器经 `pg_get_viewdef`/`pg_get_functiondef`/`pg_get_triggerdef`）；达梦走 Oracle 模式的 `DBMS_METADATA.GET_DDL`。`evt`（事件）只有 MySQL 有——`--engine pg` 与 `--engine dm` 下 `show evt` 在建库连接之前退出 `2`，其余五个 kind 两引擎均可打印。下表是 MySQL 一侧的语句与结果列（`internal/backend/show_mysql.go`）：
 
 | kind | 别名（英文全名） | 语句 | 定义所在列 |
 |------|------------------|------|------------|
@@ -458,7 +458,7 @@ imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 | `prc` | `procedure` | `SHOW CREATE PROCEDURE` | `Create Procedure` |
 | `fcn` | `function` | `SHOW CREATE FUNCTION` | `Create Function` |
 
-三个字母与全名等价（`imex show table x` 与 `imex show tab x` 逐字节相同），大小写敏感。上表的「语句」与「定义所在列」两列是方言数据（`internal/backend/show_mysql.go`，经 `Backend.ShowDefinition` 取得）：pg 一张空表，所以整条命令在连库前就被拒。定义文本按服务器给的原样输出，工具只补一个终止符 `;\n`——`SHOW CREATE` 不返回终止符，而 `imex import -f sql` 读的是以 `;` 结尾的语句。列位置在六种语句间并不固定（表与视图第 2 列，触发器第 3 列，事件第 4 列，存储过程与函数第 3 列），因此按列名取值，取不到时退化为「第一个以 `CREATE` 开头的值」，绝不把 `sql_mode` 或 `time_zone` 当定义输出。
+三个字母与全名等价（`imex show table x` 与 `imex show tab x` 逐字节相同），大小写敏感。上表的「语句」与「定义所在列」两列是 MySQL 一侧的方言数据（`internal/backend/show_mysql.go`，经 `Backend.ShowDefinition` 取得）；pg 侧由 `internal/backend/show_postgres.go` 交回目录重建查询、达梦侧由 `internal/backend/show_dameng.go` 交回 `DBMS_METADATA.GET_DDL` 调用，各引擎取不到定义的那个 kind（pg/dm 的 `evt`）在建连前被 `Refusals(CmdShow)` 拒掉，不会拨号。每个查询都只回一行一列，`show` 按列名取值、取不到时退化为「第一个以 `CREATE` 开头的值」，绝不把 `sql_mode` 或 `time_zone` 当定义输出。MySQL 的 `SHOW CREATE` 不返回终止符，工具补一个 `;\n`；自带结尾 `;` 的形态（Gauss/达梦 `GET_DDL` 的表与 PL/SQL、pg 的目录重建表）按 `hasTerminator` 回报，不再追加，避免出现 `;;`。
 
 `information_schema` 被刻意排除：`TRIGGERS.ACTION_STATEMENT` 只有函数体没有触发器头，`ROUTINES.ROUTINE_DEFINITION` 丢参数列表与 `RETURNS`，`VIEWS.VIEW_DEFINITION` 是解析后的规范化文本——都不足以重建对象。
 

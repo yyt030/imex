@@ -88,7 +88,10 @@ func TestRefusalPredicatesFireOnValueNotDefault(t *testing.T) {
 		{"--no-hex-blob", RunOptions{NoHexBlob: false}, false},
 		{"list events", RunOptions{Object: "events"}, true},
 		{"list events", RunOptions{Object: "tables"}, false},
-		{"show table", RunOptions{ShowKind: "view"}, true},
+		// On pg the only show kind still refused is event; the predicate must fire
+		// on that value, not on any kind being set (view is now supported).
+		{"show table", RunOptions{ShowKind: "event"}, true},
+		{"show table", RunOptions{ShowKind: "view"}, false},
 		{"show table", RunOptions{}, false},
 	}
 	for _, tc := range cases {
