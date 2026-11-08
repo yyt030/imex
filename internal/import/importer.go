@@ -900,7 +900,7 @@ func (imp *Importer) importSingle(ctx context.Context, reader Reader, columns []
 		for {
 			values, err := reader.ReadRow()
 			if err != nil {
-				if err.Error() == "EOF" {
+				if errors.Is(err, io.EOF) {
 					// 发送剩余数据
 					if len(batch) > 0 {
 						send(rowBatch{data: batch})
@@ -1126,7 +1126,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 		for {
 			values, err := reader.ReadRow()
 			if err != nil {
-				if err.Error() == "EOF" {
+				if errors.Is(err, io.EOF) {
 					if len(batch) > 0 {
 						select {
 						case batchCh <- rowBatch{data: batch}:

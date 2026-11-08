@@ -2,6 +2,7 @@ package _import
 
 import (
 	"bufio"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -409,7 +410,7 @@ func TestDelReader_MultipleRows(t *testing.T) {
 
 	// Read fourth row (should be EOF)
 	_, err = delReader.ReadRow()
-	if err == nil || err.Error() != "EOF" {
+	if err != io.EOF {
 		t.Errorf("ReadRow() 4 expected EOF, got %v", err)
 	}
 }

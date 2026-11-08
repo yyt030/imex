@@ -1152,6 +1152,52 @@ Global Flags:
       --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+## exec
+Execute one or more SQL statements against the target and print what each did.
+
+The SQL comes from --file, a single argument, or standard input, in that order.
+Statements are split at top-level semicolons (a semicolon inside a quoted value,
+a comment or a PostgreSQL dollar-quoted body does not split) and run one at a
+time, stopping at the first the server rejects. A statement that returns rows
+prints an aligned table; a statement that writes reports its affected rows.
+
+  imex exec -D mydb 'CREATE TABLE t (id INT PRIMARY KEY, name TEXT)'
+  imex exec -D mydb -f schema.sql
+  imex show tab users -D mydb | imex exec -D otherdb
+
+This replays the DDL that `imex show` saved, and it runs arbitrary SQL
+independent of the data import/export paths. A routine definition whose body
+holds its own semicolons must come from a script that switches the terminator
+with a DELIMITER directive, because a bare semicolon inside the body reads as the
+end of the statement.
+
+Usage:
+  imex exec [sql] [flags]
+
+Flags:
+      --connect-timeout duration        TCP connect timeout (default 5s)
+  -D, --database string                 Default schema the statements run in (also IMEX_DATABASE)
+      --default-charset string          Connection charset (default "utf8mb4")
+      --engine string                   Database engine: mysql, pg, dm (default "mysql")
+  -f, --file string                     Read the SQL to run from this file
+  -?, --help                            help for exec
+  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-level string                Log level (debug/info/warn/error) (default "info")
+  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+      --no-col-names                    Do not print the header row of a result set
+      --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
+  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -p, --password string                 Database password (also IMEX_PASSWORD)
+  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+      --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
+      --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+  -u, --user string                     Database username (also IMEX_USER) (default "root")
+
+Global Flags:
+      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
+      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
 ## root
 imex is a table-level MySQL logical backup and restore tool.
 It supports both MySQL and OceanBase MySQL mode.
@@ -1172,6 +1218,7 @@ Usage:
 
 Available Commands:
   encrypt     Encrypt password for secure automation
+  exec        Execute SQL statements and report each result
   export      Export data from MySQL/OceanBase
   help        Help about any command
   import      Import data into MySQL/OceanBase

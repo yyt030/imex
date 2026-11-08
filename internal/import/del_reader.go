@@ -3,6 +3,7 @@ package _import
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"strings"
 	"time"
 
@@ -241,7 +242,7 @@ func (d *DelReader) ReadHeader() ([]string, error) {
 		if err := d.rd.Err(); err != nil {
 			return nil, errors.Wrap(err, "failed to read header")
 		}
-		return nil, errors.New("EOF")
+		return nil, io.EOF
 	}
 
 	line := d.rd.Bytes()
@@ -258,7 +259,7 @@ func (d *DelReader) ReadRow() ([]interface{}, error) {
 		if err := d.rd.Err(); err != nil {
 			return nil, errors.Wrap(err, "failed to read row")
 		}
-		return nil, errors.New("EOF")
+		return nil, io.EOF
 	}
 
 	line := d.rd.Bytes()
