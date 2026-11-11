@@ -167,8 +167,10 @@ func checkListEngineOptions(e backend.Engine, cfg *config.ListConfig) error {
 	return checkCharsetForEngine(e, cfg.DefaultCharset)
 }
 
-// checkShowEngineOptions refuses every `imex show` kind on --engine pg. The reason
-// is one rule in refusals_postgres.go, next to the other dialect-owned refusals.
+// checkShowEngineOptions applies the engine's own `show` refusals. On
+// PostgreSQL only `event` is refused (no scheduler); table/view/trigger/
+// procedure/function are rebuilt from the catalog by ShowDefinition. The rule
+// lives in refusals_postgres.go next to the other dialect-owned refusals.
 //
 // The charset is not checked here: `show` validates it in validateShowConfig, after
 // this refusal, and moving it would change which message a doubly-invalid run gets.

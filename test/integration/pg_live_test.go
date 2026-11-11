@@ -535,11 +535,76 @@ func TestPGLive_EventAndShowRefusalsReachExit2(t *testing.T) {
 		t.Errorf("list events: exit %d, output %q", code, out)
 	}
 
+	// Since v0.29.0 PostgreSQL rebuilds table/view/trigger/procedure/function
+	// definitions from the catalog. Only `event` is still refused: there is no
+	// scheduler object to print. `show tab` must succeed, not exit 2.
+	out, code = env.runCLI(t, append([]string{"show", "evt", "no_such_event"}, env.base...)...)
+	if code != 2 || !strings.Contains(out, "show evt is not supported with --engine pg") {
+		t.Errorf("show evt: exit %d, output %q", code, out)
+	}
+
 	src := env.pgTable(t, "show_src")
 	env.exec(t, fmt.Sprintf(pgSourceDDL, src))
 	out, code = env.runCLI(t, append([]string{"show", "tab", src}, env.base...)...)
-	if code != 2 || !strings.Contains(out, "show tab is not supported with --engine pg") {
-		t.Errorf("show tab: exit %d, output %q", code, out)
+	if code != 0 || !strings.Contains(out, "CREATE TABLE") {
+		t.Errorf("show tab on pg must be supported: exit %d, output %q", code, out)
+	}
+}
+
+// TestPGLive_ShowTableDDLIsReplayable pins the catalog reconstruction: a stored
+// generated column must not also carry a DEFAULT (PostgreSQL rejects "both
+// default and generation expression specified"), and an identity column must
+// keep its identity instead of collapsing into a plain integer column.
+func TestPGLive_ShowTableDDLIsReplayable(t *testing.T) {
+	env := newPGLive(t)
+	src := env.pgTable(t, "ddl_src")
+	replay := env.pgTable(t, "ddl_replay")
+	env.exec(t, fmt.Sprintf(`CREATE TABLE %s (
+		id integer PRIMARY KEY,
+		a integer,
+		b integer GENERATED ALWAYS AS (a * 2) STORED,
+		d integer GENERATED ALWAYS AS IDENTITY,
+		e text DEFAULT 'x'::text
+	)`, src))
+
+	path := filepath.Join(env.dir, "ddl.sql")
+	out, code := env.runCLI(t, append([]string{"show", "tab", src, "-o", path}, env.base...)...)
+	if code != 0 {
+		t.Fatalf("show tab: exit %d\n%s", code, out)
+	}
+	ddl, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read DDL: %v", err)
+	}
+	got := string(ddl)
+	if strings.Contains(got, "DEFAULT (a * 2)") {
+		t.Errorf("generated column must not also carry a DEFAULT:\n%s", got)
+	}
+	if !strings.Contains(got, "GENERATED ALWAYS AS IDENTITY") {
+		t.Errorf("identity column lost its IDENTITY clause:\n%s", got)
+	}
+
+	// Replay into a second table. Renaming every occurrence of the source name
+	// also renames the constraints, so no index name collides with the original.
+	env.exec(t, strings.ReplaceAll(got, src, replay))
+
+	var isIdentity string
+	if err := env.db.QueryRow(
+		"SELECT is_identity FROM information_schema.columns WHERE table_name = $1 AND column_name = 'd'",
+		replay).Scan(&isIdentity); err != nil {
+		t.Fatalf("read replayed identity column: %v", err)
+	}
+	if isIdentity != "YES" {
+		t.Errorf("replayed d.is_identity = %q, want YES", isIdentity)
+	}
+	var isGenerated string
+	if err := env.db.QueryRow(
+		"SELECT is_generated FROM information_schema.columns WHERE table_name = $1 AND column_name = 'b'",
+		replay).Scan(&isGenerated); err != nil {
+		t.Fatalf("read replayed generated column: %v", err)
+	}
+	if isGenerated != "ALWAYS" {
+		t.Errorf("replayed b.is_generated = %q, want ALWAYS", isGenerated)
 	}
 }
 
