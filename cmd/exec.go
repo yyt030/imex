@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"io"
 	"os"
 
@@ -128,12 +129,17 @@ func runExec(cmd *cobra.Command, cfg *config.ExecConfig, args []string) error {
 	}
 	defer db.Close()
 
-	if err := common.PingWithRetry(db, backend.Must(e).TransientError); err != nil {
+	// Same deadline guard as `list`: see the note in runList.
+	pingCtx, cancelPing := context.WithTimeout(cmd.Context(), cfg.ConnectTimeout)
+	defer cancelPing()
+	if err := common.PingWithRetry(pingCtx, db, backend.Must(e).TransientError); err != nil {
 		return err
 	}
 
+	queryCtx, cancelQuery := context.WithTimeout(cmd.Context(), cfg.SocketReadTimeout)
+	defer cancelQuery()
 	sink := newResultSink(cfg.Output, cfg.NoOverwrite, cmd.OutOrStdout())
-	stats, err := exec.Run(cmd.Context(), db, e, sqlText, !cfg.NoColNames, sink)
+	stats, err := exec.Run(queryCtx, db, e, sqlText, !cfg.NoColNames, sink)
 	if err != nil {
 		return errors.Wrap(err, "exec failed")
 	}

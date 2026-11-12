@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"database/sql"
 	"time"
 
@@ -13,6 +14,15 @@ var pingRetryPolicy = DefaultRetryPolicy()
 
 // PingWithRetry verifies a freshly opened connection, retrying only what a
 // reconnect can actually heal.
+//
+// The caller's ctx is mandatory and must carry a deadline. Some drivers —
+// notably gitee.com/chunanyong/dm v1.8.23 — set no socket deadline of their own
+// at all (the whole driver has no SetReadDeadline call), and only interrupt a
+// blocked login handshake or ping read when the context is cancellable: their
+// watchCancel is a no-op for ctx.Done() == nil. A bare db.Ping() is exactly that
+// no-op case, so an unresponsive Dameng server used to hang an entire run with
+// no output. db.PingContext(ctx) lets the driver close its socket on ctx
+// cancellation and turn the hang into a normal error.
 //
 // The judge is IsTransient, the same one the statement paths use: a
 // connection-level failure (server gone away, refused dial, reset socket) gets
@@ -29,7 +39,7 @@ var pingRetryPolicy = DefaultRetryPolicy()
 // The attempt count in the returned message is the number of tries actually
 // made, so the wording stays true on both paths: "after 1 attempt" for a
 // rejection, "after 3 attempts" for an outage that outlasts the backoff.
-func PingWithRetry(db *sql.DB, verdict TransientVerdict) error {
+func PingWithRetry(ctx context.Context, db *sql.DB, verdict TransientVerdict) error {
 	p := pingRetryPolicy
 	if p.MaxAttempts < 1 {
 		p.MaxAttempts = 1
@@ -39,7 +49,7 @@ func PingWithRetry(db *sql.DB, verdict TransientVerdict) error {
 	attempts := 0
 	for attempt := 1; attempt <= p.MaxAttempts; attempt++ {
 		attempts = attempt
-		if err = db.Ping(); err == nil {
+		if err = db.PingContext(ctx); err == nil {
 			return nil
 		}
 		if !IsTransient(err, verdict) || attempt == p.MaxAttempts {

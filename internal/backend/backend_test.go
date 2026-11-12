@@ -669,11 +669,33 @@ func TestDamengDSNPinsConnectionParams(t *testing.T) {
 	if q["connectTimeout"] != "1500" {
 		t.Errorf("connectTimeout = %q, want 1500 ms", q["connectTimeout"])
 	}
-	if q["socketTimeout"] != "90" {
-		t.Errorf("socketTimeout = %q, want 90 s", q["socketTimeout"])
+	// The driver's ONLY TCP deadline is socketTimeout (seconds), fed to
+	// net.DialTimeout in a.go:50. It must come from --connect-timeout: with the
+	// old binding to --socket-read-timeout this config produced a 90 s dial, so
+	// an unreachable DM host looked exactly like a hung process.
+	if q["socketTimeout"] != "2" {
+		t.Errorf("socketTimeout = %q, want 2 s (1500 ms connect timeout rounded up)", q["socketTimeout"])
+	}
+	// The dialer is what actually bounds the login handshake (the driver drops
+	// the caller's context there), so the DSN must name it.
+	if !strings.HasPrefix(q["dialName"], damengDialPrefix+"-") {
+		t.Errorf("dialName = %q, want the imex deadline dialer", q["dialName"])
 	}
 	if q["compatibleMode"] != "oracle" || q["schema"] != "d" {
 		t.Errorf("query = %v, want compatibleMode=oracle and schema=d", q)
+	}
+
+	// Anti-drift: a long per-read timeout must not lengthen the TCP dial any
+	// more. The read budget is enforced by the cancellable context in cmd/, not
+	// by a DSN parameter the driver never applies to reads.
+	s = buildDamengDSNUnchecked(t, &config.Config{
+		Host: "127.0.0.1", Port: 5236, User: "u", Password: "p",
+		DefaultCharset: config.DefaultCharset,
+		ConnectTimeout: 3 * time.Second, SocketReadTimeout: 10 * time.Minute,
+	})
+	_, _, _, q = parseDamengDSN(t, s)
+	if q["socketTimeout"] != "3" {
+		t.Errorf("socketTimeout = %q with a 10m read timeout, want 3 s", q["socketTimeout"])
 	}
 
 	// No --database means no schema parameter at all.

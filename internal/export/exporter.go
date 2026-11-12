@@ -82,7 +82,11 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	// variable) returns on the first try — see common.PingWithRetry. Before this,
 	// a typo in --session-var or a wrong password waited a fixed 6 seconds and was
 	// reported as a connectivity failure.
-	if pingErr := common.PingWithRetry(db, be.TransientError); pingErr != nil {
+	// A cancellable context is what lets a driver with no socket deadline of its
+	// own (Dameng) abort a stuck login handshake; see common.PingWithRetry.
+	pingCtx, cancelPing := context.WithTimeout(context.Background(), cfg.ConnectTimeout)
+	defer cancelPing()
+	if pingErr := common.PingWithRetry(pingCtx, db, be.TransientError); pingErr != nil {
 		db.Close()
 		return nil, pingErr
 	}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -161,12 +162,20 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 	}
 	defer db.Close()
 
-	if err := common.PingWithRetry(db, backend.Must(e).TransientError); err != nil {
+	// Dameng's driver sets no socket deadline of its own and only interrupts a
+	// blocked login/read when the context is cancellable. Bound the handshake by
+	// --connect-timeout and the metadata read by --socket-read-timeout, so an
+	// unresponsive server reports an error instead of hanging the run forever.
+	pingCtx, cancelPing := context.WithTimeout(cmd.Context(), cfg.ConnectTimeout)
+	defer cancelPing()
+	if err := common.PingWithRetry(pingCtx, db, backend.Must(e).TransientError); err != nil {
 		return err
 	}
 
+	queryCtx, cancelQuery := context.WithTimeout(cmd.Context(), cfg.SocketReadTimeout)
+	defer cancelQuery()
 	sink := newResultSink(cfg.Output, cfg.NoOverwrite, cmd.OutOrStdout())
-	rows, err := list.Run(cmd.Context(), db, cfg, sink)
+	rows, err := list.Run(queryCtx, db, cfg, sink)
 	if err != nil {
 		return errors.Wrapf(err, "list %s failed", object)
 	}

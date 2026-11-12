@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -138,12 +139,19 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 	}
 	defer db.Close()
 
-	if err := common.PingWithRetry(db, backend.Must(e).TransientError); err != nil {
+	// Same deadline guard as `list`: see the note in runList. Without a
+	// cancellable context the Dameng driver never interrupts a stuck handshake
+	// or catalog read.
+	pingCtx, cancelPing := context.WithTimeout(cmd.Context(), cfg.ConnectTimeout)
+	defer cancelPing()
+	if err := common.PingWithRetry(pingCtx, db, backend.Must(e).TransientError); err != nil {
 		return err
 	}
 
+	queryCtx, cancelQuery := context.WithTimeout(cmd.Context(), cfg.SocketReadTimeout)
+	defer cancelQuery()
 	sink := newResultSink(cfg.Output, cfg.NoOverwrite, cmd.OutOrStdout())
-	written, err := show.Run(cmd.Context(), db, backend.Must(e), kind, cfg, sink)
+	written, err := show.Run(queryCtx, db, backend.Must(e), kind, cfg, sink)
 	if err != nil {
 		return errors.Wrapf(err, "show %s failed", kind.Short)
 	}

@@ -32,6 +32,11 @@ func (damengBackend) Open(cfg *config.Config) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The DSN names a dialer that keeps the login handshake bounded; it has to
+	// be registered before the first connection is opened. See dameng_dial.go.
+	if cfg.ConnectTimeout > 0 {
+		registerDamengDial(cfg)
+	}
 	return sql.Open("dm", dsn)
 }
 
@@ -282,12 +287,25 @@ func buildDamengDSN(c *config.Config) (string, error) {
 		q.Set("schema", c.Database)
 	}
 	if c.ConnectTimeout > 0 {
+		// connectTimeout (milliseconds) is NOT a dial deadline in this driver:
+		// v1.8.23 only appends it to a server-facing "?timeout=" string
+		// (n.go:810). The driver's one and only TCP deadline is socketTimeout
+		// (SECONDS), handed to net.DialTimeout in a.go:50 -- and it is used for
+		// nothing else in the whole driver (no SetReadDeadline anywhere).
+		//
+		// So --connect-timeout has to drive socketTimeout: with the old binding
+		// to --socket-read-timeout (default 5m) an unreachable or half-open DM
+		// host stalled the TCP dial for five minutes with no output, while the
+		// operator's --connect-timeout had no effect at all. Per-read timeouts
+		// are enforced on the Go side by the cancellable context passed to the
+		// ping and query calls instead.
 		q.Set("connectTimeout", strconv.FormatInt(c.ConnectTimeout.Milliseconds(), 10))
-	}
-	if c.SocketReadTimeout > 0 {
-		// socketTimeout is in seconds in the Dameng driver.
-		secs := int64((c.SocketReadTimeout + time.Second - 1) / time.Second)
+		secs := int64((c.ConnectTimeout + time.Second - 1) / time.Second)
 		q.Set("socketTimeout", strconv.FormatInt(secs, 10))
+		// dameng_dial.go registers a dialer under this name whose net.Conn puts
+		// an absolute deadline on the login handshake. Without it this driver
+		// has no deadline at all after the TCP dial succeeds.
+		q.Set("dialName", damengDialName(c))
 	}
 	return "dm://" + c.User + ":" + c.Password + "@" +
 		fmt.Sprintf("%s:%d", c.Host, c.Port) + "?" + q.Encode(), nil

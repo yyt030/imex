@@ -103,7 +103,10 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 	// Test the connection. Only a failure a reconnect can heal is retried; a
 	// server rejection (bad credentials, unknown database, unknown session
 	// variable) returns on the first try — see common.PingWithRetry.
-	if pingErr := common.PingWithRetry(db, be.TransientError); pingErr != nil {
+	// Same cancellable-context guard as NewExporter: see common.PingWithRetry.
+	pingCtx, cancelPing := context.WithTimeout(context.Background(), cfg.ConnectTimeout)
+	defer cancelPing()
+	if pingErr := common.PingWithRetry(pingCtx, db, be.TransientError); pingErr != nil {
 		db.Close()
 		return nil, pingErr
 	}

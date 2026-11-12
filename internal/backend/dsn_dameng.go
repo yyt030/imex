@@ -10,6 +10,7 @@ var reservedDamengDSNParams = map[string]bool{
 	"schema":         true,
 	"connectTimeout": true,
 	"socketTimeout":  true,
+	"dialName":       true, // the tool's deadline-keeping dialer, see dameng_dial.go
 	// interpreted by the driver's DSN parser (n.go)
 	"host":                  true,
 	"port":                  true,

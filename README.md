@@ -634,6 +634,8 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 
 `-D` 在达梦上是**模式名**（达梦是「一个角色一个模式」的结构）：它既写进驱动的 `schema` 参数，也是目录查询过滤的 `OWNER`，用 `UPPER(OWNER) = UPPER(?)` 匹配，所以小写给也行。不给 `-D` 时默认排除 `SYS`、`SYSTEM`、`OUTLN`、`SYSMAN`、`DBSNMP` 五个系统模式，`--all` 取消排除。`-u` 不能为空，为空在建连之前退出 `2`（`--user is required for --engine dm`）。标识符用双引号包裹、内部双引号翻倍（`a"b` → `"a""b"`）；Oracle 模式把未加引号的名字折成大写，要保住原名大小写唯有加引号这一条路。
 
+**连接超时（156 轮修复）**：达梦驱动 `gitee.com/chunanyong/dm` v1.8.23 在建连之后**不设任何 socket 超时**，且其单机连接路径把调用方 context 丢成 `context.Background()`，所以服务端「TCP 接了但不回应」（容器休眠、服务僵死、半开防火墙）时旧版会**永久挂起**，日志停在 `list config` 之后、没有任何输出。现在 `--connect-timeout`（默认 5s）真正约束 TCP 拨号与登录握手，`--socket-read-timeout`／`--socket-write-timeout`（默认 5m）约束握手之后的每次读写，`list`／`show`／`exec` 的语句另有 context deadline 兜底。冻结 DM8 容器实测：旧 `v0.31.0` 12 秒外层强杀仍卡住，修复后 **4.10 秒**退 1 并报 `i/o timeout`／`context deadline exceeded`，恢复容器后 `list dbs` 秒回 5 行。想更快报错就调小这两个时长（如 `--connect-timeout 3s --socket-read-timeout 10s`）。注意 `export`／`import` 的数据读写阶段仍是裸查询，只有建连与 ping 受这层保护。
+
 **不能用的**（连库之前就被拦下，退出码 `2`，文案点名原因，形状与 pg 侧一致；这张表同样是方言层的数据，见 `internal/backend/refusals_dameng.go`）：
 
 | 命令 / 选项 | 拒绝理由 |
@@ -1087,6 +1089,18 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
 > 以下各节按版本记录每轮改动的摘要。同一批变更的完整设计理由与实测取证在 `docs/requirements.md` 十四节的编号变更记录，两处按轮次对齐，**编号变更记录为权威源**；本节只写“改了什么”，取值以当轮实测为准。
+
+## 修复记录（v0.32.0）
+
+本轮把 156 轮在真库上定位并修复的 DM8 连接超时缺陷随 `v0.32.0` 发布；代码与测试在 156 轮已完成并验证，本轮只做版本进位与发版记账，无新增代码改动。
+
+| 缺陷 | 现象 | 修复 |
+|------|------|------|
+| DM8 `list dbs` 卡住不动 | 服务端建连后不再应答（容器休眠／服务僵死／半开防火墙）时进程永久挂起，既无退出码也无错误，日志停在 `list config` 之后 | 新建 `internal/backend/dameng_dial.go`，借驱动 `RegisterDialContext`＋DSN `dialName` 注册带 deadline 的 `net.Conn`（拨号按 `--connect-timeout`、握手挂绝对 deadline、首次应答后改按读写超时逐次刷新）；`PingWithRetry` 改收 `ctx`／走 `db.PingContext`，`list`／`show`／`exec` 与导出导入全传带 deadline ctx；`buildDamengDSN` 订正 `socketTimeout` 由 `ConnectTimeout` 秒数派生并写 `dialName` |
+
+**真库验证**：冻结 `imex-dm8` 后旧 `v0.31.0` 二进制 12 s 外层强杀仍停在 `list config`（rc=124），修复后 **4.10 s** 退 1、报 `i/o timeout` 与 `context deadline exceeded`；`docker unpause` 恢复后 `list dbs` 秒回 5 行；socat 假端口由 30 s 强杀变 4.16 s 报错。DM8 全对象、MySQL8、PG16 回归无变化，`PGLive` 通过、`gofmt` 0／`vet` 净／`go test ./...` 11 包全绿、`imex version` 报 **0.32.0**。
+
+完整设计理由与逐条实测见 `docs/requirements.md` 十四节变更记录 **156**（代码轮）与 **157**（发版轮）。
 
 ## 修复记录（v0.31.0）
 

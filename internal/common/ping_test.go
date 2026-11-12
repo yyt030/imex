@@ -98,7 +98,7 @@ func TestPingSucceedsFirstTry(t *testing.T) {
 	defer db.Close()
 
 	var err error
-	out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
+	out := captureStderr(t, func() { err = PingWithRetry(context.Background(), db, mysqlFixtureVerdict) })
 	if err != nil {
 		t.Fatalf("healthy connection returned %v", err)
 	}
@@ -136,7 +136,7 @@ func TestPingDoesNotRetryServerRejections(t *testing.T) {
 			defer db.Close()
 
 			var err error
-			out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
+			out := captureStderr(t, func() { err = PingWithRetry(context.Background(), db, mysqlFixtureVerdict) })
 			if err == nil {
 				t.Fatal("a rejection must be reported")
 			}
@@ -166,7 +166,7 @@ func TestPingRetriesAnOutageThenSucceeds(t *testing.T) {
 	defer db.Close()
 
 	var err error
-	out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
+	out := captureStderr(t, func() { err = PingWithRetry(context.Background(), db, mysqlFixtureVerdict) })
 	if err != nil {
 		t.Fatalf("recovered outage reported %v", err)
 	}
@@ -189,7 +189,7 @@ func TestPingGivesUpAtTheBound(t *testing.T) {
 	defer db.Close()
 
 	var err error
-	out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
+	out := captureStderr(t, func() { err = PingWithRetry(context.Background(), db, mysqlFixtureVerdict) })
 	if err == nil {
 		t.Fatal("an outage longer than the bound must be reported")
 	}
@@ -215,7 +215,7 @@ func TestPingPolicyWithNoRetryLeft(t *testing.T) {
 	defer db.Close()
 
 	var err error
-	out := captureStderr(t, func() { err = PingWithRetry(db, mysqlFixtureVerdict) })
+	out := captureStderr(t, func() { err = PingWithRetry(context.Background(), db, mysqlFixtureVerdict) })
 	if err == nil {
 		t.Fatal("an unreachable server must be reported")
 	}
@@ -227,5 +227,63 @@ func TestPingPolicyWithNoRetryLeft(t *testing.T) {
 	}
 	if got := fake.count(); got != 1 {
 		t.Errorf("pings sent = %d, want 1", got)
+	}
+}
+
+// ctxBlockingConn models a driver with no socket deadline of its own — exactly
+// gitee.com/chunanyong/dm v1.8.23, whose whole source has no SetReadDeadline
+// call. Its only escape from a blocked login/read is a cancellable context:
+// watchCancel is a no-op when ctx.Done() == nil, which is what db.Ping() passes.
+type ctxBlockingConn struct{}
+
+func (ctxBlockingConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("ctx fake: no statements")
+}
+func (ctxBlockingConn) Close() error { return nil }
+func (ctxBlockingConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("ctx fake: no transactions")
+}
+func (ctxBlockingConn) Ping(ctx context.Context) error {
+	if ctx.Done() == nil {
+		return errors.New("ctx fake: ping got a context that can never be cancelled")
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type ctxBlockingConnector struct{}
+
+func (ctxBlockingConnector) Connect(context.Context) (driver.Conn, error) {
+	return ctxBlockingConn{}, nil
+}
+func (ctxBlockingConnector) Driver() driver.Driver { return pingDriver{} }
+
+// TestPingWithRetryHonoursContext is the Dameng `list dbs` hang fix. Before it
+// the ping used db.Ping() (context.Background, Done() == nil), so an
+// unresponsive server — a sleeping container, a half-open firewall, a stalled
+// handshake — left the run with no output forever. With a deadline the driver's
+// watcher closes its socket and the run reports a normal error instead.
+func TestPingWithRetryHonoursContext(t *testing.T) {
+	orig := pingRetryPolicy
+	pingRetryPolicy = RetryPolicy{MaxAttempts: 1}
+	t.Cleanup(func() { pingRetryPolicy = orig })
+
+	db := sql.OpenDB(ctxBlockingConnector{})
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := PingWithRetry(ctx, db, mysqlFixtureVerdict)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("a ping blocked on the context must be reported")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("ping did not stop at the context deadline: %v", elapsed)
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Errorf("error = %q, want the context deadline; a bare db.Ping() would report the non-cancellable-context marker instead", err)
 	}
 }
