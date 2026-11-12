@@ -117,6 +117,8 @@ func buildPGQuery(cfg *config.ListConfig) (query string, args []any, columns []s
 	switch cfg.Object {
 	case ObjectDatabases:
 		return buildPGDatabases(cfg)
+	case ObjectSchemas:
+		return buildPGSchemas(cfg)
 	case ObjectTables:
 		return buildPGTables(cfg)
 	case ObjectViews:
@@ -154,6 +156,25 @@ func buildPGDatabases(cfg *config.ListConfig) (string, []any, []string, error) {
 		" FROM pg_catalog.pg_database" + pgWhereClause(conds) +
 		" ORDER BY datname"
 	return query, b.args, []string{"database", "charset", "collation"}, nil
+}
+
+func buildPGSchemas(cfg *config.ListConfig) (string, []any, []string, error) {
+	// pg_namespace lists the schemas of the CONNECTED database: PostgreSQL's
+	// second namespace level. -D names the database in the DSN (see the note at
+	// the top of this file), so it cannot also filter a schema name; the
+	// connection already decides which database's schemas are read. Without
+	// --all the three schemas PostgreSQL reserves are hidden, the same rule the
+	// object lists apply (pgSystemSchemas).
+	b := &pgBuilder{}
+	var conds []string
+	if !cfg.All {
+		conds = append(conds, "n.nspname NOT IN ("+pgSystemSchemas+")")
+	}
+	conds = append(conds, pgPatternCondition("n.nspname", cfg.Pattern, b)...)
+
+	query := "SELECT n.nspname FROM pg_catalog.pg_namespace n" +
+		pgWhereClause(conds) + " ORDER BY n.nspname"
+	return query, b.args, []string{"schema"}, nil
 }
 
 func buildPGTables(cfg *config.ListConfig) (string, []any, []string, error) {

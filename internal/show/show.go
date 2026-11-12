@@ -1,5 +1,7 @@
 // Package show prints the definition text the server holds for ONE schema
-// object: SHOW CREATE TABLE, VIEW, TRIGGER, PROCEDURE, FUNCTION or EVENT.
+// object: SHOW CREATE DATABASE (a MySQL schema is a database), TABLE, VIEW,
+// TRIGGER, PROCEDURE, FUNCTION or EVENT, and the CREATE SCHEMA reconstruction
+// the other dialects need because only MySQL keeps a definition for that layer.
 //
 // The scope rule is the one the user set: `show` looks at a single object,
 // `imex list` produces the batches. Enumeration therefore stays in `list`, and
@@ -50,12 +52,21 @@ type Kind struct {
 // kindOrder is the registration order, and the order the parent command lists in
 // its help and in its "unknown kind" message.
 var kindOrder = []Kind{
+	{Short: "sch", Full: "schema"},
 	{Short: "tab", Full: "table"},
 	{Short: "vws", Full: "view"},
 	{Short: "trg", Full: "trigger"},
 	{Short: "evt", Full: "event"},
 	{Short: "prc", Full: "procedure"},
 	{Short: "fcn", Full: "function"},
+}
+
+// SingleName reports whether the reference this kind takes is one whole name with
+// no schema qualifier above it. A schema is that name: there is no layer above
+// it, and a quoted PostgreSQL identifier may itself contain a dot, so SplitName
+// must not be applied to it.
+func (k Kind) SingleName() bool {
+	return k.Full == "schema"
 }
 
 // Kinds returns the accepted kinds in help order. The slice is a copy, so a

@@ -61,6 +61,19 @@ var damengMetadataKinds = map[string]struct {
 // form, which resolves against the session's current schema — the connection's
 // own database, the same rule MySQL's unqualified SHOW CREATE follows.
 func (damengBackend) ShowDefinition(object, schema, name string) (string, string, bool, bool) {
+	if object == "schema" {
+		// GET_DDL('SCHEMA',...) does not exist: DM8 answers -20001 "invalid
+		// object type" (measured on dm8_20241022_rev244896). In Oracle-mode DM a
+		// schema and its account are one object, so the definition is the one
+		// GET_DDL('USER',...) returns -- CREATE USER "X" IDENTIFIED BY <PASSWORD>
+		// ..., with the password masked by the server's own metadata layer. A
+		// schema with no account (CTISYS, the built-in full-text schema) answers
+		// -20008 "object is not found", which surfaces as a failed query rather
+		// than a fabricated statement. A schema name is the whole reference, so
+		// `schema` is not consulted.
+		return "SELECT DBMS_METADATA.GET_DDL('USER'," + dmShowLit(strings.ToUpper(name)) + ") AS " + damengShowColumn + " FROM DUAL",
+			damengShowColumn, false, true
+	}
 	k, ok := damengMetadataKinds[object]
 	if !ok {
 		return "", "", false, false

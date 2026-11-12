@@ -7,7 +7,7 @@ import (
 // Dameng (DM8 Oracle mode) option refusals. The first cut only supports:
 //   - export: --format del/parquet, single-threaded, any --query
 //   - import: --format del/parquet, --mode insert/replace
-//   - list: databases, tables, columns, indexes
+//   - list: databases, schemas, tables, columns, indexes
 // Everything else is refused here so the run stops before it dials.
 //
 // --format sql export is now supported (the writer gained a Dameng/Oracle
@@ -60,10 +60,10 @@ func (damengBackend) Refusals(c Command) []Refusal {
 		return []Refusal{
 			{
 				Option: func(o RunOptions) string { return "list " + o.Object },
-				Reason: "this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, tables, columns and indexes",
+				Reason: "this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, schemas, tables, columns and indexes",
 				Applies: func(o RunOptions) bool {
 					switch o.Object {
-					case "databases", "tables", "columns", "indexes":
+					case "databases", "schemas", "tables", "columns", "indexes":
 						return false
 					}
 					return true

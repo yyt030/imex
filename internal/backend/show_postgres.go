@@ -63,6 +63,8 @@ func (postgresBackend) ShowDefinition(object, schema, name string) (string, stri
 	nsp := pgShowSchema(schema)
 	nm := pgShowLit(name)
 	switch object {
+	case "schema":
+		return pgSchemaDefQuery(nm), "schemadef", true, true
 	case "table":
 		return pgTableDefQuery(nsp, nm), "tabledef", true, true
 	case "view":
@@ -75,6 +77,21 @@ func (postgresBackend) ShowDefinition(object, schema, name string) (string, stri
 		return pgRoutineDefQuery(nsp, nm, "f"), "routinedef", false, true
 	}
 	return "", "", false, false
+}
+
+// pgSchemaDefQuery rebuilds CREATE SCHEMA from pg_namespace. PostgreSQL has no
+// function that prints a schema definition -- pg_get_* covers relations,
+// triggers and routines only -- so the header is assembled here, the same way
+// the table reconstruction is. The owner comes from nspowner through
+// pg_get_userbyid; on PG 15+ a schema owned by the database itself reports
+// pg_database_owner, which is exactly what the server prints for it, so the text
+// replays. The statement bakes its own `;`, hence hasTerminator true.
+func pgSchemaDefQuery(nm string) string {
+	return `select 'CREATE SCHEMA ' || quote_ident(n.nspname)
+       || ' AUTHORIZATION ' || quote_ident(pg_get_userbyid(n.nspowner)) || ';'
+as schemadef
+from pg_catalog.pg_namespace n
+where n.nspname = ` + nm
 }
 
 // pgTableDefQuery rebuilds CREATE TABLE from pg_attribute (columns, types,

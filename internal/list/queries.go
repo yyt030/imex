@@ -9,6 +9,7 @@ import (
 // the command tree and this list cannot drift apart without a test failing.
 const (
 	ObjectDatabases = "databases"
+	ObjectSchemas   = "schemas"
 	ObjectTables    = "tables"
 	ObjectViews     = "views"
 	ObjectColumns   = "columns"
@@ -19,7 +20,7 @@ const (
 )
 
 var objectOrder = []string{
-	ObjectDatabases, ObjectTables, ObjectViews, ObjectColumns,
+	ObjectDatabases, ObjectSchemas, ObjectTables, ObjectViews, ObjectColumns,
 	ObjectIndexes, ObjectTriggers, ObjectRoutines, ObjectEvents,
 }
 

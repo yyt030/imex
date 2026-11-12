@@ -13,7 +13,7 @@
 - **灵活的导入模式**：INSERT / INSERT_UPDATE / REPLACE
 - **列映射导入**：支持文件列到表列的自定义映射（DB2 风格），可按位置或按名称映射
 - **元数据查询**：`imex list` 只读查看库、表、视图、列、索引、触发器、例程与事件，结果按对齐表格输出，可写 `--output` 文件
-- **对象定义导出**：`imex show tab|vws|trg|evt|prc|fcn <名称>` 打印单个对象在服务器上的 `CREATE` 语句原文，只补终止符，不重写文本
+- **对象定义导出**：`imex show sch|tab|vws|trg|evt|prc|fcn <名称>` 打印单个对象在服务器上的 `CREATE` 语句原文，只补终止符，不重写文本
 - **自定义分隔符**：支持单字符、多字节、十六进制格式
 - **无包裹符模式**：支持导入导出不使用字符串定界符的纯分隔符文件
 - **OceanBase 兼容**：MySQL 模式共用同一套协议、语句与文件格式，不做服务端类型探测（探测的唯一消费者随 `LOCK TABLES` 一起删除，见变更记录 72/73）
@@ -375,7 +375,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时八个对象里七个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时四个对象可用（`databases`、`tables`、`columns`、`indexes`），其余四个退出 `2`；`-D` 是模式名，五个系统模式默认排除，`--all` 取消排除（见「达梦引擎」）。对象名就是子命令名：
+`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时九个对象里八个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时五个对象可用（`databases`、`schemas`、`tables`、`columns`、`indexes`），其余四个退出 `2`；`-D` 对 tables/columns/indexes 是模式名（进 DSN 并过滤 `OWNER`），对 `databases` 过滤库名、对 `schemas` 过滤模式名且都不进 DSN；五个系统模式在 `schemas` 与 `tables` 上默认排除，`--all` 取消排除（见「达梦引擎」）。对象名就是子命令名：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -431,6 +431,8 @@ imex list <object|缩写> [连接选项] [查询选项]
 
 ```bash
 imex list databases -u root -p pass
+imex list schemas -u root -p pass
+imex list sch -u root -p pass -D shop
 imex list dbs -u root -p pass -D shop
 imex list tab -u root -p pass -D shop
 imex list columns -u root -p pass -D shop -t orders
@@ -447,10 +449,11 @@ imex list tables -u root -p pass -D shop -o /backup/shop_tables.txt
 imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 ```
 
-`show` 打印**一个**对象在服务器上保存的定义，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。表的建表语句也只在这里取得——`export -f sql` 的产物是纯数据，全工具取建表文本的地方只有 `show tab`。六个 kind 一律三个字母。三个引擎都取，只是取法不同：MySQL 走 `SHOW CREATE` 语句族；PostgreSQL 没有 `SHOW CREATE`，定义由系统目录重建（列、类型、默认值、约束经 `format_type`/`pg_get_constraintdef` 拼回，视图/函数/存储过程/触发器经 `pg_get_viewdef`/`pg_get_functiondef`/`pg_get_triggerdef`）；达梦走 Oracle 模式的 `DBMS_METADATA.GET_DDL`。`evt`（事件）只有 MySQL 有——`--engine pg` 与 `--engine dm` 下 `show evt` 在建库连接之前退出 `2`，其余五个 kind 两引擎均可打印。下表是 MySQL 一侧的语句与结果列（`internal/backend/show_mysql.go`）：
+`show` 打印**一个**对象在服务器上保存的定义，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。表的建表语句也只在这里取得——`export -f sql` 的产物是纯数据，全工具取建表文本的地方只有 `show tab`。七个 kind 一律三个字母。三个引擎都取，只是取法不同：MySQL 走 `SHOW CREATE` 语句族；PostgreSQL 没有 `SHOW CREATE`，定义由系统目录重建（列、类型、默认值、约束经 `format_type`/`pg_get_constraintdef` 拼回，视图/函数/存储过程/触发器经 `pg_get_viewdef`/`pg_get_functiondef`/`pg_get_triggerdef`，模式拼成 `CREATE SCHEMA … AUTHORIZATION …;`）；达梦走 Oracle 模式的 `DBMS_METADATA.GET_DDL`，模式这一层取 `GET_DDL('USER',…)`——达梦的模式与账号是同一个对象，`GET_DDL('SCHEMA',…)` 会报 `-20001`，所以输出是 `CREATE USER … IDENTIFIED BY <PASSWORD> …`，口令由服务端元数据层脱敏成占位符。`evt`（事件）只有 MySQL 有——`--engine pg` 与 `--engine dm` 下 `show evt` 在建库连接之前退出 `2`，其余六个 kind 两引擎均可打印。`sch` 是唯一不带 schema 限定的 kind：模式名本身就是完整引用，`imex show sch appdb` 不需要 `-D`。下表是 MySQL 一侧的语句与结果列（`internal/backend/show_mysql.go`）：
 
 | kind | 别名（英文全名） | 语句 | 定义所在列 |
 |------|------------------|------|------------|
+| `sch` | `schema` | `SHOW CREATE DATABASE` | `Create Database` |
 | `tab` | `table` | `SHOW CREATE TABLE` | `Create Table` |
 | `vws` | `view` | `SHOW CREATE VIEW` | `Create View` |
 | `trg` | `trigger` | `SHOW CREATE TRIGGER` | `SQL Original Statement` |
@@ -458,7 +461,7 @@ imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 | `prc` | `procedure` | `SHOW CREATE PROCEDURE` | `Create Procedure` |
 | `fcn` | `function` | `SHOW CREATE FUNCTION` | `Create Function` |
 
-三个字母与全名等价（`imex show table x` 与 `imex show tab x` 逐字节相同），大小写敏感。上表的「语句」与「定义所在列」两列是 MySQL 一侧的方言数据（`internal/backend/show_mysql.go`，经 `Backend.ShowDefinition` 取得）；pg 侧由 `internal/backend/show_postgres.go` 交回目录重建查询、达梦侧由 `internal/backend/show_dameng.go` 交回 `DBMS_METADATA.GET_DDL` 调用，各引擎取不到定义的那个 kind（pg/dm 的 `evt`）在建连前被 `Refusals(CmdShow)` 拒掉，不会拨号。每个查询都只回一行一列，`show` 按列名取值、取不到时退化为「第一个以 `CREATE` 开头的值」，绝不把 `sql_mode` 或 `time_zone` 当定义输出。MySQL 的 `SHOW CREATE` 不返回终止符，工具补一个 `;\n`；自带结尾 `;` 的形态（Gauss/达梦 `GET_DDL` 的表与 PL/SQL、pg 的目录重建表）按 `hasTerminator` 回报，不再追加，避免出现 `;;`。
+三个字母与全名等价（`imex show table x` 与 `imex show tab x` 逐字节相同），大小写敏感。MySQL 里 schema 就是 database，所以 `show sch` 读的是 `SHOW CREATE DATABASE`；PostgreSQL 与达梦的 schema 在 database 里面，重建/取定义的方式见上一段。上表的「语句」与「定义所在列」两列是 MySQL 一侧的方言数据（`internal/backend/show_mysql.go`，经 `Backend.ShowDefinition` 取得）；pg 侧由 `internal/backend/show_postgres.go` 交回目录重建查询、达梦侧由 `internal/backend/show_dameng.go` 交回 `DBMS_METADATA.GET_DDL` 调用，各引擎取不到定义的那个 kind（pg/dm 的 `evt`）在建连前被 `Refusals(CmdShow)` 拒掉，不会拨号。每个查询都只回一行一列，`show` 按列名取值、取不到时退化为「第一个以 `CREATE` 开头的值」，绝不把 `sql_mode` 或 `time_zone` 当定义输出。MySQL 的 `SHOW CREATE` 不返回终止符，工具补一个 `;\n`；自带结尾 `;` 的形态（Gauss/达梦 `GET_DDL` 的表与 PL/SQL、pg 的目录重建表）按 `hasTerminator` 回报，不再追加，避免出现 `;;`。
 
 `information_schema` 被刻意排除：`TRIGGERS.ACTION_STATEMENT` 只有函数体没有触发器头，`ROUTINES.ROUTINE_DEFINITION` 丢参数列表与 `RETURNS`，`VIEWS.VIEW_DEFINITION` 是解析后的规范化文本——都不足以重建对象。
 
@@ -602,7 +605,7 @@ imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 
 | 命令 / 选项 | 拒绝理由 |
 |-------------|----------|
-| `show`（六个 kind 全部） | PostgreSQL 没有 `SHOW CREATE` 语句族，且 imex 不重放 DDL，取定义请用 `pg_dump` |
+| `show evt` | PostgreSQL 没有事件调度器，没有可打印的事件定义；定时作业在 `cron` 或 `pgAgent` 里 |
 | `list evt` | PostgreSQL 没有事件调度器，定时作业在 `cron` 或 `pgAgent` 里 |
 | `export --no-hex-blob` | `bytea` 走文本协议时裸 NUL 报 `SQLSTATE 22021`，pg 侧恒用 `0x` 十六进制，关不掉 |
 
@@ -632,7 +635,9 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 
 **能用的**：`export -f del|parquet`（单线程，任意 `--query`，DEL 布局修饰项照常生效）、`import -f del|parquet` 的 `--mode insert`（出厂默认值）与 `--mode replace`、`list` 的四个对象（`databases`、`tables`、`columns`、`indexes`，`tables` 的 `--type base|view|all` 可用）。`list` 四个对象的输出列名与 MySQL 侧逐列相同，解析表头的下游脚本不必为引擎分叉。导入侧的 `--threads` 不在拒绝之列——多 worker 各自攒批发的是同一句方言 INSERT，与引擎无关；被拒的是导出侧的并行，它的分片语句靠 `MOD()` 与 `LIMIT … OFFSET`。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
 
-`-D` 在达梦上是**模式名**（达梦是「一个角色一个模式」的结构）：它既写进驱动的 `schema` 参数，也是目录查询过滤的 `OWNER`，用 `UPPER(OWNER) = UPPER(?)` 匹配，所以小写给也行。不给 `-D` 时默认排除 `SYS`、`SYSTEM`、`OUTLN`、`SYSMAN`、`DBSNMP` 五个系统模式，`--all` 取消排除。`-u` 不能为空，为空在建连之前退出 `2`（`--user is required for --engine dm`）。标识符用双引号包裹、内部双引号翻倍（`a"b` → `"a""b"`）；Oracle 模式把未加引号的名字折成大写，要保住原名大小写唯有加引号这一条路。
+`list databases` 回答**库**这一层：达梦一个实例只有一个库，所以它读 `V$DATABASE`、只回一行（本机是 `DAMENG`）；`-D` 在这条命令上过滤库名，并且不写进 DSN——库名不是模式，写进去会在登录时被当成模式名拒掉（`Error -2103`）。**模式**是另一层，用 `list schemas`（别名 `sch`）看：`SELECT DISTINCT OBJECT_NAME FROM ALL_OBJECTS WHERE OBJECT_TYPE = 'SCH'`，不带 `--all` 回 `DMPROBE`、`VPROBE` 两行，`--all` 回全部 7 个（`CTISYS`、`DMPROBE`、`SYS`、`SYSAUDITOR`、`SYSDBA`、`SYSSSO`、`VPROBE`）。选 `ALL_OBJECTS` 而不是 `DBA_USERS`，是因为它不丢 `CTISYS`（内置全文检索模式、无登录账号但 `-D CTISYS` 可用）；也没用 `V$DATABASE`，因为库名不是模式名。它同样不需要 DBA 权限——只持 `RESOURCE` 的普通账号也读到 7 行，而 `SYS.SYSOBJECTS` 对它会报 `No select privilege`。`show sch` 取 `DBMS_METADATA.GET_DDL('USER',…)`：达梦的模式与账号是同一个对象，`GET_DDL('SCHEMA',…)` 报 `-20001 invalid object type`，所以输出是 `CREATE USER … IDENTIFIED BY <PASSWORD>`——口令是服务端元数据层自己的占位符，不能直接重放；`CTISYS` 这类没有账号的内置模式会报 `-20008 object is not found`。
+
+`-D` 在达梦上对表、列、索引是**模式名**（达梦是「一个角色一个模式」的结构）：它既写进驱动的 `schema` 参数，也是目录查询过滤的 `OWNER`，用 `UPPER(OWNER) = UPPER(?)` 匹配，所以小写给也行；`list schemas` 上它过滤 `OBJECT_NAME`、`list databases` 上过滤库名 `NAME`，这两条命令都不把 `-D` 写进 DSN（不存在的名字回 0 行，而不是登录失败）。不给 `-D` 时 `list schemas`/`list tables` 默认排除服务端自带的系统模式 `SYS`、`SYSDBA`、`SYSSSO`、`SYSAUDITOR`、`CTISYS`（实测名单：前四个在 `DBA_USERS` 里，`CTISYS` 是全文检索用的内置模式、无登录账号但持有 `SYSCONTEXTINDEXES`），`--all` 取消排除。`-u` 不能为空，为空在建连之前退出 `2`（`--user is required for --engine dm`）。标识符用双引号包裹、内部双引号翻倍（`a"b` → `"a""b"`）；Oracle 模式把未加引号的名字折成大写，要保住原名大小写唯有加引号这一条路。
 
 **连接超时（156 轮修复）**：达梦驱动 `gitee.com/chunanyong/dm` v1.8.23 在建连之后**不设任何 socket 超时**，且其单机连接路径把调用方 context 丢成 `context.Background()`，所以服务端「TCP 接了但不回应」（容器休眠、服务僵死、半开防火墙）时旧版会**永久挂起**，日志停在 `list config` 之后、没有任何输出。现在 `--connect-timeout`（默认 5s）真正约束 TCP 拨号与登录握手，`--socket-read-timeout`／`--socket-write-timeout`（默认 5m）约束握手之后的每次读写，`list`／`show`／`exec` 的语句另有 context deadline 兜底。冻结 DM8 容器实测：旧 `v0.31.0` 12 秒外层强杀仍卡住，修复后 **4.10 秒**退 1 并报 `i/o timeout`／`context deadline exceeded`，恢复容器后 `list dbs` 秒回 5 行。想更快报错就调小这两个时长（如 `--connect-timeout 3s --socket-read-timeout 10s`）。注意 `export`／`import` 的数据读写阶段仍是裸查询，只有建连与 ping 受这层保护。
 
@@ -640,7 +645,7 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 
 | 命令 / 选项 | 拒绝理由 |
 |-------------|----------|
-| `show`（六个 kind 全部） | 定义靠 `SHOW CREATE` 语句族取，达梦 Oracle 模式不从同一份目录给这些东西，且 imex 不重放 DDL；请用你自己的 DDL |
+| `show evt` | DM8 Oracle 模式没有 MySQL 式的事件调度器，没有可打印的事件定义；定时任务在 DM 的 job 包里 |
 | `list` 的 `views`/`triggers`/`routines`/`events` | 这四个对象没对达梦 Oracle 模式目录测过，给不出与 MySQL 同形的列。注意 `list tables --type view` 可用——被拒的是列不齐的那个对象，不是 `DBA_VIEWS` 那张表 |
 | `export/import -f sql` | SQL 写出器发的是 MySQL 反引号与 MySQL 转义文本，达梦读不进去；SQL 解析器同样走 MySQL 语句语法 |
 | `export --threads > 1` | 并行导出的分片没对达梦测过，用 `--threads 1` |
@@ -1089,6 +1094,21 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
 > 以下各节按版本记录每轮改动的摘要。同一批变更的完整设计理由与实测取证在 `docs/requirements.md` 十四节的编号变更记录，两处按轮次对齐，**编号变更记录为权威源**；本节只写“改了什么”，取值以当轮实测为准。
+
+## 修复记录（v0.34.0）
+
+本轮把 160/162 两轮的工作随 `v0.34.0` 发布：一是达梦的「库／模式」分层补齐，二是达梦默认作用域名单换成实测值。
+
+| 变更 | 旧行为 | 新行为 |
+|------|--------|--------|
+| `list schemas`（`sch`） | 不存在 | 新增；MySQL 读 `SCHEMATA`、PG 读 `pg_namespace`、DM 读 `ALL_OBJECTS WHERE OBJECT_TYPE='SCH'`，单列 `schema` |
+| `list databases` | 达梦上列模式（`ALL_OBJECTS`，7 行） | 回到**库**层：达梦读 `V$DATABASE`（1 行 `DAMENG`）、PG 读 `pg_database` |
+| `show sch`／`show schema` | 不存在 | 新增；MySQL `SHOW CREATE DATABASE`、PG 重建 `CREATE SCHEMA … AUTHORIZATION …;`、DM `GET_DDL('USER',…)`，唯一不需要 `-D` 的 kind |
+| 达梦默认排除名单 | `SYS`、`SYSTEM`、`OUTLN`、`SYSMAN`、`DBSNMP`（Oracle 名，DM8 上四个不存在，过滤空转） | `SYS`、`SYSDBA`、`SYSSSO`、`SYSAUDITOR`、`CTISYS` |
+
+**真库验证**（DM8 `dm8_20241022_rev244896`／MySQL 8.0／PG 16）：DM `list dbs` **1** 行、`-D DAMENG` 1 行、`-D NOEXIST` **0** 行；`list sch` **2** 行（`DMPROBE`、`VPROBE`）、`--all` **7** 行、`-D CTISYS` 1 行；`show sch VPROBE` 出 `CREATE USER "VPROBE" …;`、`show sch CTISYS` 退 1（`-20008`）。`list tables` 无 `-D` 由 20 行含系统表降到 **7** 行全用户表。MySQL `dbs`／`schemas` 各 5 行；PG `sch` 1 行 `public`、`--all` 4 行。`gofmt` 0／`vet` 净／`go test ./...` 11 包全绿、`imex version` 报 **0.34.0**。
+
+完整设计理由与逐条实测见 `docs/requirements.md` 十四节变更记录 **160**（作用域名单）与 **162**（库／模式分层），发版记账为 **163**。
 
 ## 修复记录（v0.33.0）
 

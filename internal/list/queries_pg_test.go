@@ -534,3 +534,58 @@ func setupFixtures(t *testing.T, db *sql.DB) {
 		}
 	}
 }
+
+// TestPGSchemas pins `list schemas` on PostgreSQL: pg_namespace is the second
+// namespace level, the three schemas the server reserves are hidden unless --all,
+// and -D cannot filter a schema name -- it names the database in the DSN, which
+// is what decides whose schemas are read. A schema name travels as a $1 literal
+// for --pattern only.
+func TestPGSchemas(t *testing.T) {
+	cfg := pgListCfg(ObjectSchemas)
+	query, args, columns, err := buildPGQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "FROM pg_catalog.pg_namespace") {
+		t.Fatalf("schemas must read pg_namespace: %s", query)
+	}
+	if !strings.Contains(query, "nspname NOT IN ('pg_catalog','information_schema','pg_toast')") {
+		t.Fatalf("the default scope must hide the reserved schemas: %s", query)
+	}
+	if len(args) != 0 {
+		t.Fatalf("an unscoped list must bind nothing, got %v", args)
+	}
+	if strings.Join(columns, ",") != "schema" {
+		t.Fatalf("columns = %v, want [schema]", columns)
+	}
+
+	cfg.All = true
+	query, _, _, err = buildPGQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(query, "NOT IN") {
+		t.Fatalf("--all must lift the exclusion: %s", query)
+	}
+
+	// -D is the database (the DSN), so it must not turn into a schema filter.
+	cfg = pgListCfg(ObjectSchemas)
+	cfg.Database = "appdb"
+	query, args, _, err = buildPGQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(query, "appdb") || len(args) != 0 {
+		t.Fatalf("-D must not filter the schema list: %s %v", query, args)
+	}
+
+	cfg = pgListCfg(ObjectSchemas)
+	cfg.Pattern = "app%"
+	query, args, _, err = buildPGQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "n.nspname LIKE $1 ESCAPE '\\'") || len(args) != 1 || args[0] != "app%" {
+		t.Fatalf("--pattern must bind on nspname: %s %v", query, args)
+	}
+}

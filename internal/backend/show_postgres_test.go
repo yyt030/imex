@@ -20,6 +20,7 @@ func TestPostgresShowDefinitions(t *testing.T) {
 		wantHasTerm   bool
 		wantSubstring string
 	}{
+		{"schema", "schemadef", true, "CREATE SCHEMA"},
 		{"table", "tabledef", true, "CREATE TABLE"},
 		{"view", "viewdef", false, "pg_get_viewdef"},
 		{"trigger", "trigdef", false, "pg_get_triggerdef"},
@@ -41,9 +42,13 @@ func TestPostgresShowDefinitions(t *testing.T) {
 		if !strings.Contains(query, c.wantSubstring) {
 			t.Errorf("pg ShowDefinition(%q) query = %q, want it to contain %q", c.object, query, c.wantSubstring)
 		}
-		// The schema and the object must reach the literal, quoted.
-		if !strings.Contains(query, "'myschema'") || !strings.Contains(query, "'myobj'") {
-			t.Errorf("pg ShowDefinition(%q) query = %q, want the schema and name literals", c.object, query)
+		// The schema and the object must reach the literal, quoted. A schema is
+		// its own object: it has no qualifier above it, so only the name is bound.
+		if !strings.Contains(query, "'myobj'") {
+			t.Errorf("pg ShowDefinition(%q) query = %q, want the name literal", c.object, query)
+		}
+		if c.object != "schema" && !strings.Contains(query, "'myschema'") {
+			t.Errorf("pg ShowDefinition(%q) query = %q, want the schema literal", c.object, query)
 		}
 	}
 

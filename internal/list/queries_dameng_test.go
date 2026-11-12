@@ -127,7 +127,7 @@ func TestDMRefusesUnmeasuredObjects(t *testing.T) {
 	for _, object := range []string{ObjectViews, ObjectTriggers, ObjectRoutines, ObjectEvents} {
 		cfg := dmListCfg(object)
 		_, _, _, err := buildDMQuery(cfg)
-		want := "list " + object + " is not supported with --engine dm: this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, tables, columns and indexes"
+		want := "list " + object + " is not supported with --engine dm: this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, schemas, tables, columns and indexes"
 		if err == nil || err.Error() != want {
 			t.Errorf("list %s refusal = %v, want %q", object, err, want)
 		}
@@ -161,6 +161,158 @@ func TestDMInvalidType(t *testing.T) {
 	_, _, _, err := buildDMQuery(cfg)
 	if err == nil || !strings.Contains(err.Error(), "invalid --type") {
 		t.Errorf("bad table type should be rejected, got %v", err)
+	}
+}
+
+// TestDMDatabasesReadTheDatabaseLayer pins `list databases` to DM's database
+// layer: one instance owns one database, so V$DATABASE returns the single row and
+// the value is filtered there. A schema name must not be the answer here -- the
+// server would reject it as a schema at login (Error -2103), and schemas have
+// their own object (TestDMSchemasListTheSchemaLayer).
+func TestDMDatabasesReadTheDatabaseLayer(t *testing.T) {
+	cfg := dmListCfg(ObjectDatabases)
+	query, args, headers, err := buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "FROM V$DATABASE") {
+		t.Fatalf("databases must read V$DATABASE: %s", query)
+	}
+	for _, wrong := range []string{"ALL_OBJECTS", "DBA_USERS"} {
+		if strings.Contains(query, wrong) {
+			t.Fatalf("%s is the wrong source for the database list: %s", wrong, query)
+		}
+	}
+	if len(args) != 0 {
+		t.Fatalf("an unscoped list must bind nothing, got %v", args)
+	}
+	if strings.Join(headers, ",") != "database,charset,collation" {
+		t.Fatalf("headers = %v", headers)
+	}
+
+	// --database filters the database name; cmd keeps it out of the DSN because
+	// the server would read it as a schema and fail login.
+	cfg = dmListCfg(ObjectDatabases)
+	cfg.Database = "dameng"
+	query, args, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "UPPER(NAME) = UPPER(?)") {
+		t.Fatalf("--database must filter the database name: %s", query)
+	}
+	if len(args) != 1 || args[0] != "dameng" {
+		t.Fatalf("args = %v, want [dameng]", args)
+	}
+
+	cfg = dmListCfg(ObjectDatabases)
+	cfg.Pattern = "DA%"
+	query, args, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "NAME LIKE ? ESCAPE") || len(args) != 1 || args[0] != "DA%" {
+		t.Fatalf("--pattern must bind on the database name: %s %v", query, args)
+	}
+}
+
+// TestDMSchemasListTheSchemaLayer pins `list schemas`: ALL_OBJECTS with
+// OBJECT_TYPE='SCH' is the direct way to read DM's schemas, and it stays readable
+// for ordinary accounts (SYS.SYSOBJECTS answers "No select privilege", -5504).
+// Without --all the server's own schemas are hidden, the same default scope
+// `list tables` applies; --all opens it; --database narrows to one name and, as
+// on the other objects, is a schema name.
+func TestDMSchemasListTheSchemaLayer(t *testing.T) {
+	cfg := dmListCfg(ObjectSchemas)
+	query, args, headers, err := buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "FROM ALL_OBJECTS") || !strings.Contains(query, "OBJECT_TYPE = 'SCH'") {
+		t.Fatalf("schemas must read ALL_OBJECTS: %s", query)
+	}
+	if !strings.Contains(query, "DISTINCT OBJECT_NAME") {
+		t.Fatalf("one row per schema, not per object: %s", query)
+	}
+	if !strings.Contains(query, "OBJECT_NAME NOT IN (") {
+		t.Fatalf("the default scope must hide system schemas: %s", query)
+	}
+	for _, wrong := range []string{"V$DATABASE", "DBA_USERS", "SYSOBJECTS"} {
+		if strings.Contains(query, wrong) {
+			t.Fatalf("%s is the wrong source for the schema list: %s", wrong, query)
+		}
+	}
+	if len(args) != 0 {
+		t.Fatalf("an unscoped list must bind nothing, got %v", args)
+	}
+	if strings.Join(headers, ",") != "schema" {
+		t.Fatalf("headers = %v, want [schema]", headers)
+	}
+
+	cfg = dmListCfg(ObjectSchemas)
+	cfg.All = true
+	query, _, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(query, "NOT IN (") {
+		t.Fatalf("--all must lift the exclusion: %s", query)
+	}
+
+	cfg = dmListCfg(ObjectSchemas)
+	cfg.Database = "dmprobe"
+	query, args, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "UPPER(OBJECT_NAME) = UPPER(?)") {
+		t.Fatalf("--database must filter the schema name: %s", query)
+	}
+	if len(args) != 1 || args[0] != "dmprobe" {
+		t.Fatalf("args = %v, want [dmprobe]", args)
+	}
+
+	cfg = dmListCfg(ObjectSchemas)
+	cfg.Pattern = "DM%"
+	query, args, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "OBJECT_NAME LIKE ? ESCAPE") || len(args) != 1 || args[0] != "DM%" {
+		t.Fatalf("--pattern must bind on the schema name: %s %v", query, args)
+	}
+
+	// The object lists keep their own meaning of --database (the DSN schema and
+	// the OWNER filter); separating the two layers must not touch them.
+	cfg = dmListCfg(ObjectTables)
+	cfg.Database = "dmprobe"
+	query, _, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "UPPER(OWNER) = UPPER(?)") {
+		t.Fatalf("tables must still scope by schema: %s", query)
+	}
+}
+
+// TestDMDefaultExclusionListIsMeasured pins the default scope to the schemas
+// DM8 actually installs. The first version of this list was copied from Oracle
+// (SYSTEM/OUTLN/SYSMAN/DBSNMP); none of those names exist on DM8, so the filter
+// matched nothing and `list tables` without --database returned 12 system
+// tables out of 20. Every name below was read from DBA_USERS on
+// dm8_20241022_rev244896, except CTISYS, which has no account but owns
+// SYSCONTEXTINDEXES. If a server upgrade adds accounts, this is the test that
+// should fail first.
+func TestDMDefaultExclusionListIsMeasured(t *testing.T) {
+	got := strings.Split(strings.Trim(dmSystemSchemas, "'"), "','")
+	want := []string{"SYS", "SYSDBA", "SYSSSO", "SYSAUDITOR", "CTISYS"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("dmSystemSchemas = %v, want %v", got, want)
+	}
+	for _, oracleOnly := range []string{"SYSTEM", "OUTLN", "SYSMAN", "DBSNMP"} {
+		if strings.Contains(dmSystemSchemas, "'"+oracleOnly+"'") {
+			t.Errorf("%s is an Oracle account and does not exist on DM8", oracleOnly)
+		}
 	}
 }
 

@@ -15,6 +15,9 @@ var showDefinitions = map[string]struct {
 	Statement string
 	Column    string
 }{
+	// A MySQL schema is a database, and SHOW CREATE DATABASE is the only
+	// statement that prints a definition for that layer.
+	"schema":    {"SHOW CREATE DATABASE", "Create Database"},
 	"table":     {"SHOW CREATE TABLE", "Create Table"},
 	"view":      {"SHOW CREATE VIEW", "Create View"},
 	"trigger":   {"SHOW CREATE TRIGGER", "SQL Original Statement"},
@@ -35,6 +38,12 @@ func (m mysqlBackend) ShowDefinition(object, schema, name string) (string, strin
 	d, ok := showDefinitions[object]
 	if !ok {
 		return "", "", false, false
+	}
+	if object == "schema" {
+		// One namespace: a schema IS a database, so the whole reference is the
+		// schema and a qualifier would be a second database name the server
+		// rejects. SCHEMATA is per-database, so `schema` cannot appear here.
+		return d.Statement + " " + m.QuoteIdent(name), d.Column, false, true
 	}
 	ref := m.QuoteIdent(name)
 	if schema != "" {

@@ -15,7 +15,7 @@ func listCfg(object string) *config.ListConfig {
 }
 
 func TestObjectsCoverTheCommandTree(t *testing.T) {
-	want := []string{"databases", "tables", "views", "columns", "indexes", "triggers", "routines", "events"}
+	want := []string{"databases", "schemas", "tables", "views", "columns", "indexes", "triggers", "routines", "events"}
 	got := Objects()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("Objects() = %v, want %v", got, want)
@@ -326,5 +326,48 @@ func TestBuildQueryNormalisesTheEngineSpelling(t *testing.T) {
 		if !strings.Contains(query, "FROM information_schema.TABLES") {
 			t.Errorf("engine %q did not build the MySQL statement: %s", engine, query)
 		}
+	}
+}
+
+// TestBuildQuerySchemas pins `list schemas` on MySQL: one namespace, so the
+// catalog is information_schema.SCHEMATA -- the table SHOW DATABASES reads --
+// and the object prints one column. --all is a no-op here because the list never
+// hides the server's own schemas, matching `list databases`.
+func TestBuildQuerySchemas(t *testing.T) {
+	cfg := listCfg(ObjectSchemas)
+	query, args, columns, err := BuildQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "FROM information_schema.SCHEMATA") || !strings.Contains(query, "ORDER BY SCHEMA_NAME") {
+		t.Errorf("unexpected query: %s", query)
+	}
+	if strings.Contains(query, "NOT IN") {
+		t.Errorf("schemas must not hide system schemas on MySQL: %s", query)
+	}
+	if len(args) != 0 {
+		t.Errorf("no filter should bind no args, got %v", args)
+	}
+	if strings.Join(columns, ",") != "schema" {
+		t.Errorf("columns = %v, want [schema]", columns)
+	}
+
+	cfg.Database = "appdb"
+	query, args, _, err = BuildQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "SCHEMA_NAME = ?") || len(args) != 1 || args[0] != "appdb" {
+		t.Errorf("--database must bind the schema name: %s %v", query, args)
+	}
+
+	cfg = listCfg(ObjectSchemas)
+	cfg.Pattern = "app%"
+	query, args, _, err = BuildQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "SCHEMA_NAME LIKE ? ESCAPE") || len(args) != 1 || args[0] != "app%" {
+		t.Errorf("--pattern must bind on SCHEMA_NAME: %s %v", query, args)
 	}
 }

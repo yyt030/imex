@@ -22,16 +22,18 @@ func newListCmd() *cobra.Command {
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List databases and schema objects",
-		Long: `List databases, tables, views, columns, indexes, triggers, routines or events.
+		Long: `List databases, schemas, tables, views, columns, indexes, triggers, routines or events.
 
 The result goes to --output when it names a file, and to stdout otherwise.
 --messages only takes the log and the errors; it never receives the result:
   imex list tables -D mydb
   imex list tables -D mydb -o /backup/tables.txt
 
-Without --database, object lists cover every non-system schema and include a
-database column; --all adds information_schema, mysql, performance_schema and
-sys. columns and indexes need both --database and --table.`,
+list databases names the databases the server holds (one row on Dameng, where an
+instance owns a single database); list schemas names the schemas inside them.
+Without --database, schema-scoped lists cover every non-system schema and include
+a database column; --all adds the system schemas instead of hiding them. columns
+and indexes need both --database and --table.`,
 		Args:         cobra.ArbitraryArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -44,6 +46,9 @@ sys. columns and indexes need both --database and --table.`,
 
 	listCmd.AddCommand(
 		newListObjectCmd(list.ObjectDatabases, "List databases", nil),
+		newListObjectCmd(list.ObjectSchemas, "List schemas", func(cfg *config.ListConfig, f *pflag.FlagSet) {
+			f.BoolVar(&cfg.All, "all", false, "Include system schemas when --database is not given")
+		}),
 		newListObjectCmd(list.ObjectTables, "List tables", func(cfg *config.ListConfig, f *pflag.FlagSet) {
 			f.StringVar(&cfg.Type, "type", "base", "Object type: base, view or all")
 			f.BoolVar(&cfg.All, "all", false, "Include system schemas when --database is not given")
@@ -155,7 +160,8 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 		"output", cfg.Output,
 	)
 
-	db, err := openDatabase(e, &cfg.Config)
+	connCfg := connConfigFor(e, object, cfg)
+	db, err := openDatabase(e, &connCfg)
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to database")
 	}
@@ -186,6 +192,23 @@ func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
 		return errors.Wrapf(err, "list %s failed", object)
 	}
 	return nil
+}
+
+// connConfigFor returns the connection options this run dials with.
+//
+// On DM, --database means a schema name on the object lists: it is written into
+// the DSN's schema parameter, and the server rejects an unknown schema during
+// login (Error -2103). The two namespace commands answer a different question --
+// "list databases" filters the single V$DATABASE row, "list schemas" filters the
+// schema list -- so on those two the value must stay out of the DSN; otherwise
+// "list databases -D DAMENG" or "list schemas -D nosuch" would fail at login for
+// a name that is valid to filter by (and would report 0 rows nowhere).
+func connConfigFor(e backend.Engine, object string, cfg *config.ListConfig) config.Config {
+	connCfg := cfg.Config
+	if e == backend.EngineDM && (object == list.ObjectDatabases || object == list.ObjectSchemas) {
+		connCfg.Database = ""
+	}
+	return connCfg
 }
 
 func validateListConfig(cfg *config.ListConfig) error {
@@ -231,7 +254,7 @@ func validateListConfig(cfg *config.ListConfig) error {
 		return err
 	}
 	switch cfg.Object {
-	case list.ObjectDatabases, list.ObjectViews, list.ObjectTriggers, list.ObjectEvents:
+	case list.ObjectDatabases, list.ObjectSchemas, list.ObjectViews, list.ObjectTriggers, list.ObjectEvents:
 		return nil
 	case list.ObjectTables:
 		switch cfg.Type {

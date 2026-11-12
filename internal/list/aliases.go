@@ -11,6 +11,7 @@ package list
 // TestObjectAliasesAreUnique.
 var objectAliases = map[string][]string{
 	ObjectDatabases: {"dbs"},
+	ObjectSchemas:   {"sch"},
 	ObjectTables:    {"tab"},
 	ObjectViews:     {"vws"},
 	ObjectColumns:   {"col"},

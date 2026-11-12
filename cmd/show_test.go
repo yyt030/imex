@@ -162,13 +162,13 @@ func TestShowArgumentCountIsEnforced(t *testing.T) {
 
 func TestValidateShowConfigAcceptsBothNameForms(t *testing.T) {
 	cfg := validShowCfg()
-	if err := validateShowConfig(cfg); err != nil {
+	if err := validateShowConfig(cfg, show.Kind{Short: "tab", Full: "table"}); err != nil {
 		t.Fatalf("unqualified: %v", err)
 	}
 	// A qualified name makes --database redundant.
 	cfg.Database = ""
 	cfg.Schema = "other"
-	if err := validateShowConfig(cfg); err != nil {
+	if err := validateShowConfig(cfg, show.Kind{Short: "tab", Full: "table"}); err != nil {
 		t.Fatalf("qualified: %v", err)
 	}
 }
@@ -176,7 +176,7 @@ func TestValidateShowConfigAcceptsBothNameForms(t *testing.T) {
 func TestValidateShowConfigRejectsMissingScope(t *testing.T) {
 	cfg := validShowCfg()
 	cfg.Database = ""
-	err := validateShowConfig(cfg)
+	err := validateShowConfig(cfg, show.Kind{Short: "tab", Full: "table"})
 	if err == nil || !strings.Contains(err.Error(), "--database is required for show") {
 		t.Fatalf("got %v", err)
 	}
@@ -205,7 +205,7 @@ func TestValidateShowConfigRejectsBadValues(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := validShowCfg()
 			tc.edit(cfg)
-			err := validateShowConfig(cfg)
+			err := validateShowConfig(cfg, show.Kind{Short: "tab", Full: "table"})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want substring %q", err, tc.want)
 			}
@@ -223,7 +223,7 @@ func TestValidateShowConfigRefusesResultAndMessageSameFile(t *testing.T) {
 
 	cfg := validShowCfg()
 	cfg.Output = "/tmp/same.log"
-	err := validateShowConfig(cfg)
+	err := validateShowConfig(cfg, show.Kind{Short: "tab", Full: "table"})
 	if err == nil || !strings.Contains(err.Error(), "--output and --messages must name different files") {
 		t.Fatalf("got %v", err)
 	}
@@ -232,7 +232,7 @@ func TestValidateShowConfigRefusesResultAndMessageSameFile(t *testing.T) {
 	}
 
 	cfg.Output = "/tmp/other.log"
-	if err := validateShowConfig(cfg); err != nil {
+	if err := validateShowConfig(cfg, show.Kind{Short: "tab", Full: "table"}); err != nil {
 		t.Errorf("distinct files refused: %v", err)
 	}
 }
@@ -257,5 +257,24 @@ func TestShowHelpLinesStayWithinTheLimit(t *testing.T) {
 				t.Errorf("%v: line is %d bytes: %q", args, len(line), line)
 			}
 		}
+	}
+}
+
+// TestValidateShowConfigAcceptsSchemaWithoutDatabase pins the one kind that needs
+// no scope option: a schema is the name itself, so `imex show sch appdb` must
+// validate with no --database. The same config for a table is still refused,
+// which is what keeps the relaxation from leaking to the other kinds.
+func TestValidateShowConfigAcceptsSchemaWithoutDatabase(t *testing.T) {
+	cfg := validShowCfg()
+	cfg.Database = ""
+	cfg.Schema = ""
+	cfg.Object = "appdb"
+
+	if err := validateShowConfig(cfg, show.Kind{Short: "sch", Full: "schema"}); err != nil {
+		t.Fatalf("show schema without --database: %v", err)
+	}
+	err := validateShowConfig(cfg, show.Kind{Short: "tab", Full: "table"})
+	if err == nil || !strings.Contains(err.Error(), "--database is required for show") {
+		t.Fatalf("show table without scope = %v, want the --database refusal", err)
 	}
 }

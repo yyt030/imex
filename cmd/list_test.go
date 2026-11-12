@@ -5,8 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
+	"github.com/imex/internal/list"
 )
 
 func validListCfg(object string) *config.ListConfig {
@@ -110,7 +112,7 @@ func TestValidateListConfigRoutineType(t *testing.T) {
 
 func TestListCommandTree(t *testing.T) {
 	cmd := newListCmd()
-	want := []string{"databases", "tables", "views", "columns", "indexes", "triggers", "routines", "events"}
+	want := []string{"databases", "schemas", "tables", "views", "columns", "indexes", "triggers", "routines", "events"}
 	if len(cmd.Commands()) != len(want) {
 		t.Fatalf("subcommands = %d, want %d", len(cmd.Commands()), len(want))
 	}
@@ -125,6 +127,7 @@ func TestListCommandTree(t *testing.T) {
 func TestListCommandAliases(t *testing.T) {
 	want := map[string]string{
 		"dbs": "databases",
+		"sch": "schemas",
 		"tab": "tables",
 		"vws": "views",
 		"col": "columns",
@@ -213,5 +216,37 @@ func TestListUnknownObjectIsUsageError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `unknown object "tabel"`) {
 		t.Errorf("error = %v", err)
+	}
+}
+
+// TestConnConfigForKeepsNamespaceNamesOutOfTheDMDsn covers the two DM commands
+// whose --database filters a catalogue row instead of selecting a schema. The
+// server reads the DSN's schema parameter at login, so a value that is fine to
+// filter by ("DAMENG" for the one database, a missing schema for `list schemas`
+// which should answer 0 rows) would otherwise fail the connection with -2103.
+// Every other object, and every other engine, keeps the value.
+func TestConnConfigForKeepsNamespaceNamesOutOfTheDMDsn(t *testing.T) {
+	cfg := validListCfg(list.ObjectDatabases)
+	cfg.Database = "DAMENG"
+
+	for _, object := range []string{list.ObjectDatabases, list.ObjectSchemas} {
+		if got := connConfigFor(backend.EngineDM, object, cfg); got.Database != "" {
+			t.Errorf("dm %s must not send --database to the DSN, got %q", object, got.Database)
+		}
+	}
+	if cfg.Database != "DAMENG" {
+		t.Fatalf("the filter value was consumed: %q", cfg.Database)
+	}
+	for _, object := range []string{list.ObjectTables, list.ObjectColumns, list.ObjectIndexes} {
+		if got := connConfigFor(backend.EngineDM, object, cfg); got.Database != "DAMENG" {
+			t.Errorf("dm %s must keep --database in the DSN, got %q", object, got.Database)
+		}
+	}
+	for _, e := range []backend.Engine{backend.EngineMySQL, backend.EnginePG} {
+		for _, object := range []string{list.ObjectDatabases, list.ObjectSchemas} {
+			if got := connConfigFor(e, object, cfg); got.Database != "DAMENG" {
+				t.Errorf("%s %s must keep --database in the DSN, got %q", e, object, got.Database)
+			}
+		}
 	}
 }

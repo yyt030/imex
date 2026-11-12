@@ -73,3 +73,40 @@ func TestDamengShowDefinitions(t *testing.T) {
 		t.Errorf("dm ShowDefinition: crafted name query = %q, want the doubled-quote escape", query)
 	}
 }
+
+// TestDamengShowSchema pins the schema kind's own route. DM8 has no
+// GET_DDL('SCHEMA',...) -- it answers -20001 "invalid object type" -- while an
+// Oracle-mode schema and its account are one object, so the definition is
+// GET_DDL('USER',...). The call takes two arguments only (a schema has no layer
+// above it), folds the name, and leaves the text unterminated for show to close.
+func TestDamengShowSchema(t *testing.T) {
+	dm := Must(EngineDM)
+	query, column, hasTerm, ok := dm.ShowDefinition("schema", "ignored", "dmprobe")
+	if !ok {
+		t.Fatal("dm ShowDefinition(schema): not ok")
+	}
+	if column != "DDL" {
+		t.Errorf("column = %q, want DDL", column)
+	}
+	if hasTerm {
+		t.Error("hasTerminator = true, want false: GET_DDL('USER') ends in a space")
+	}
+	if !strings.Contains(query, "GET_DDL('USER','DMPROBE')") {
+		t.Errorf("query = %q, want GET_DDL('USER','DMPROBE')", query)
+	}
+	if strings.Contains(query, "GET_DDL('SCHEMA'") {
+		t.Errorf("query = %q: GET_DDL('SCHEMA') does not exist on DM8", query)
+	}
+	if strings.Contains(query, "'DMPROBE',") {
+		t.Errorf("query = %q, want no third argument", query)
+	}
+	if !strings.Contains(query, "FROM DUAL") {
+		t.Errorf("query = %q, want FROM DUAL", query)
+	}
+
+	// A crafted schema name stays inert inside the literal.
+	query, _, _, _ = dm.ShowDefinition("schema", "", "a'); DROP--")
+	if strings.Contains(query, "'A'); DROP") || !strings.Contains(query, "''") {
+		t.Errorf("crafted name escaped to %q, want the quote doubled", query)
+	}
+}

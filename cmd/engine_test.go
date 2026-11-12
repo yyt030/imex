@@ -242,7 +242,7 @@ func TestListAndShowRefusals(t *testing.T) {
 	cfg.Password = "pw"
 	cfg.Database = "pgprobe"
 	cfg.DefaultCharset = "nonsense"
-	err = validateShowConfig(cfg)
+	err = validateShowConfig(cfg, show.Kind{Short: "tab", Full: "table"})
 	if err == nil || !strings.HasPrefix(err.Error(), `invalid --default-charset "nonsense" with --engine pg`) {
 		t.Fatalf("show charset refusal = %v", err)
 	}
@@ -543,8 +543,8 @@ func TestEngineHasNoEnvironmentVariable(t *testing.T) {
 	}
 }
 
-// TestEngineFlagFace pins the --engine flag on the sixteen help faces that carry
-// it: export, import, the eight `list` objects and the six `show` kinds. The
+// TestEngineFlagFace pins the --engine flag on the eighteen help faces that carry
+// it: export, import, the nine `list` objects and the seven `show` kinds. The
 // default must stay mysql, so an existing run's behaviour never depends on this
 // feature being there, and the usage text is what docs/cli-oracle.txt quotes.
 func TestEngineFlagFace(t *testing.T) {
@@ -558,8 +558,8 @@ func TestEngineFlagFace(t *testing.T) {
 	for _, sub := range newShowCmd().Commands() {
 		faces["show "+sub.Use] = sub
 	}
-	if len(faces) != 16 {
-		t.Fatalf("engine flag faces = %d, want 16: %v", len(faces), faces)
+	if len(faces) != 18 {
+		t.Fatalf("engine flag faces = %d, want 18: %v", len(faces), faces)
 	}
 	for name, cmd := range faces {
 		f := cmd.Flags().Lookup("engine")
@@ -592,9 +592,9 @@ func TestDMSurfaceRefusals(t *testing.T) {
 		return cfg
 	}
 
-	const dmListReason = "this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, tables, columns and indexes"
+	const dmListReason = "this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, schemas, tables, columns and indexes"
 	served := map[string]bool{
-		"databases": true, "tables": true, "columns": true, "indexes": true,
+		"databases": true, "schemas": true, "tables": true, "columns": true, "indexes": true,
 	}
 	for _, object := range list.Objects() {
 		cfg := dmList(object)

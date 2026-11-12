@@ -69,6 +69,8 @@ func buildMySQLQuery(cfg *config.ListConfig) (string, []any, []string, error) {
 	switch cfg.Object {
 	case ObjectDatabases:
 		return buildDatabases(cfg)
+	case ObjectSchemas:
+		return buildSchemas(cfg)
 	case ObjectTables:
 		return buildTables(cfg)
 	case ObjectViews:
@@ -103,6 +105,26 @@ func buildDatabases(cfg *config.ListConfig) (string, []any, []string, error) {
 		" FROM information_schema.SCHEMATA" + where +
 		" ORDER BY SCHEMA_NAME"
 	return query, args, []string{"database", "charset", "collation"}, nil
+}
+
+func buildSchemas(cfg *config.ListConfig) (string, []any, []string, error) {
+	// MySQL has one namespace: a schema IS a database, and information_schema
+	// .SCHEMATA is what `SHOW DATABASES` reads. The statement therefore matches
+	// buildDatabases except for the columns it prints -- the object exists so
+	// that `list schemas` means the same thing on every engine, not because
+	// MySQL keeps a second layer. Like `databases`, it does not hide the
+	// server's own schemas by default; --all is a no-op here and the flag is
+	// accepted so one command line works across engines.
+	var conds []condition
+	if cfg.Database != "" {
+		conds = append(conds, condition{clause: "SCHEMA_NAME = ?", args: []any{cfg.Database}})
+	}
+	conds = append(conds, patternCondition("SCHEMA_NAME", cfg.Pattern)...)
+
+	where, args := whereClause(conds)
+	query := "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA" + where +
+		" ORDER BY SCHEMA_NAME"
+	return query, args, []string{"schema"}, nil
 }
 
 func buildTables(cfg *config.ListConfig) (string, []any, []string, error) {

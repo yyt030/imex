@@ -10,13 +10,13 @@ import (
 
 func TestKindRegistryIsConsistent(t *testing.T) {
 	kinds := Kinds()
-	if len(kinds) != 6 {
-		t.Fatalf("kinds = %d, want 6", len(kinds))
+	if len(kinds) != 7 {
+		t.Fatalf("kinds = %d, want 7", len(kinds))
 	}
 
 	be := backend.Must(backend.EngineMySQL)
-	wantShort := []string{"tab", "vws", "trg", "evt", "prc", "fcn"}
-	wantFull := []string{"table", "view", "trigger", "event", "procedure", "function"}
+	wantShort := []string{"sch", "tab", "vws", "trg", "evt", "prc", "fcn"}
+	wantFull := []string{"schema", "table", "view", "trigger", "event", "procedure", "function"}
 	shorts := map[string]bool{}
 	fulls := map[string]bool{}
 	for i, k := range kinds {
@@ -59,7 +59,7 @@ func TestKindRegistryIsConsistent(t *testing.T) {
 func TestKindsReturnsACopy(t *testing.T) {
 	first := Kinds()
 	first[0].Short = "mutated"
-	if got := Kinds()[0].Short; got != "tab" {
+	if got := Kinds()[0].Short; got != "sch" {
 		t.Errorf("registry changed through the returned slice: %q", got)
 	}
 }

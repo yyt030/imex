@@ -21,17 +21,21 @@ func newShowCmd() *cobra.Command {
 	showCmd := &cobra.Command{
 		Use:   "show",
 		Short: "Show the definition of one object",
-		Long: `Show the CREATE statement the server holds for one table, view, trigger,
-event, procedure or function.
+		Long: `Show the CREATE statement the server holds for one schema, table, view,
+trigger, event, procedure or function.
 
 The definition goes to --output when it names a file, and to stdout otherwise.
 --messages only takes the log and the errors; it never receives the definition.
 
   imex show tab users -D mydb
   imex show vws v_orders -D mydb -o /backup/v_orders.sql
+  imex show sch appdb
 
 A name may carry its own schema qualifier (mydb.users); otherwise --database
-supplies it, so one of the two is required. Batches come from ` + "`imex list`" + `.`,
+supplies it, so one of the two is required. A schema name stands alone and takes
+no qualifier: on Dameng the definition is the CREATE USER text of the account the
+schema belongs to, because an Oracle-mode schema and its user are one object.
+Batches come from ` + "`imex list`" + `.`,
 		Args:         cobra.ArbitraryArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -61,6 +65,11 @@ func newShowKindCmd(kind show.Kind) *cobra.Command {
 		},
 	}
 	registerShowFlags(cmd, cfg)
+	if kind.SingleName() {
+		// A schema is the whole reference, so --database is not the object's
+		// scope here; saying it is "required unless qualified" would be wrong.
+		cmd.Flags().Lookup("database").Usage = "Optional for schema: the name is the schema (also IMEX_DATABASE)"
+	}
 	return cmd
 }
 
@@ -91,9 +100,15 @@ func registerShowFlags(cmd *cobra.Command, cfg *config.ShowConfig) {
 
 func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref string) error {
 	cfg.Ref = ref
-	cfg.Schema, cfg.Object = show.SplitName(ref)
-	if cfg.Object == "" {
-		return common.Usagef("invalid object name %q: the part after the schema qualifier is empty", ref)
+	if kind.SingleName() {
+		// A schema is one whole name: nothing qualifies it, and a quoted name may
+		// contain a dot, so the reference is kept intact instead of being split.
+		cfg.Schema, cfg.Object = "", ref
+	} else {
+		cfg.Schema, cfg.Object = show.SplitName(ref)
+		if cfg.Object == "" {
+			return common.Usagef("invalid object name %q: the part after the schema qualifier is empty", ref)
+		}
 	}
 
 	// Same rule as export, import and list: an unset connection field may be
@@ -112,7 +127,7 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 		return err
 	}
 
-	if err := validateShowConfig(cfg); err != nil {
+	if err := validateShowConfig(cfg, kind); err != nil {
 		return err
 	}
 
@@ -163,7 +178,7 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 	return nil
 }
 
-func validateShowConfig(cfg *config.ShowConfig) error {
+func validateShowConfig(cfg *config.ShowConfig, kind show.Kind) error {
 	// Resolved here for the same reason list does it: runShow needs the engine to
 	// dial, the validator needs it to reject a charset PostgreSQL cannot name.
 	e, err := parseEngine(cfg.Engine)
@@ -200,7 +215,10 @@ func validateShowConfig(cfg *config.ShowConfig) error {
 	if err := validateLogLevel(string(cfg.LogLevel)); err != nil {
 		return err
 	}
-	if cfg.Schema == "" && cfg.Database == "" {
+	// A schema is the name itself, so it needs no --database and must not be
+	// rejected for lacking one; every other kind needs a schema qualifier from
+	// the name or from --database.
+	if !kind.SingleName() && cfg.Schema == "" && cfg.Database == "" {
 		return common.Usagef("--database is required for show unless the object name carries a schema qualifier")
 	}
 	return validateDistinctPaths("output", cfg.Output, true)

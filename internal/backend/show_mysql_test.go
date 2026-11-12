@@ -10,6 +10,7 @@ import "testing"
 func TestShowDefinitions(t *testing.T) {
 	mysql := Must(EngineMySQL)
 	want := map[string][2]string{
+		"schema":    {"SHOW CREATE DATABASE", "Create Database"},
 		"table":     {"SHOW CREATE TABLE", "Create Table"},
 		"view":      {"SHOW CREATE VIEW", "Create View"},
 		"trigger":   {"SHOW CREATE TRIGGER", "SQL Original Statement"},
@@ -36,7 +37,16 @@ func TestShowDefinitions(t *testing.T) {
 		}
 	}
 
+	// A schema IS a database in MySQL, and a qualifier would name a second
+	// database the server rejects: SHOW CREATE DATABASE takes one name.
+	query, _, _, ok := mysql.ShowDefinition("schema", "other", name)
+	if !ok || query != "SHOW CREATE DATABASE "+ref {
+		t.Errorf("mysql schema with a qualifier = %q, want %q", query, "SHOW CREATE DATABASE "+ref)
+	}
+
+	// "database" is not a kind: `show sch` is the spelling, so the registry must
+	// not grow a second entry that would print the same statement.
 	if _, _, _, ok := mysql.ShowDefinition("database", "", name); ok {
-		t.Error("mysql ShowDefinition(database): want not ok, there is no SHOW CREATE DATABASE in the registry")
+		t.Error("mysql ShowDefinition(database): want not ok, the kind is spelled schema")
 	}
 }

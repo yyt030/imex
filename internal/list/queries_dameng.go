@@ -9,10 +9,17 @@ import (
 )
 
 // dmSystemSchemas is the exclusion list used when the user did not name a
-// database. These are the schemas Oracle-mode DM reserves for its own
-// bookkeeping; the list is conservative and will be refined against a live
-// server.
-const dmSystemSchemas = "'SYS','SYSTEM','OUTLN','SYSMAN','DBSNMP'"
+// database. Oracle semantics: hide the schemas the server installs for its own
+// bookkeeping, the same idea as Oracle's SYS/SYSTEM/OUTLN exclusion. DM8 ships
+// its own set, so the names are measured rather than copied from Oracle -- on
+// dm8_20241022_rev244896 (dmsingle) DBA_USERS holds SYS, SYSDBA, SYSAUDITOR and
+// SYSSSO, and CTISYS is a schema without a login account (full-text index
+// internals: it owns SYSCONTEXTINDEXES, one row in DBA_TABLES). Two Oracle
+// shortcuts do not exist on this server: DBA_USERS has no ORACLE_MAINTAINED
+// column, and USER_ID does not separate accounts (ordinary users continue the
+// same sequence -- DMPROBE follows SYSSSO by 98), so an explicit list is the
+// only reliable test.
+const dmSystemSchemas = "'SYS','SYSDBA','SYSSSO','SYSAUDITOR','CTISYS'"
 
 // dmScopedToSchema restricts a query to --database, or to every non-system
 // schema when the option was not given.
@@ -50,6 +57,8 @@ func buildDMQuery(cfg *config.ListConfig) (string, []any, []string, error) {
 	switch cfg.Object {
 	case ObjectDatabases:
 		return buildDMDatabases(cfg)
+	case ObjectSchemas:
+		return buildDMSchemas(cfg)
 	case ObjectTables:
 		return buildDMTables(cfg)
 	case ObjectColumns:
@@ -60,20 +69,43 @@ func buildDMQuery(cfg *config.ListConfig) (string, []any, []string, error) {
 		// `imex list` refuses these objects before it dials, with the same words
 		// (backend.Refusals for CmdList). This branch is the library-level wall a
 		// hand-built config hits, so the two must not drift.
-		return "", nil, nil, errors.Errorf("list %s is not supported with --engine dm: this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, tables, columns and indexes", cfg.Object)
+		return "", nil, nil, errors.Errorf("list %s is not supported with --engine dm: this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, schemas, tables, columns and indexes", cfg.Object)
 	}
 }
 
+// buildDMDatabases answers the database layer, which on DM is a single row: an
+// instance owns exactly one database (V$DATABASE, DAMENG on this server). The
+// value is NOT a schema and must not reach the DSN -- the server rejects an
+// unknown schema during login ("Error -2103: invalid schema name"), so cmd
+// strips --database from the connection for this object and filters V$DATABASE
+// in SQL instead. Schemas are a separate object (buildDMSchemas).
 func buildDMDatabases(cfg *config.ListConfig) (string, []any, []string, error) {
 	var conds []condition
 	if cfg.Database != "" {
-		conds = append(conds, condition{clause: "UPPER(USERNAME) = UPPER(?)", args: []any{cfg.Database}})
+		conds = append(conds, condition{clause: "UPPER(NAME) = UPPER(?)", args: []any{cfg.Database}})
 	}
-	conds = append(conds, dmPatternCondition("USERNAME", cfg.Pattern)...)
+	conds = append(conds, dmPatternCondition("NAME", cfg.Pattern)...)
 
 	where, args := dmWhereClause(conds)
-	query := "SELECT USERNAME, '', '' FROM SYS.DBA_USERS" + where + " ORDER BY USERNAME"
+	query := "SELECT NAME, '', '' FROM V$DATABASE" + where + " ORDER BY NAME"
 	return query, args, []string{"database", "charset", "collation"}, nil
+}
+
+// buildDMSchemas lists DM's schemas -- the layer --database selects on the
+// object lists, where buildDamengDSN writes it into the DSN's schema parameter.
+// ALL_OBJECTS with OBJECT_TYPE='SCH' is the direct, Oracle-shaped way to read
+// them, and it needs no DBA rights: an ordinary account holding only RESOURCE
+// sees the same rows here, while SYS.SYSOBJECTS answers "No select privilege"
+// (-5504). Without --all the default exclusion list hides the schemas the
+// server installs for itself, the same rule `list tables` applies.
+func buildDMSchemas(cfg *config.ListConfig) (string, []any, []string, error) {
+	conds := []condition{{clause: "OBJECT_TYPE = 'SCH'"}}
+	conds = append(conds, dmScopedToSchema("OBJECT_NAME", cfg)...)
+	conds = append(conds, dmPatternCondition("OBJECT_NAME", cfg.Pattern)...)
+
+	where, args := dmWhereClause(conds)
+	query := "SELECT DISTINCT OBJECT_NAME FROM ALL_OBJECTS" + where + " ORDER BY OBJECT_NAME"
+	return query, args, []string{"schema"}, nil
 }
 
 func buildDMTables(cfg *config.ListConfig) (string, []any, []string, error) {
