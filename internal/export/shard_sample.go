@@ -152,12 +152,7 @@ func denseEnoughForEqualWidth(info *ShardInfo, rows int64) bool {
 // enough to place boundaries, because a boundary is always a value the probe
 // actually found, never an interpolated one.
 func tableStats(db *sql.DB, target shardTarget) (rows, avgRowLen int64, ok bool) {
-	query := `
-		SELECT TABLE_ROWS, AVG_ROW_LENGTH
-		FROM INFORMATION_SCHEMA.TABLES
-		WHERE ` + schemaFilter + `
-			AND TABLE_NAME = ?
-	`
+	query := shardDialectFor(target.backend()).tableStats
 	common.LogInteractionSQL(query, target.schema, target.table)
 	if err := db.QueryRow(common.TagSQL(query), target.schema, target.table).Scan(&rows, &avgRowLen); err != nil {
 		return 0, 0, false
@@ -203,7 +198,9 @@ func probeArg(v interface{}, integer bool) interface{} {
 // the merged dump's correctness rests on.
 func sampleShardRanges(db *sql.DB, target shardTarget, info *ShardInfo, numRanges int, rows int64) ([]ShardRange, error) {
 	col := info.Columns[0]
-	quoted := fmt.Sprintf("`%s`", col)
+	be := target.backend()
+	quoted := be.QuoteIdent(col)
+	placeholder := be.PlaceholderList(1, 1)
 	integer := isIntegerKeyType(info.ColumnTypes[0])
 
 	rowsPerRange := rows / int64(numRanges)
@@ -215,10 +212,11 @@ func sampleShardRanges(db *sql.DB, target shardTarget, info *ShardInfo, numRange
 
 	for i := 1; i < numRanges; i++ {
 		// The offset is one less than the step: the boundary sought is the
-		// rowsPerRange-th row after the previous one.
+		// rowsPerRange-th row after the previous one. The placeholder is the
+		// dialect's too: ? on MySQL, $1 on PostgreSQL.
 		probeSQL := fmt.Sprintf(
-			"SELECT %s FROM %s WHERE %s > ? ORDER BY %s LIMIT 1 OFFSET %d",
-			quoted, target.source(), quoted, quoted, rowsPerRange-1)
+			"SELECT %s FROM %s WHERE %s > %s ORDER BY %s LIMIT 1 OFFSET %d",
+			quoted, target.source(), quoted, placeholder, quoted, rowsPerRange-1)
 		probeBound := probeArg(bounds[len(bounds)-1], integer)
 		common.LogInteractionSQL(probeSQL, probeBound)
 		query := common.TagSQL(probeSQL)

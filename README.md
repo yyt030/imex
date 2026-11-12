@@ -592,7 +592,7 @@ imex import --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe \
 imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 ```
 
-**能用的**：`export -f del|parquet`（单线程）、`import -f del|parquet` 的 `--mode insert|replace|insert_update` 与 `--threads 1–256`、`list` 的七个对象（`dbs tab vws col idx trg rtn`）。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
+**能用的**：`export -f del|parquet|sql`（单线程，或 `--threads 1–256` 并行分片导出）、`import -f del|parquet` 的 `--mode insert|replace|insert_update` 与 `--threads 1–256`、`list` 的七个对象（`dbs tab vws col idx trg rtn`）。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
 
 `--mode replace` 在这一引擎上是「`DELETE FROM 表`，不带任何会话开关」：MySQL 侧那句 `SET FOREIGN_KEY_CHECKS=0` 是 MySQL 语法，pg 没有等价设置，工具不发也不编造。代价是引用完整性关不掉——被别的表引用的表在清空时报 `SQLSTATE 23503`、退出 `1`，且原有行一条不少（实测 `parent` 两行仍在）。这是两引擎的真实行为差异，不是缺陷。
 
@@ -604,10 +604,9 @@ imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 |-------------|----------|
 | `show`（六个 kind 全部） | PostgreSQL 没有 `SHOW CREATE` 语句族，且 imex 不重放 DDL，取定义请用 `pg_dump` |
 | `list evt` | PostgreSQL 没有事件调度器，定时作业在 `cron` 或 `pgAgent` 里 |
-| `export --threads > 1` | 并行导出靠 `MOD()` 与 `LIMIT … OFFSET` 切分片，只有 MySQL 方言，且 pg 侧尚未实测吞吐（导入侧的 `--threads` 已放行，见上） |
 | `export --no-hex-blob` | `bytea` 走文本协议时裸 NUL 报 `SQLSTATE 22021`，pg 侧恒用 `0x` 十六进制，关不掉 |
 
-曾经被拒、现已放行的：`-f sql` 随 `--sql-dialect` 增量打通（导出按 pg 方言写、导入由方言无关读取器解析后重新绑定，不再整体拒绝）；`--session-var` 与 MySQL 同一口径生效（每条新物理连接执行 `SET`，见上「会话变量」）；`--mode create` 则不是引擎级拒绝，而是从三个引擎整体移除的非法值（任何引擎传入都 `invalid --mode "create"`、退出 2）。
+曾经被拒、现已放行的：`export --threads > 1` 的并行分片导出——分片元数据改读 `pg_catalog`（主键／唯一键／列类型／行数估计）、标识符用双引号、占位符用 `$n`、边界采样与 `MIN/MAX` 也按 pg 方言，每个 worker 各自开 `BEGIN ISOLATION LEVEL REPEATABLE READ`；产物与 `--threads 1` 逐字节一致（含 `BOOL`／`DATE`／`TIMESTAMP`／`FLOAT` 的文本改写），**PG 15／16／17 真库实测通过**；`-f sql` 随 `--sql-dialect` 增量打通（导出按 pg 方言写、导入由方言无关读取器解析后重新绑定，不再整体拒绝）；`--session-var` 与 MySQL 同一口径生效（每条新物理连接执行 `SET`，见上「会话变量」）；`--mode create` 则不是引擎级拒绝，而是从三个引擎整体移除的非法值（任何引擎传入都 `invalid --mode "create"`、退出 2）。
 
 **取值写法与 MySQL 不同**（这是 pg 的原生文本，不是转译成 MySQL 样式）：`boolean` → `t`/`f`；`timestamp` → `2026-01-31 09:26:15.123456`；`timestamptz` → `2026-01-31 09:26:15.123456+08`；`date` → `2026-01-31`；`real`/`double precision` → Go 最短往返写法；特殊值 `infinity`/`-infinity` 原样透传，`±Inf`/`NaN` 写成 `Infinity`/`-Infinity`/`NaN`；`bit(n)`/`bit varying(n)` → 比特串本身（`10100101`、`101`，与 `psql -t -A` 一致；变更记录 129 之前它被当成二进制列打成 `0x3130313030313031`，即那串 ASCII 的十六进制）；NULL 是一个**空字段**（两个分隔符之间没有内容，与 MySQL 侧同一套 DEL 布局规则，不是 `-`）；`bytea` 恒为 `0x…`。
 
@@ -1088,6 +1087,20 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
 > 以下各节按版本记录每轮改动的摘要。同一批变更的完整设计理由与实测取证在 `docs/requirements.md` 十四节的编号变更记录，两处按轮次对齐，**编号变更记录为权威源**；本节只写“改了什么”，取值以当轮实测为准。
+
+## 修复记录（v0.31.0）
+
+本轮把 154 轮在真库上定位并修复的三处缺陷随 `v0.31.0` 发布；代码与测试在 154 轮已完成并验证，本轮只做版本进位与发版记账，无新增代码改动。
+
+| 缺陷 | 现象 | 修复 |
+|------|------|------|
+| DM8 `show vws` 双分号 | 产物末尾 `;;`，disql 重放报 `[-2007] Syntax error` | `internal/show` 新增 `normalizeDefinition`，按服务端**实际返回文本**折叠成恰好一个 `;\n`（不硬编码逐 kind flag，兼容不同 DM8 版本）；`show_dameng.go` 的 `view` 订正为 `HasTerminator=true`，新增 9 种结尾形态单测 |
+| PG `--threads > 1` 名义并行 | CLI 直接退 2；临时放开后仍静默降级单线程（分片元数据全是 MySQL 方言） | 新建 `shard_dialect.go` 按引擎分两套 catalog SQL（MySQL 逐字保留、PG 读 `pg_catalog` 且用双引号／`$n`／`current_schema()`）；标识符与占位符走 `Backend.QuoteIdent`／`PlaceholderList`；删 PG `CmdExport` 的 `--threads` 拒绝 |
+| 并行 shard writer 缺 `CellFixups` | 并行产物与单线程相差 32 500 字节（真库逐字节对比才暴露） | `exportShard` 补上与 `exportSingle` 同一套逐列 fixup，PG `BOOL`／`DATE`／`TIMESTAMP`／`FLOAT` 文本与单线程一致 |
+
+**真库验证**：DM8 `show vws FX_V` 输出 57 字节、末尾恰一个 `;\n`，改名重放成功、`USER_VIEWS` 查得 1、无 `[-2007]`；PG 15／16／17 × `del`／`sql` × `--threads 4` 对 `--threads 1` 共 6 组逐字节一致，日志均 `shards=8 workers=4`、无 fallback；稀疏键触发 boundary sampling 的 `$1` probe 路径与单线程一致；MySQL8 用 `HEAD` 基线二进制对照修复后 `--threads 4` 产物逐字节相同，证明 MySQL 侧字节未变。
+
+完整设计理由与逐条实测见 `docs/requirements.md` 十四节变更记录 **154**（代码轮）与 **155**（发版轮）。
 
 ## 修复记录（v0.30.0）
 

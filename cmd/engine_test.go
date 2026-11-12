@@ -70,12 +70,6 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			want: `invalid --engine "oracle": must be one of mysql/pg/dm`,
 		},
 		{
-			name: "export_threads",
-			sub:  "export",
-			args: pgExportFlags("--threads", "4"),
-			want: "--threads is not supported with --engine pg: parallel export shards the query with MySQL-only statements and has not been measured against PostgreSQL, use --threads 1",
-		},
-		{
 			name: "export_no_hex_blob",
 			sub:  "export",
 			args: pgExportFlags("--no-hex-blob"),
@@ -262,8 +256,9 @@ func TestListAndShowRefusals(t *testing.T) {
 // export_format_sql refusal has to land here rather than vanish without a
 // counter-assertion, and --session-var is honoured the way MySQL honours it (a
 // real name that is not tool- or driver-owned reaches the server as a SET).
-// --threads and --no-hex-blob stay refusals and are restated so accepting one of
-// them later is a deliberate edit.
+// --threads above 1 joined this list when the parallel path learned the
+// PostgreSQL catalogue; --no-hex-blob stays a refusal and is restated so
+// accepting it later is a deliberate edit.
 func TestPGExportOptionsAreAccepted(t *testing.T) {
 	accepted := []struct {
 		name string
@@ -274,6 +269,8 @@ func TestPGExportOptionsAreAccepted(t *testing.T) {
 		{"export_sql_mysql_grammar", pgExportFlags("-f", "sql", "--sql-dialect", "mysql", "-o", "/tmp/imex-engine-test.sql")},
 		{"export_parquet", pgExportFlags("-f", "parquet", "-o", "/tmp/imex-engine-test.parquet")},
 		{"export_session_var", pgExportFlags("--session-var", "work_mem=64MB", "--session-var", "application_name=imex")},
+		{"export_threads", pgExportFlags("--threads", "4")},
+		{"export_threads_with_sql", pgExportFlags("-f", "sql", "--threads", "4")},
 	}
 	for _, c := range accepted {
 		t.Run(c.name, func(t *testing.T) {
@@ -287,7 +284,6 @@ func TestPGExportOptionsAreAccepted(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"threads", pgExportFlags("-f", "sql", "--threads", "4")},
 		{"no_hex_blob", pgExportFlags("--no-hex-blob")},
 		{"bad_dialect", pgExportFlags("-f", "sql", "--sql-dialect", "oracle")},
 		{"dialect_without_sql", pgExportFlags("-f", "del", "--sql-dialect", "pg")},

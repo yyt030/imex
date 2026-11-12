@@ -19,10 +19,14 @@ import "strings"
 //     catalog query in this backend reads UPPER(OWNER)/UPPER(...), so the
 //     arguments are upper-cased before they go into the literal.
 //   - Terminator text is per kind: GET_DDL('TABLE',...) already ends in its own
-//     `;` (and a trailing space), and the PL/SQL kinds end in the body-closing
-//     `END;`, so those report hasTerminator and show must not add a second one.
-//     GET_DDL('VIEW',...) returns the SELECT body with NO terminator, so the
-//     view reports false and show appends the `;`.
+//     `;` (and a trailing space), the PL/SQL kinds end in the body-closing
+//     `END;`, and — measured on DM8 single, dm8_20241022_rev244896 —
+//     GET_DDL('VIEW',...) also returns its own `;`. All six kinds therefore
+//     report hasTerminator. An earlier build of this table claimed the view
+//     text had NO terminator; show then appended a second `;` and the DDL
+//     failed to replay with `[-2007] Syntax error`. show now normalises the
+//     actual text to exactly one `;` as a second guard, so a DM8 build that
+//     omits the terminator is still replayable (see show.normalizeDefinition).
 //   - GET_DDL returns a CLOB; the Dameng Go driver surfaces it as a text column
 //     named DDL, which the one-row-one-cell shape the show package already runs
 //     definitions through reads directly.
@@ -35,13 +39,14 @@ const damengShowColumn = "DDL"
 
 // damengMetadataKinds maps the show object word to the DBMS_METADATA object-type
 // string, and records whether GET_DDL's text for that kind already ends in its
-// own terminator.
+// own terminator. On DM8 single every kind does; the map stays per-kind because
+// the property is a property of the object type, not of the engine.
 var damengMetadataKinds = map[string]struct {
 	Type          string
 	HasTerminator bool
 }{
 	"table":     {"TABLE", true},
-	"view":      {"VIEW", false},
+	"view":      {"VIEW", true},
 	"trigger":   {"TRIGGER", true},
 	"procedure": {"PROCEDURE", true},
 	"function":  {"FUNCTION", true},

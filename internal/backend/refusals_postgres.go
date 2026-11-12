@@ -12,25 +12,24 @@ package backend
 // server's.
 //
 // Each rule fires on the *value*, not on whether the option was named
-// (--threads above 1, --no-hex-blob switched on), so a run configured by any
-// means cannot escape it. --session-var is no longer a refusal at all: this
-// engine now honours it the way MySQL does, running a SET per new connection and
-// rejecting only the names the tool or the driver owns
-// (postgresBackend.IsReservedConnParam).
+// (--no-hex-blob switched on), so a run configured by any means cannot escape
+// it. --session-var is no longer a refusal at all: this engine now honours it
+// the way MySQL does, running a SET per new connection and rejecting only the
+// names the tool or the driver owns (postgresBackend.IsReservedConnParam).
+// --threads above 1 is no longer a refusal either: the parallel export path
+// learned the PostgreSQL catalogue (pg_catalog for keys, column types and row
+// estimates, $n placeholders and double-quoted identifiers), so a sharded DEL
+// or SQL dump is a measured capability rather than an unmeasured translation.
 //
-// What is left working is the point of the increment: a single-threaded DEL or
-// Parquet dump of any SELECT, with the tool's own delimiters, escaping and NULL
-// spelling, read through the same sql.RawBytes pipeline MySQL uses.
+// What is left refused is the byte-safety rule: --no-hex-blob, because a
+// PostgreSQL server rejects a NUL inside any text value. Everything else —
+// single-threaded or parallel DEL/SQL/Parquet exports of any SELECT — goes
+// through the same sql.RawBytes pipeline MySQL uses.
 
 func (postgresBackend) Refusals(c Command) []Refusal {
 	switch c {
 	case CmdExport:
 		return []Refusal{
-			{
-				Option:  static("--threads"),
-				Reason:  "parallel export shards the query with MySQL-only statements and has not been measured against PostgreSQL, use --threads 1",
-				Applies: func(o RunOptions) bool { return o.Threads > 1 },
-			},
 			{
 				Option:  static("--no-hex-blob"),
 				Reason:  "a PostgreSQL server rejects a NUL inside any text value (SQLSTATE 22021), so bytea columns must go out as 0x hex; imex always does it on this engine",

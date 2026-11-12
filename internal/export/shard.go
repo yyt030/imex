@@ -35,15 +35,33 @@ type ShardInfo struct {
 type shardTarget struct {
 	schema string // "" means "whatever the connection's current database is"
 	table  string
+
+	// be is the dialect the run resolved. It is optional on purpose: every test
+	// and library caller that builds a target with just schema/table keeps the
+	// historical MySQL behaviour, while exportParallel fills it in so the
+	// catalogue reads, identifier quoting and placeholders follow the connected
+	// engine.
+	be backend.Backend
+}
+
+// backend returns the dialect for this target, defaulting to MySQL.
+func (t shardTarget) backend() backend.Backend {
+	if t.be == nil {
+		return backend.Must(backend.EngineMySQL)
+	}
+	return t.be
 }
 
 // source renders the target for a FROM clause, the same way the SHOW CREATE
-// lookup does: the schema only when the query named one.
+// lookup does: the schema only when the query named one. The quoting is the
+// dialect's (Backend.QuoteIdent), so PostgreSQL gets "schema"."table" and
+// MySQL keeps its backticks byte for byte.
 func (t shardTarget) source() string {
+	be := t.backend()
 	if t.schema == "" {
-		return "`" + t.table + "`"
+		return be.QuoteIdent(t.table)
 	}
-	return "`" + t.schema + "`.`" + t.table + "`"
+	return be.QuoteIdent(t.schema) + "." + be.QuoteIdent(t.table)
 }
 
 // display is how the target is named in logs and error messages.
@@ -55,7 +73,8 @@ func (t shardTarget) display() string {
 }
 
 // schemaFilter resolves an explicit schema ahead of the connection's database,
-// so one predicate serves both the qualified and the unqualified query.
+// so one predicate serves both the qualified and the unqualified query. It is
+// the MySQL spelling; PostgreSQL's equivalent lives in shard_dialect.go.
 const schemaFilter = "TABLE_SCHEMA = COALESCE(NULLIF(?, ''), DATABASE())"
 
 // DetectShardKey detects the best column(s) for sharding
@@ -64,6 +83,14 @@ const schemaFilter = "TABLE_SCHEMA = COALESCE(NULLIF(?, ''), DATABASE())"
 // be is the dialect the run resolved: the type vocabulary that decides whether a
 // shard key is numeric belongs to the engine, not to this package.
 func DetectShardKey(db *sql.DB, be backend.Backend, target shardTarget, preferKey string) (*ShardInfo, error) {
+	// A library caller or a test may build the target without the dialect; the
+	// backend this function is handed is the same run's, so adopt it. That keeps
+	// every catalogue read below on one dialect even when the target was built
+	// before --engine was resolved.
+	if target.be == nil {
+		target.be = be
+	}
+
 	// If user specified a shard key, use it (single column)
 	if preferKey != "" {
 		return getShardInfo(db, be, target, []string{preferKey})
@@ -88,14 +115,7 @@ func DetectShardKey(db *sql.DB, be backend.Backend, target shardTarget, preferKe
 
 // findPrimaryKey finds all primary key columns of a table (supports composite keys)
 func findPrimaryKey(db *sql.DB, target shardTarget) ([]string, error) {
-	query := `
-		SELECT COLUMN_NAME 
-		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-		WHERE ` + schemaFilter + ` 
-			AND TABLE_NAME = ? 
-			AND CONSTRAINT_NAME = 'PRIMARY'
-		ORDER BY ORDINAL_POSITION
-	`
+	query := shardDialectFor(target.backend()).primaryKey
 	common.LogInteractionSQL(query, target.schema, target.table)
 	rows, err := db.Query(common.TagSQL(query), target.schema, target.table)
 	if err != nil {
@@ -117,15 +137,7 @@ func findPrimaryKey(db *sql.DB, target shardTarget) ([]string, error) {
 
 // findUniqueKey finds the first unique key columns (supports composite keys)
 func findUniqueKey(db *sql.DB, target shardTarget) ([]string, error) {
-	query := `
-		SELECT COLUMN_NAME, CONSTRAINT_NAME
-		FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-		WHERE ` + schemaFilter + ` 
-			AND TABLE_NAME = ? 
-			AND CONSTRAINT_NAME != 'PRIMARY'
-			AND REFERENCED_TABLE_NAME IS NULL
-		ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
-	`
+	query := shardDialectFor(target.backend()).uniqueKey
 	common.LogInteractionSQL(query, target.schema, target.table)
 	rows, err := db.Query(common.TagSQL(query), target.schema, target.table)
 	if err != nil {
@@ -177,14 +189,9 @@ func getShardInfo(db *sql.DB, be backend.Backend, target shardTarget, columnName
 	}
 
 	// Get column types
+	dialect := shardDialectFor(target.backend())
 	for i, colName := range columnNames {
-		colQuery := `
-			SELECT DATA_TYPE, IS_NULLABLE
-			FROM INFORMATION_SCHEMA.COLUMNS 
-			WHERE ` + schemaFilter + ` 
-				AND TABLE_NAME = ? 
-				AND COLUMN_NAME = ?
-		`
+		colQuery := dialect.columnType
 		common.LogInteractionSQL(colQuery, target.schema, target.table, colName)
 		var colType string
 		var isNullable string
@@ -200,15 +207,19 @@ func getShardInfo(db *sql.DB, be backend.Backend, target shardTarget, columnName
 		// into this package: MySQL's information_schema reports the base type
 		// (`double` for a REAL column, `decimal` for DEC/NUMERIC/FIXED, `bigint`
 		// for SERIAL), so the wider table behind MetadataKind cannot change an
-		// answer this query can return — measured on MariaDB 10.6.23.
+		// answer this query can return — measured on MariaDB 10.6.23. PostgreSQL's
+		// information_schema reports `integer`/`bigint`/`numeric`, which
+		// ClassifyPostgresType maps onto the same tool vocabulary.
 		info.IsNumeric[i] = be.MetadataKind(colType) == common.KindNumber
 	}
 
-	// Get min/max values for all columns
+	// Get min/max values for all columns. Identifier quoting is the dialect's:
+	// PostgreSQL reads MIN("id"), MySQL keeps MIN(`id`) byte for byte.
 	selectParts := make([]string, len(columnNames)*2)
 	for i, colName := range columnNames {
-		selectParts[i*2] = fmt.Sprintf("MIN(`%s`)", colName)
-		selectParts[i*2+1] = fmt.Sprintf("MAX(`%s`)", colName)
+		quoted := be.QuoteIdent(colName)
+		selectParts[i*2] = "MIN(" + quoted + ")"
+		selectParts[i*2+1] = "MAX(" + quoted + ")"
 	}
 	minMaxSQL := fmt.Sprintf("SELECT %s FROM %s", strings.Join(selectParts, ", "), target.source())
 	common.LogInteractionSQL(minMaxSQL)

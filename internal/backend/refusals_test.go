@@ -17,7 +17,7 @@ func TestRefusalTablesAreInReportingOrder(t *testing.T) {
 		c    Command
 		want []string // option labels, in order
 	}{
-		{CmdExport, []string{"--threads", "--no-hex-blob"}},
+		{CmdExport, []string{"--no-hex-blob"}},
 		{CmdImport, nil},
 		{CmdList, []string{"list events"}},
 		{CmdShow, []string{"show table"}},
@@ -81,9 +81,6 @@ func TestRefusalPredicatesFireOnValueNotDefault(t *testing.T) {
 		o      RunOptions
 		want   bool
 	}{
-		{"--threads", RunOptions{Threads: 1}, false},
-		{"--threads", RunOptions{Threads: 2}, true},
-		{"--threads", RunOptions{Threads: 0}, false},
 		{"--no-hex-blob", RunOptions{NoHexBlob: true}, true},
 		{"--no-hex-blob", RunOptions{NoHexBlob: false}, false},
 		{"list events", RunOptions{Object: "events"}, true},

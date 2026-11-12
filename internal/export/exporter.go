@@ -600,7 +600,7 @@ func (e *Exporter) exportParallel(ctx context.Context, startTime time.Time) erro
 		common.Logger.Warn("failed to extract table name, falling back to single-threaded export", "error", err)
 		return e.exportSingle(ctx, startTime)
 	}
-	target := shardTarget{schema: schema, table: tableName}
+	target := shardTarget{schema: schema, table: tableName, be: e.backend()}
 
 	// Detect shard key. An explicit --shard-key that the server does not have is a
 	// refused request, not a hint: silently exporting single-threaded would report
@@ -844,7 +844,12 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 		return 0, errors.Wrap(err, "failed to get column types")
 	}
 
-	// Compute binary flags and hex setting for this shard
+	// Compute the writer's per-column settings for this shard. CellFixups is the
+	// one the parallel path used to omit: MySQL needs none (its text protocol
+	// already carries the stored bytes) so the omission was invisible there, but
+	// PostgreSQL's driver renders BOOL/DATE/TIMESTAMPTZ as Go's spellings, and
+	// without the fixups a sharded dump disagreed with a single-threaded one.
+	fixups := e.backend().CellFixups(colTypes)
 	binaryFlags := e.backend().BinaryFlags(colTypes)
 	hex := effectiveHexBlob(e.config)
 
@@ -906,6 +911,20 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 				if isYear[i] && len(rawValues[i]) == 1 && rawValues[i][0] == '0' {
 					rawValues[i] = sql.RawBytes("0000")
 				}
+			}
+		}
+
+		// Rewrite the driver's text into the bytes this engine's dump is defined
+		// to carry, exactly as exportSingle does above. A nil fixup leaves the
+		// value untouched (every MySQL column); a PostgreSQL BOOL becomes t/f and
+		// its DATE/TIMESTAMP/FLOAT text becomes the server's own spelling, so a
+		// --threads 4 dump is byte-identical to a --threads 1 one.
+		for i := range rawValues {
+			if rawValues[i] == nil {
+				continue
+			}
+			if fix := fixups[i]; fix != nil {
+				rawValues[i] = fix(rawValues[i])
 			}
 		}
 

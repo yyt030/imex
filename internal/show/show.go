@@ -10,9 +10,9 @@
 // though it looks cheaper: TRIGGERS.ACTION_STATEMENT holds only the body without
 // the trigger header, ROUTINES.ROUTINE_DEFINITION loses the parameter list and
 // RETURNS clause, and VIEWS.VIEW_DEFINITION is the parsed normalisation rather
-// than what was typed. The only bytes this package adds are the terminating
-// semicolon and newline, because the server returns no terminator and
-// `imex import -f sql` reads statements that end with one.
+// than what was typed. The only bytes this package adds are one terminating
+// semicolon and one newline, folded to exactly one from whatever the server
+// returned, because `imex import -f sql` reads statements that end with one.
 package show
 
 import (
@@ -212,16 +212,14 @@ func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *co
 		return 0, errors.Errorf("%s returned no definition column (columns: %s)", query, strings.Join(columns, ", "))
 	}
 
-	// The server returns no terminator on MySQL's SHOW CREATE, so the tool adds
-	// the `;` that `imex import -f sql` reads statements ending with. A dialect
-	// whose definition text already ends in `;` (Gauss pg_get_tabledef) reports
-	// hasTerminator and is left alone, otherwise the operator would see `;;`.
-	text := definition
-	if !hasTerminator {
-		text += ";"
-	}
-	text += "\n"
-	n, err := out.Write([]byte(text))
+	// The server's text is copied verbatim; the only bytes this package adds are
+	// one terminating semicolon and one newline, because `imex import -f sql`
+	// reads statements ending with `;`. Whether the server already supplied that
+	// semicolon is decided from the text itself rather than solely from the
+	// dialect's hasTerminator flag: DM8 single's GET_DDL('VIEW',...) was measured
+	// to end in its own `;` while the Dameng table listed view as having none,
+	// which printed `;;` and made the DDL fail to replay. See normalizeDefinition.
+	n, err := out.Write([]byte(normalizeDefinition(definition, hasTerminator)))
 	if err != nil {
 		return n, errors.Wrap(err, "failed to write definition")
 	}
@@ -229,6 +227,28 @@ func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *co
 		return n, errors.Wrap(err, "definition query failed")
 	}
 	return n, nil
+}
+
+// normalizeDefinition returns the exact bytes show writes for one definition:
+// the server's text with exactly one terminating semicolon and one newline.
+//
+// hasTerminator is part of Backend.ShowDefinition's dialect contract (face ⑤)
+// and stays in the signature so a reader can see the question is asked, but the
+// bytes the server actually returned are the authority. A per-kind flag is
+// measured against one server build and can be wrong on another: DM8 single
+// returns `CREATE OR REPLACE VIEW ...;` for GET_DDL('VIEW',...), and a different
+// DM8 build may just as well omit it, while Gauss's pg_get_tabledef always ends
+// in `;` and MySQL's SHOW CREATE never does. Folding any trailing semicolons to
+// exactly one is version-proof and keeps every engine's output replayable.
+//
+// Internal semicolons are untouched — a PL/SQL body ends in `END;` and a
+// multi-statement definition is not this command's business — because only the
+// trailing span is trimmed.
+func normalizeDefinition(definition string, hasTerminator bool) string {
+	trimmed := strings.TrimRight(definition, " \t\r\n")
+	trimmed = strings.TrimRight(trimmed, ";")
+	trimmed = strings.TrimRight(trimmed, " \t\r\n")
+	return trimmed + ";\n"
 }
 
 // pickDefinition finds the definition text among one result row.

@@ -1100,3 +1100,99 @@ func TestPGLive_ParallelImportMatchesSingleThread(t *testing.T) {
 			ins, upd, unc, env.rowCount(t, one))
 	}
 }
+
+// TestPGLive_ParallelExportMatchesSingleThread retires the export-side --threads
+// refusal. The parallel path used to be unreachable on pg because its catalogue
+// reads were MySQL-only; now that they read pg_catalog, the claim is the same one
+// the MySQL path makes: a sharded dump is byte-identical to a serial one. The
+// fixture deliberately carries BOOL/DATE/TIMESTAMP/FLOAT columns, because the
+// shard writer must apply the engine's CellFixups too — without them a pg dump
+// reads "true"/"2026-01-01T00:00:00Z" instead of "t"/"2026-01-01 00:00:00".
+func TestPGLive_ParallelExportMatchesSingleThread(t *testing.T) {
+	env := newPGLive(t)
+	src := env.pgTable(t, "exp_thr_src")
+	env.fillSource(t, src)
+	// pgSourceDDL leaves id NOT NULL but unkeyed; parallel export needs a shard
+	// key, so give the source the primary key the export would otherwise not find.
+	env.exec(t, "ALTER TABLE "+src+" ADD PRIMARY KEY (id)")
+
+	for _, format := range []string{"del", "sql"} {
+		t.Run(format, func(t *testing.T) {
+			four := env.export(t, src, format, "exp_thr_four."+format, "--threads", "4")
+			one := env.export(t, src, format, "exp_thr_one."+format, "--threads", "1")
+			if a, b := readFile(t, four), readFile(t, one); a != b {
+				t.Errorf("--threads 4 %s dump differs from --threads 1 (%d vs %d bytes)", format, len(a), len(b))
+				if diff := firstLineDiff(a, b); diff != "" {
+					t.Errorf("first differing pair:\n%s", diff)
+				}
+			}
+		})
+	}
+
+	// A run that validates is not the same as a run that actually shards: an
+	// undetected key or a collapsed range silently falls back to one worker.
+	out, code := env.runCLI(t, append(append([]string{"export"}, env.base...),
+		"-q", "SELECT * FROM "+src, "-f", "del",
+		"-o", filepath.Join(env.dir, "exp_thr_info.del"),
+		"--threads", "4", "--log-level", "info")...)
+	if code != 0 {
+		t.Fatalf("--threads 4 export failed: exit %d\n%s", code, out)
+	}
+	for _, want := range []string{"parallel export detected", "parallel export completed", "shards=", "workers=4"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("parallel export log missing %q:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"falling back to single-threaded export", "only 1 shard range", "failed to detect shard key"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("parallel export fell back to a single worker (%q):\n%s", bad, out)
+		}
+	}
+}
+
+// TestPGLive_ParallelExportSamplingMatchesSingleThread covers the other half of
+// the planner: a sparse integer key defeats the equal-width shortcut, so the
+// boundaries come from index probes. Those probes are the reads that use an
+// ordinal placeholder and double-quoted identifiers on PostgreSQL.
+func TestPGLive_ParallelExportSamplingMatchesSingleThread(t *testing.T) {
+	env := newPGLive(t)
+	src := env.pgTable(t, "exp_skew_src")
+	env.exec(t, fmt.Sprintf(`CREATE TABLE %s (
+		id bigint PRIMARY KEY, flag boolean, ts timestamptz, d date,
+		flt real, blob bytea, txt text)`, src))
+	env.exec(t, `INSERT INTO `+src+` SELECT g*100000::bigint, (g%2=0),
+		'2026-01-01 00:00:00+08'::timestamptz + (g || ' seconds')::interval,
+		'2026-01-01'::date + g, (g/3.0)::real,
+		decode(lpad(to_hex(g%256),2,'0'),'hex'), 'row-'||g
+		FROM generate_series(1,5000) g`)
+	env.exec(t, "ANALYZE "+src)
+
+	four := env.export(t, src, "del", "exp_skew_four.del", "--threads", "4")
+	one := env.export(t, src, "del", "exp_skew_one.del", "--threads", "1")
+	if a, b := readFile(t, four), readFile(t, one); a != b {
+		t.Errorf("sampled parallel dump differs from serial (%d vs %d bytes)", len(a), len(b))
+		if diff := firstLineDiff(a, b); diff != "" {
+			t.Errorf("first differing pair:\n%s", diff)
+		}
+	}
+
+	out, code := env.runCLI(t, append(append([]string{"export"}, env.base...),
+		"-q", "SELECT * FROM "+src, "-f", "del",
+		"-o", filepath.Join(env.dir, "exp_skew_info.del"),
+		"--threads", "4", "--log-level", "info")...)
+	if code != 0 {
+		t.Fatalf("--threads 4 sampled export failed: exit %d\n%s", code, out)
+	}
+	// The interaction log is logfmt-quoted, so the double quotes inside a SQL
+	// value arrive escaped as \". The unit test in shard_pg_test.go pins the
+	// exact statement; here we only need to know the probe path really ran on
+	// PostgreSQL's ordinal placeholder.
+	for _, want := range []string{`> $1`, "LIMIT 1 OFFSET", "parallel export completed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("boundary probe / completion log missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, `FROM \"`) {
+		t.Errorf("boundary probe did not use double-quoted identifiers:\n%s", out)
+	}
+}

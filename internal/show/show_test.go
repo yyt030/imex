@@ -315,3 +315,42 @@ func TestPickDefinitionRejectsNonDefinition(t *testing.T) {
 		t.Fatal("accepted a NULL definition")
 	}
 }
+
+// TestNormalizeDefinitionEmitsExactlyOneTerminator is the DM8 `show vws` defect
+// this closed: GET_DDL('VIEW',...) returns its own `;` on DM8 single while the
+// dialect table claimed it had none, so appending one printed `;;` and the DDL
+// failed to replay with `[-2007] Syntax error`. The fix folds whatever the
+// server returned to exactly one terminator, so a build that omits it is still
+// replayable and the MySQL/Gauss bytes stay unchanged.
+func TestNormalizeDefinitionEmitsExactlyOneTerminator(t *testing.T) {
+	cases := []struct {
+		name       string
+		definition string
+		flag       bool
+		want       string
+	}{
+		{"MySQL SHOW CREATE, no terminator", "CREATE TABLE `t` (id int)", false, "CREATE TABLE `t` (id int);\n"},
+		{"Gauss pg_get_tabledef, own terminator", "CREATE TABLE t (id int);", true, "CREATE TABLE t (id int);\n"},
+		{"DM8 view, own terminator but flag said none", "CREATE OR REPLACE VIEW FX_V AS SELECT ID, A FROM FX_SRC;", false, "CREATE OR REPLACE VIEW FX_V AS SELECT ID, A FROM FX_SRC;\n"},
+		{"DM8 table, trailing space after terminator", "CREATE TABLE T (ID INT); ", true, "CREATE TABLE T (ID INT);\n"},
+		{"PL/SQL body ends in END;", "CREATE OR REPLACE PROCEDURE P AS BEGIN NULL; END;", true, "CREATE OR REPLACE PROCEDURE P AS BEGIN NULL; END;\n"},
+		{"server returned two terminators", "CREATE VIEW V AS SELECT 1;;", false, "CREATE VIEW V AS SELECT 1;\n"},
+		{"trailing newline folded to one", "CREATE TABLE t (id int);\n", true, "CREATE TABLE t (id int);\n"},
+		{"no terminator at all on a view", "CREATE VIEW V AS SELECT 1", false, "CREATE VIEW V AS SELECT 1;\n"},
+		{"empty definition still terminated", "", false, ";\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeDefinition(tc.definition, tc.flag)
+			if got != tc.want {
+				t.Errorf("normalizeDefinition(%q, %v) = %q, want %q", tc.definition, tc.flag, got, tc.want)
+			}
+			if strings.HasSuffix(got, ";;\n") {
+				t.Errorf("two terminators emitted: %q", got)
+			}
+			if !strings.HasSuffix(got, ";\n") {
+				t.Errorf("definition must end with one \";\\n\": %q", got)
+			}
+		})
+	}
+}

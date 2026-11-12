@@ -20,7 +20,10 @@ func TestDamengShowDefinitions(t *testing.T) {
 		wantHasTerm bool
 	}{
 		{"table", "TABLE", true},
-		{"view", "VIEW", false},
+		// View is true too: on DM8 single GET_DDL('VIEW',...) returns its own
+		// trailing `;`. It used to be false here, which made show append a
+		// second one and the DDL fail to replay (see show.normalizeDefinition).
+		{"view", "VIEW", true},
 		{"trigger", "TRIGGER", true},
 		{"procedure", "PROCEDURE", true},
 		{"function", "FUNCTION", true},

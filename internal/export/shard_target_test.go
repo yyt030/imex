@@ -143,10 +143,16 @@ func (s *targetStmt) Query(args []driver.Value) (driver.Rows, error) {
 
 func (f *targetFake) rowsFor(query string, args []driver.Value) (driver.Rows, error) {
 	upper := strings.ToUpper(query)
+	// Both dialects are recognised here so the same fake can drive the
+	// PostgreSQL catalogue cases in shard_pg_test.go. The MySQL needles are
+	// unchanged; the PostgreSQL ones are the pg_constraint/reltuples shapes.
+	keyRead := strings.Contains(upper, "KEY_COLUMN_USAGE") || strings.Contains(upper, "PG_CONSTRAINT")
+	primaryRead := strings.Contains(query, "CONSTRAINT_NAME = 'PRIMARY'") || strings.Contains(query, "con.contype = 'p'")
+	statsRead := strings.Contains(upper, "TABLE_ROWS") || strings.Contains(upper, "RELTUPLES")
 	switch {
-	case strings.Contains(upper, "KEY_COLUMN_USAGE") && strings.Contains(query, "CONSTRAINT_NAME = 'PRIMARY'"):
+	case keyRead && primaryRead:
 		return &targetRows{cols: []string{"COLUMN_NAME"}, rows: singleColumn(f.pkCols)}, nil
-	case strings.Contains(upper, "KEY_COLUMN_USAGE"):
+	case keyRead:
 		rows := make([][]driver.Value, 0, len(f.ukCols))
 		for _, c := range f.ukCols {
 			rows = append(rows, []driver.Value{c, "uk_first"})
@@ -155,7 +161,7 @@ func (f *targetFake) rowsFor(query string, args []driver.Value) (driver.Rows, er
 	case strings.Contains(upper, "INFORMATION_SCHEMA.COLUMNS"):
 		return &targetRows{cols: []string{"DATA_TYPE", "IS_NULLABLE"},
 			rows: [][]driver.Value{{f.colType, f.nullable}}}, nil
-	case strings.Contains(upper, "TABLE_ROWS"):
+	case statsRead:
 		return &targetRows{cols: []string{"TABLE_ROWS", "AVG_ROW_LENGTH"},
 			rows: [][]driver.Value{{f.statsRows, f.statsAvg}}}, nil
 	case strings.Contains(upper, "MIN("):
