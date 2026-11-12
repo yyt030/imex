@@ -122,12 +122,6 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			want: "--session-var is not supported with --engine dm: SET <name>=<value> is MySQL session grammar and imex does not translate it for Dameng; put session settings in the server or role configuration",
 		},
 		{
-			name: "dm_import_format_sql",
-			sub:  "import",
-			args: dmImportFlags("-f", "sql"),
-			want: "--format sql is not supported with --engine dm: imex can now export a Dameng-dialect --format sql dump, but the SQL reader still parses with the MySQL statement grammar and cannot replay a Dameng dump; import a --format del or --format parquet file, or load the dump with your own DM client",
-		},
-		{
 			name: "dm_import_mode_insert_update",
 			sub:  "import",
 			args: dmImportFlags("--mode", "insert_update"),

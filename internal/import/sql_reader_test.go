@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/imex/internal/config"
 )
 
 func TestSQLReader_LargeStatement(t *testing.T) {
@@ -42,7 +44,7 @@ func TestSQLReader_LargeStatement(t *testing.T) {
 	}
 
 	r := bufio.NewReader(strings.NewReader(line))
-	sr := NewSQLReader(r)
+	sr := NewSQLReader(r, config.SQLDialectMySQL)
 
 	cols, err := sr.ReadHeader()
 	if err != nil {
@@ -78,7 +80,7 @@ func TestSQLReader_LargeStatement(t *testing.T) {
 func TestSQLReader_HexLiteral(t *testing.T) {
 	input := "INSERT INTO `t` (`data`) VALUES (0xDEADBEEF);\n"
 	r := bufio.NewReader(strings.NewReader(input))
-	sr := NewSQLReader(r)
+	sr := NewSQLReader(r, config.SQLDialectMySQL)
 
 	cols, err := sr.ReadHeader()
 	if err != nil {
@@ -106,7 +108,7 @@ func TestSQLReader_EmptyHexLiteral(t *testing.T) {
 	// Isolated "0x" (zero-length hex body) must decode to []byte{}, not nil.
 	input := "INSERT INTO `t` (`data`) VALUES (0x);\n"
 	r := bufio.NewReader(strings.NewReader(input))
-	sr := NewSQLReader(r)
+	sr := NewSQLReader(r, config.SQLDialectMySQL)
 
 	_, err := sr.ReadHeader()
 	if err != nil {
@@ -129,7 +131,7 @@ func TestSQLReader_EmptyHexLiteral(t *testing.T) {
 func TestSQLReader_NullValue(t *testing.T) {
 	input := "INSERT INTO `t` (`a`,`b`) VALUES (NULL,'hello');\n"
 	r := bufio.NewReader(strings.NewReader(input))
-	sr := NewSQLReader(r)
+	sr := NewSQLReader(r, config.SQLDialectMySQL)
 
 	_, err := sr.ReadHeader()
 	if err != nil {
@@ -151,7 +153,7 @@ func TestSQLReader_SkipsCreateBeforeInsert(t *testing.T) {
 	// imex replays no DDL, so a CREATE TABLE line a foreign dump carries is
 	// skipped and the reader advances to the INSERT after it.
 	input := "CREATE TABLE `t` (`id` INT);\nINSERT INTO `t` (`id`) VALUES (1);\n"
-	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)), config.SQLDialectMySQL)
 
 	cols, err := sr.ReadHeader()
 	if err != nil {
@@ -177,7 +179,7 @@ func TestSQLReader_CreateOnlyIsEOF(t *testing.T) {
 	// create-table run. A CREATE is still recognised text, so OnlyPreamble stays
 	// true and the empty-file no-op path is chosen over a loud failure.
 	input := "-- Table structure\nCREATE TABLE `t` (`id` INT) ENGINE=InnoDB;\n"
-	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)), config.SQLDialectMySQL)
 
 	if _, err := sr.ReadHeader(); err != io.EOF {
 		t.Fatalf("expected io.EOF for a create-only file, got %v", err)
@@ -187,7 +189,7 @@ func TestSQLReader_CreateOnlyIsEOF(t *testing.T) {
 	}
 
 	// A file with neither CREATE nor INSERT must also be an EOF error.
-	empty := NewSQLReader(bufio.NewReader(strings.NewReader("SET NAMES utf8mb4;\n")))
+	empty := NewSQLReader(bufio.NewReader(strings.NewReader("SET NAMES utf8mb4;\n")), config.SQLDialectMySQL)
 	if _, err := empty.ReadHeader(); err != io.EOF {
 		t.Fatalf("expected io.EOF for contentless file, got %v", err)
 	}
@@ -212,7 +214,7 @@ func TestSQLReader_OnlyPreamble(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sr := NewSQLReader(bufio.NewReader(strings.NewReader(c.input)))
+			sr := NewSQLReader(bufio.NewReader(strings.NewReader(c.input)), config.SQLDialectMySQL)
 			_, err := sr.ReadHeader()
 			if err != io.EOF && err != nil {
 				t.Fatalf("ReadHeader: %v", err)
@@ -301,7 +303,7 @@ func TestSQLReader_MultiLineStatement(t *testing.T) {
 		"('dbl''quote')\n" +
 		";\n" +
 		"INSERT INTO `t` (`v`) VALUES ('after');\n"
-	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)), config.SQLDialectMySQL)
 
 	cols, err := sr.ReadHeader()
 	if err != nil {
@@ -329,7 +331,7 @@ func TestSQLReader_KeywordCaseAndNonASCII(t *testing.T) {
 	// different byte length (U+0131 dotless i) must not shift the parser.
 	// Quoted "null" stays data; only the bare NULL token is nil.
 	input := "insert into `t` (`v`) values ('ı'), ('中文'), ('null'), (NULL);\n"
-	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)), config.SQLDialectMySQL)
 
 	cols, err := sr.ReadHeader()
 	if err != nil {
@@ -357,7 +359,7 @@ func TestSQLReader_ValuesSurviveStatementBufferReuse(t *testing.T) {
 	// buffer; the earlier row must still hold its own bytes.
 	input := "INSERT INTO `t` (`a`,`b`) VALUES ('keep-me', 42);\n" +
 		"INSERT INTO `t` (`a`,`b`) VALUES ('second', NULL),('third', 0x41);\n"
-	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)))
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)), config.SQLDialectMySQL)
 
 	cols, err := sr.ReadHeader()
 	if err != nil {
@@ -429,7 +431,7 @@ func TestSQLReader_StatementSpansChunks(t *testing.T) {
 	}
 	sb.WriteString(";")
 
-	sr := NewSQLReader(bufio.NewReader(strings.NewReader(sb.String())))
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(sb.String())), config.SQLDialectMySQL)
 	cols, err := sr.ReadHeader()
 	if err != nil {
 		t.Fatalf("ReadHeader: %v", err)
@@ -486,5 +488,104 @@ func TestSQLReader_StatementSpansChunks(t *testing.T) {
 	}
 	if want[2*rowChunkRows] != "<nil>" {
 		t.Errorf("NULL at chunk start = %q, want <nil>", want[2*rowChunkRows])
+	}
+}
+
+// dmReadAll reads a whole SQL dump under the Dameng grammar and returns the
+// columns plus every row, failing the test on any error other than the final EOF.
+func dmReadAll(t *testing.T, input string) ([]string, [][]interface{}) {
+	t.Helper()
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(input)), config.SQLDialectDM)
+	cols, err := sr.ReadHeader()
+	if err != nil {
+		t.Fatalf("ReadHeader: %v", err)
+	}
+	var rows [][]interface{}
+	for {
+		row, err := sr.ReadRow()
+		if err == io.EOF {
+			return cols, rows
+		}
+		if err != nil {
+			t.Fatalf("ReadRow: %v", err)
+		}
+		rows = append(rows, row)
+	}
+}
+
+// TestSQLReader_DamengHexRawBinary pins the feature this round adds: the Dameng
+// SQL writer emits every binary column as HEXTORAW('<hex>'), whose nested ')'
+// used to close the tuple early and leave the payload as literal text. The
+// Dameng-dialect reader must decode it back to bytes, including the empty form
+// HEXTORAW(”) (an empty BLOB, never NULL) and the doubled-paren case where a
+// HEXTORAW sits before a following column.
+func TestSQLReader_DamengHexRawBinary(t *testing.T) {
+	input := "INSERT INTO \"t\" (\"id\", \"b\") VALUES (1,HEXTORAW('00FF10'));\n" +
+		"INSERT INTO \"t\" (\"id\", \"b\") VALUES (2,HEXTORAW(''));\n" +
+		"INSERT INTO \"t\" (\"id\", \"b\", \"c\") VALUES (3,HEXTORAW('DEADBEEF'),NULL);\n"
+	cols, rows := dmReadAll(t, input)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3 (a HEXTORAW tuple may have closed early)", len(rows))
+	}
+	// Header columns come from the first INSERT only (id,b); the third row is a
+	// wider tuple but the run's column count is the header's.
+	if cols[0] != "id" || cols[1] != "b" {
+		t.Fatalf("cols = %v, want id,b", cols)
+	}
+	if b, ok := rows[0][1].([]byte); !ok || !bytes.Equal(b, []byte{0x00, 0xFF, 0x10}) {
+		t.Errorf("row1 binary = %v (%T), want 00 FF 10", rows[0][1], rows[0][1])
+	}
+	if b, ok := rows[1][1].([]byte); !ok || len(b) != 0 {
+		t.Errorf("row2 empty HEXTORAW = %#v (%T), want a non-nil zero-length []byte", rows[1][1], rows[1][1])
+	}
+	if b, ok := rows[2][1].([]byte); !ok || !bytes.Equal(b, []byte{0xDE, 0xAD, 0xBE, 0xEF}) {
+		t.Errorf("row3 binary = %v, want DE AD BE EF", rows[2][1])
+	}
+}
+
+// TestSQLReader_DamengBackslashIsLiteral pins the other half of the Dameng
+// grammar: an Oracle string keeps a backslash as an ordinary byte, so a value
+// with `a\b` must read back as three bytes `a\b`, not the two-byte escape MySQL
+// would produce. A doubled single quote still collapses to one.
+func TestSQLReader_DamengBackslashIsLiteral(t *testing.T) {
+	input := "INSERT INTO \"t\" (\"s\", \"q\") VALUES ('a\\b','it''s');\n"
+	_, rows := dmReadAll(t, input)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if s, _ := rows[0][0].(string); s != `a\b` {
+		t.Errorf("dameng backslash = %q, want a\\b (literal backslash)", s)
+	}
+	if q, _ := rows[0][1].(string); q != "it's" {
+		t.Errorf("dameng doubled quote = %q, want it's", q)
+	}
+
+	// Contrast: the same bytes under the MySQL grammar run through unescapeSQLString.
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader("INSERT INTO `t` (`s`) VALUES ('a\\b');\n")), config.SQLDialectMySQL)
+	if _, err := sr.ReadHeader(); err != nil {
+		t.Fatalf("mysql ReadHeader: %v", err)
+	}
+	mrow, err := sr.ReadRow()
+	if err != nil {
+		t.Fatalf("mysql ReadRow: %v", err)
+	}
+	if s, _ := mrow[0].(string); s != "ab" {
+		t.Errorf("mysql backslash = %q, want ab (MySQL unescapes \\b)", s)
+	}
+}
+
+// TestSQLReader_DamengExtendedInsert checks the HEXTORAW tuple boundary holds
+// when many rows are merged into one INSERT (the --extended-insert layout), so
+// the paren-depth walk closes each tuple on its own ')' and every row survives.
+func TestSQLReader_DamengExtendedInsert(t *testing.T) {
+	input := "INSERT INTO \"t\" (\"id\", \"b\") VALUES (1,HEXTORAW('AA')),(2,HEXTORAW('BB')),(3,HEXTORAW('CC'));\n"
+	_, rows := dmReadAll(t, input)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(rows))
+	}
+	for i, want := range []byte{0xAA, 0xBB, 0xCC} {
+		if b, ok := rows[i][1].([]byte); !ok || !bytes.Equal(b, []byte{want}) {
+			t.Errorf("row %d = %v, want %02X", i, rows[i][1], want)
+		}
 	}
 }

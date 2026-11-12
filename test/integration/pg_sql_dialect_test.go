@@ -48,7 +48,7 @@ func pgWrite(t *testing.T, columns []string, rows [][]interface{},
 // the decoded rows.
 func pgRead(t *testing.T, text string) ([]string, [][]interface{}) {
 	t.Helper()
-	r := _import.NewSQLReader(bufio.NewReader(bytes.NewReader([]byte(text))))
+	r := _import.NewSQLReader(bufio.NewReader(bytes.NewReader([]byte(text))), config.SQLDialectPG)
 	cols, err := r.ReadHeader()
 	if err != nil {
 		t.Fatalf("ReadHeader: %v (sql=%q)", err, text)

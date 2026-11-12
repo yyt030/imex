@@ -130,6 +130,23 @@ func (imp *Importer) backend() backend.Backend {
 	return imp.be
 }
 
+// sqlDialect resolves the SQL grammar the `-f sql` reader parses the input file
+// with, from the engine this run writes through. Import has no --sql-dialect flag
+// (unlike export): a `-f sql` dump is a same-engine replay artifact — cross-engine
+// transport is DEL/parquet's job — so the target engine fully determines the
+// source grammar. A Dameng run reads HEXTORAW('..') binary and Oracle-style
+// strings, a PostgreSQL run reads '..'::bytea and E”, and a MySQL run reads the
+// historical 0x/backslash grammar byte for byte.
+func (imp *Importer) sqlDialect() config.SQLDialect {
+	switch imp.backend().Engine() {
+	case backend.EnginePG:
+		return config.SQLDialectPG
+	case backend.EngineDM:
+		return config.SQLDialectDM
+	}
+	return config.SQLDialectMySQL
+}
+
 // Close closes the importer and releases resources
 func (imp *Importer) Close() error {
 	if imp.db != nil {
@@ -173,7 +190,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 	case "del":
 		reader = NewDelReader(bufio.NewReader(file), &imp.cfg.DelModifier, !imp.cfg.DelModifier.NoColNames)
 	case "sql":
-		reader = NewSQLReader(bufio.NewReader(file))
+		reader = NewSQLReader(bufio.NewReader(file), imp.sqlDialect())
 	case "parquet":
 		parquetReader, err := NewParquetReader(file)
 		if err != nil {

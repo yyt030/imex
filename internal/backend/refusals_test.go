@@ -157,34 +157,43 @@ func TestEngineNameInRefusalMessageIsTheValue(t *testing.T) {
 // prints), so a future edit that drops the import rule or re-adds an export rule must
 // fail here rather than change what operators see unnoticed. cmd/engine_test.go
 // asserts the whole sentences against the CLI; this pins the shape that owns them.
-func TestDamengExportSQLIsNoLongerRefusedButImportStillIs(t *testing.T) {
+// Dameng now round-trips `--format sql` both ways: neither export nor import
+// carries a --format sql rule. The SQL reader gained a dialect-aware path (it
+// decodes HEXTORAW('..') binary and treats a backslash in an Oracle string as a
+// literal byte), so a Dameng dump imports back into Dameng. These tables are
+// contract face ③ (the sentence a run prints), so a future edit that re-adds a
+// --format sql rule on either side must fail here rather than silently change what
+// operators see. cmd/engine_test.go asserts the whole sentences against the CLI;
+// this pins the shape that owns them.
+func TestDamengSQLRoundTripsBothWays(t *testing.T) {
 	exp := Must(EngineDM).Refusals(CmdExport)
-	want := []string{"--threads", "--no-hex-blob", "--session-var"}
-	if len(exp) != len(want) {
-		t.Fatalf("dm export has %d rules, want %d", len(exp), len(want))
+	wantExp := []string{"--threads", "--no-hex-blob", "--session-var"}
+	if len(exp) != len(wantExp) {
+		t.Fatalf("dm export has %d rules, want %d", len(exp), len(wantExp))
 	}
 	for i, r := range exp {
-		if got := r.Option(RunOptions{}); got != want[i] {
-			t.Errorf("dm export rule %d = %q, want %q", i, got, want[i])
+		if got := r.Option(RunOptions{}); got != wantExp[i] {
+			t.Errorf("dm export rule %d = %q, want %q", i, got, wantExp[i])
 		}
 	}
-	// The whole point of the feature: no --format sql rule survives on export.
 	for _, r := range exp {
 		if r.Option(RunOptions{Format: "sql"}) == "--format sql" {
-			t.Errorf("dm export must no longer refuse --format sql")
+			t.Errorf("dm export must not refuse --format sql")
 		}
 	}
 	imp := Must(EngineDM).Refusals(CmdImport)
-	var sawFormatSQL bool
 	for _, r := range imp {
 		if r.Option(RunOptions{Format: "sql"}) == "--format sql" {
-			sawFormatSQL = true
-			if !strings.Contains(r.Reason, "export") {
-				t.Errorf("dm import --format sql reason should mention the export it now allows: %q", r.Reason)
-			}
+			t.Errorf("dm import must no longer refuse --format sql; the reader is now Dameng-dialect aware")
 		}
 	}
-	if !sawFormatSQL {
-		t.Errorf("dm import must still refuse --format sql; the reader cannot replay a Dameng dump")
+	wantImp := []string{"--mode insert_update", "--session-var"}
+	if len(imp) != len(wantImp) {
+		t.Fatalf("dm import has %d rules, want %d", len(imp), len(wantImp))
+	}
+	for i, r := range imp {
+		if got := r.Option(RunOptions{Mode: wantImp[i]}); got != wantImp[i] {
+			t.Errorf("dm import rule %d = %q, want %q", i, got, wantImp[i])
+		}
 	}
 }

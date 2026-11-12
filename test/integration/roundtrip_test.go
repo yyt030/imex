@@ -41,7 +41,7 @@ func sqlRoundTrip(t *testing.T, columns []string, rows [][]interface{}, statemen
 	}
 
 	text := buf.String()
-	r := _import.NewSQLReader(bufio.NewReader(bytes.NewReader(buf.Bytes())))
+	r := _import.NewSQLReader(bufio.NewReader(bytes.NewReader(buf.Bytes())), config.SQLDialectMySQL)
 	cols, err := r.ReadHeader()
 	if err != nil {
 		t.Fatalf("ReadHeader: %v (sql=%q)", err, text)
@@ -470,7 +470,7 @@ func TestSQLRoundTrip_SingleRowInsert(t *testing.T) {
 		}
 	}
 
-	r := _import.NewSQLReader(bufio.NewReader(bytes.NewReader(buf.Bytes())))
+	r := _import.NewSQLReader(bufio.NewReader(bytes.NewReader(buf.Bytes())), config.SQLDialectMySQL)
 	if _, err := r.ReadHeader(); err != nil {
 		t.Fatalf("ReadHeader: %v", err)
 	}

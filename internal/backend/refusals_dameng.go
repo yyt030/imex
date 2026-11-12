@@ -5,17 +5,19 @@ import (
 )
 
 // Dameng (DM8 Oracle mode) option refusals. The first cut only supports:
-//   - export: --format del/parquet, single-threaded, any --query
-//   - import: --format del/parquet, --mode insert/replace
+//   - export: --format del/sql/parquet, single-threaded, any --query
+//   - import: --format del/sql/parquet, --mode insert/replace
 //   - list: databases, schemas, tables, views, columns, indexes, triggers and
 //     routines (everything but events, which DM has no scheduler for)
 // Everything else is refused here so the run stops before it dials.
 //
-// --format sql export is now supported (the writer gained a Dameng/Oracle
-// grammar: double-quoted identifiers, HEXTORAW('..') binary and SQL-standard
-// string literals, all pinned against live DM8 disql). --format sql import is
-// still refused because the SQL reader still parses with the MySQL statement
-// grammar and cannot yet replay a Dameng dump.
+// --format sql round-trips both ways now. The writer emits a Dameng/Oracle
+// grammar (double-quoted identifiers, HEXTORAW('..') binary and SQL-standard
+// string literals), and the SQL reader is dialect-aware: on the Dameng grammar it
+// decodes HEXTORAW('..') as bytes and treats a backslash in a string as a literal
+// byte rather than an escape, so a Dameng `-f sql` dump imports back into Dameng.
+// The reader is still a same-engine replay parser — it does not attempt to read an
+// arbitrary external Oracle/dexp dump — so cross-engine transport stays DEL/parquet.
 
 const dmSessionVarReason = "SET <name>=<value> is MySQL session grammar and imex does not translate it for Dameng; put session settings in the server or role configuration"
 
@@ -41,11 +43,6 @@ func (damengBackend) Refusals(c Command) []Refusal {
 		}
 	case CmdImport:
 		return []Refusal{
-			{
-				Option:  static("--format sql"),
-				Reason:  "imex can now export a Dameng-dialect --format sql dump, but the SQL reader still parses with the MySQL statement grammar and cannot replay a Dameng dump; import a --format del or --format parquet file, or load the dump with your own DM client",
-				Applies: func(o RunOptions) bool { return o.Format == "sql" },
-			},
 			{
 				Option:  static("--mode insert_update"),
 				Reason:  "the Dameng backend does not implement upsert in this MVP, use --mode insert or --mode replace",

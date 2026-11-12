@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/imex/internal/config"
 )
 
 // The three benchmarks below read the same logical dataset (rows x columns) in
@@ -122,7 +124,7 @@ func buildWrappedSQL() string {
 // speed-up can never come from skipping work.
 func drainSQLReader(b *testing.B, data string) {
 	b.Helper()
-	sr := NewSQLReader(bufio.NewReader(strings.NewReader(data)))
+	sr := NewSQLReader(bufio.NewReader(strings.NewReader(data)), config.SQLDialectMySQL)
 	cols, err := sr.ReadHeader()
 	if err != nil {
 		b.Fatalf("ReadHeader: %v", err)

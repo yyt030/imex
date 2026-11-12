@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/imex/internal/config"
 	"github.com/pkg/errors"
 )
 
@@ -34,6 +35,12 @@ type SQLReader struct {
 	columns []string
 	cur     insertCursor    // parse position inside the INSERT being read
 	pending [][]interface{} // rows parsed from the current INSERT, not yet returned
+	// dialect is the SQL grammar the file was written in (auto has resolved to a
+	// concrete value by the time the reader is built). It selects the literal
+	// rules: Dameng is Oracle-mode (HEXTORAW binary, backslash is an ordinary
+	// character, lone quotes doubled), PostgreSQL uses E'' and '..'::bytea,
+	// MySQL uses 0x hex and backslash escapes.
+	dialect config.SQLDialect
 	// unrecognized records a statement ReadHeader could not classify as an
 	// INSERT or dump preamble (SET/LOCK/...). A file made only of preamble and
 	// a CREATE TABLE line (a data-only dump of an empty table, or mysqldump's
@@ -42,10 +49,21 @@ type SQLReader struct {
 	unrecognized bool
 }
 
-// NewSQLReader creates a new SQL format reader.
-func NewSQLReader(r *bufio.Reader) *SQLReader {
+// isDM reports whether the reader must apply the Dameng/Oracle literal grammar:
+// binary comes back as HEXTORAW('..') and a backslash inside a string is a
+// literal byte, not an escape marker. MySQL and PostgreSQL keep the historical
+// backslash-escaping path unchanged.
+func (s *SQLReader) isDM() bool { return s.dialect == config.SQLDialectDM }
+
+// NewSQLReader creates a new SQL format reader for dumps written in `dialect`.
+// The caller resolves --sql-dialect/auto to a concrete grammar before building
+// the reader, so the reader never guesses the source language from the bytes:
+// a Dameng HEXTORAW('..') or a literal backslash in an Oracle string is only
+// decoded correctly when it is told the file is Dameng.
+func NewSQLReader(r *bufio.Reader, dialect config.SQLDialect) *SQLReader {
 	return &SQLReader{
-		rd: newRecordReader(r, scanLines),
+		rd:      newRecordReader(r, scanLines),
+		dialect: dialect,
 	}
 }
 
@@ -78,7 +96,7 @@ func (s *SQLReader) ReadHeader() ([]string, error) {
 			// The statement is parsed chunk by chunk from here on, so the header
 			// only points the cursor at it: a one-million-row INSERT must not be
 			// materialised before the importer has taken its first batch.
-			s.cur.reset(stmt, len(cols))
+			s.cur.reset(stmt, len(cols), s.isDM())
 			return cols, nil
 		default:
 			// Skip SET/LOCK/UNLOCK/other preamble statements. Anything else is
@@ -110,7 +128,7 @@ func (s *SQLReader) OnlyPreamble() bool { return !s.unrecognized }
 func (s *SQLReader) nextStatement() ([]byte, bool) {
 	s.stmt = s.stmt[:0]
 	started := false
-	var st stmtState
+	st := stmtState{noBackslash: s.isDM()}
 
 	for s.rd.Scan() {
 		line := s.rd.Bytes()
@@ -158,6 +176,10 @@ type stmtState struct {
 	inString bool
 	quote    byte
 	escaped  bool
+	// noBackslash mirrors the Dameng/Oracle grammar, where a backslash inside a
+	// string is an ordinary byte rather than an escape marker. Leaving it false
+	// (MySQL, PostgreSQL) keeps the historical backslash handling untouched.
+	noBackslash bool
 }
 
 // scan advances the state over b and reports the offset of the first ';' that
@@ -172,7 +194,9 @@ func (st *stmtState) scan(b []byte) (int, bool) {
 		if st.inString {
 			switch ch {
 			case '\\':
-				st.escaped = true
+				if !st.noBackslash {
+					st.escaped = true
+				}
 			case st.quote:
 				st.inString = false
 			}
@@ -283,7 +307,7 @@ func (s *SQLReader) ReadRow() ([]interface{}, error) {
 		head := bytes.TrimLeft(stmt, " \t")
 		switch {
 		case hasPrefixFold(head, "INSERT "):
-			s.cur.reset(stmt, len(s.columns))
+			s.cur.reset(stmt, len(s.columns), s.isDM())
 		default:
 			// A CREATE TABLE or other statement between INSERTs is skipped; imex
 			// replays no DDL.
@@ -355,12 +379,14 @@ type insertCursor struct {
 	cols  int         // column count the header announced, for sizing the arena
 	pos   int         // first unread byte of after
 	done  bool        // after is exhausted
+	dm    bool        // Dameng/Oracle literal grammar (no backslash escapes, HEXTORAW binary)
 	spans []tupleSpan // this chunk's tuple boundaries; capacity rowChunkRows
 }
 
 // reset points the cursor at stmt's VALUES region and forgets any previous
 // statement. It reports false when the statement carries no VALUES at all.
-func (c *insertCursor) reset(stmt []byte, cols int) bool {
+// `dm` selects the Dameng/Oracle literal grammar for the whole run.
+func (c *insertCursor) reset(stmt []byte, cols int, dm bool) bool {
 	valuesIdx := indexFold(stmt, "VALUES")
 	if valuesIdx == -1 {
 		return false
@@ -369,6 +395,7 @@ func (c *insertCursor) reset(stmt []byte, cols int) bool {
 	c.cols = cols
 	c.pos = 0
 	c.done = false
+	c.dm = dm
 	return true
 }
 
@@ -390,7 +417,7 @@ func (c *insertCursor) nextChunk() [][]interface{} {
 	// First pass: walk tuples and record their boundaries. The walk is the same
 	// quoting state machine the value parser uses; because a chunk always stops at
 	// a tuple boundary, the state restarts clean at the next chunk.
-	var st stmtState
+	st := stmtState{noBackslash: c.dm}
 	i := start
 	for i < len(c.after) && len(spans) < rowChunkRows {
 		for i < len(c.after) && c.after[i] != '(' {
@@ -402,6 +429,12 @@ func (c *insertCursor) nextChunk() [][]interface{} {
 		i++ // skip '('
 		body := i
 		end := len(c.after)
+		// depth counts nested parentheses opened inside this tuple so the walk
+		// closes the tuple on its own ')' rather than a function call's. A Dameng
+		// dump wraps binary as HEXTORAW('..'), whose ')' would otherwise end the
+		// tuple early. MySQL and PostgreSQL emit no nested parens in VALUES, so
+		// depth stays 0 and their behaviour is byte-for-byte unchanged.
+		depth := 0
 		for i < len(c.after) {
 			ch := c.after[i]
 			if st.escaped {
@@ -412,7 +445,9 @@ func (c *insertCursor) nextChunk() [][]interface{} {
 			if st.inString {
 				switch ch {
 				case '\\':
-					st.escaped = true
+					if !st.noBackslash {
+						st.escaped = true
+					}
 				case st.quote:
 					st.inString = false
 				}
@@ -425,10 +460,20 @@ func (c *insertCursor) nextChunk() [][]interface{} {
 				i++
 				continue
 			}
-			if ch == ')' {
-				end = i
+			if ch == '(' {
+				depth++
 				i++
-				break
+				continue
+			}
+			if ch == ')' {
+				if depth == 0 {
+					end = i
+					i++
+					break
+				}
+				depth--
+				i++
+				continue
 			}
 			i++
 		}
@@ -465,10 +510,9 @@ func (c *insertCursor) nextChunk() [][]interface{} {
 	}
 	values := make([]interface{}, 0, slots)
 
-	st = stmtState{}
 	for _, sp := range spans {
 		var row []interface{}
-		values, row = parseValueList(values, c.after[sp.body:sp.end], text, sp.body-start, c.cols)
+		values, row = parseValueList(values, c.after[sp.body:sp.end], text, sp.body-start, c.cols, c.dm)
 		rows = append(rows, row)
 	}
 	return rows
@@ -503,15 +547,19 @@ func equalFoldNull(b []byte) bool {
 // them to dst and returning both the grown arena and the row window inside it.
 // It walks the body token by token, treating single/double-quoted regions as
 // string literals (delimiter-free, inner whitespace preserved) and everything
-// else as a bare token (numbers, NULL, 0x hex literals, keywords). Surrounding
-// inter-token whitespace is ignored; only content *inside* quotes is kept
-// verbatim.
+// else as a bare token (numbers, NULL, 0x hex literals, HEXTORAW('..') on the
+// Dameng grammar, keywords). Surrounding inter-token whitespace is ignored; only
+// content *inside* quotes is kept verbatim.
 //
 // The body is a window into text (textBase is its offset there): the chunk was
 // copied once, so a plain literal or plain token becomes a substring of that
 // copy with no allocation of its own. Only values that need rewriting — a
-// collapsed doubled quote, a backslash escape, or a 0x literal — allocate.
-func parseValueList(dst []interface{}, body []byte, text string, textBase, expected int) ([]interface{}, []interface{}) {
+// collapsed doubled quote, a backslash escape, or a 0x/HEXTORAW literal — allocate.
+//
+// `dm` selects the Dameng/Oracle grammar: a backslash inside a string is a
+// literal byte (no escape decoding), and a bare HEXTORAW('..') token is a binary
+// value, not text. MySQL and PostgreSQL (dm=false) keep the historical path.
+func parseValueList(dst []interface{}, body []byte, text string, textBase, expected int, dm bool) ([]interface{}, []interface{}) {
 	start := len(dst)
 	if expected > 0 && cap(dst)-start < expected {
 		// Growth is rare: nextChunk sizes dst from the chunk's tuple count and
@@ -535,10 +583,11 @@ func parseValueList(dst []interface{}, body []byte, text string, textBase, expec
 		// PostgreSQL E'' literal: a leading E/e before the opening quote marks a
 		// string whose backslash escapes are decoded regardless of the server's
 		// standard_conforming_strings. A MySQL dump has no bare leading E before a
-		// quote, so this branch cannot be taken by MySQL text.
-		if (body[i] == 'E' || body[i] == 'e') && i+1 < n && (body[i+1] == '\'' || body[i+1] == '"') {
+		// quote, and the Dameng writer never emits E'', so this branch is skipped
+		// on the Dameng grammar where a bare E before a quote is plain text.
+		if !dm && (body[i] == 'E' || body[i] == 'e') && i+1 < n && (body[i+1] == '\'' || body[i+1] == '"') {
 			q := body[i+1]
-			contentEnd, next, collapsed, _ := literalScan(body, i+2, q)
+			contentEnd, next, collapsed, _ := literalScan(body, i+2, q, false)
 			inner := string(body[i+2 : contentEnd])
 			if collapsed {
 				inner = collapseDoubledQuotes(body[i+2:contentEnd], q)
@@ -547,9 +596,11 @@ func parseValueList(dst []interface{}, body []byte, text string, textBase, expec
 			i = next
 		} else if q := body[i]; q == '\'' || q == '"' {
 			// Quoted string literal: capture content without the delimiters.
-			contentEnd, next, collapsed, escaped := literalScan(body, i+1, q)
+			// On the Dameng grammar backslash is not an escape, so literalScan
+			// leaves `escaped` false and only a doubled quote is collapsed.
+			contentEnd, next, collapsed, escaped := literalScan(body, i+1, q, dm)
 			raw := body[i+1 : contentEnd]
-			if isByteaCast(body[next:]) {
+			if !dm && isByteaCast(body[next:]) {
 				// A closing quote followed by ::bytea is a PostgreSQL binary
 				// literal, not a text value: decode the hex payload.
 				val = decodeByteaLiteral(raw)
@@ -557,6 +608,10 @@ func parseValueList(dst []interface{}, body []byte, text string, textBase, expec
 				if next > n {
 					next = n
 				}
+			} else if collapsed && dm {
+				// Oracle collapses a doubled quote to one and has no backslash
+				// escape, so the collapsed text is the value verbatim.
+				val = collapseDoubledQuotes(raw, q)
 			} else if collapsed {
 				val = unescapeSQLString(collapseDoubledQuotes(raw, q))
 			} else if escaped {
@@ -577,6 +632,9 @@ func parseValueList(dst []interface{}, body []byte, text string, textBase, expec
 			switch {
 			case len(token) == 0 || equalFoldNull(token):
 				val = nil
+			case dm && isHexRawLiteral(token):
+				// Dameng binary column: HEXTORAW('<hex>') is bytes, not the text.
+				val = decodeHexRawLiteral(token)
 			case isHexLiteralBytes(token):
 				val = decodeHexLiteralBytes(token)
 			default:
@@ -608,14 +666,16 @@ func parseValueList(dst []interface{}, body []byte, text string, textBase, expec
 //     the window verbatim, so no rebuild is needed, but the value must still go
 //     through unescapeSQLString. A backslash at the very end of an unterminated
 //     literal is excluded from the window, matching the per-byte path it replaced.
+//     `noBackslash` (the Dameng/Oracle grammar) treats a backslash as an ordinary
+//     byte, so this flag is never set and the escape pairs stay verbatim.
 //
 // With neither flag the value is exactly the window, which is the common case and
 // costs one copy.
-func literalScan(body []byte, start int, q byte) (contentEnd, next int, collapsed, escaped bool) {
+func literalScan(body []byte, start int, q byte, noBackslash bool) (contentEnd, next int, collapsed, escaped bool) {
 	i := start
 	for i < len(body) {
 		ch := body[i]
-		if ch == '\\' {
+		if ch == '\\' && !noBackslash {
 			if i+1 >= len(body) {
 				return i, i + 1, collapsed, true
 			}
@@ -677,6 +737,38 @@ func decodeHexLiteralBytes(token []byte) []byte {
 	if len(body)%2 != 0 {
 		// Malformed hex: pass the literal through as raw bytes so the caller can
 		// still bind it (the server will reject it anyway).
+		return append([]byte(nil), token...)
+	}
+	dst := make([]byte, len(body)/2)
+	if _, err := hex.Decode(dst, body); err != nil {
+		return append([]byte(nil), token...)
+	}
+	return dst
+}
+
+// isHexRawLiteral reports whether token is a Dameng/Oracle binary literal of the
+// form HEXTORAW('<hex>'). The Dameng SQL writer emits this for every binary
+// column (a bare X'..' widens to an integer on BLOB, and 0x.. is VARBINARY-only),
+// so the reader must recognize it only on the Dameng grammar. A shortest real
+// literal HEXTORAW(”) is 12 bytes.
+func isHexRawLiteral(token []byte) bool {
+	// "HEXTORAW('" is 10 bytes: H E X T O R A W ( '
+	return len(token) >= 12 &&
+		bytes.EqualFold(token[:9], []byte("HEXTORAW(")) && // HEXTORAW(
+		token[9] == '\'' && // opening quote
+		token[len(token)-2] == '\'' && token[len(token)-1] == ')'
+}
+
+// decodeHexRawLiteral decodes a HEXTORAW('<hex>') token to bytes. An empty body
+// (HEXTORAW(”)) returns []byte{}, matching the 0x and ::bytea empty-binary forms
+// rather than NULL. Malformed hex (odd length, non-hex digits) is passed through
+// verbatim so the caller still binds something and the server reports the error.
+func decodeHexRawLiteral(token []byte) []byte {
+	body := token[10 : len(token)-2] // strip "HEXTORAW('" and "')"
+	if len(body) == 0 {
+		return []byte{}
+	}
+	if len(body)%2 != 0 {
 		return append([]byte(nil), token...)
 	}
 	dst := make([]byte, len(body)/2)
