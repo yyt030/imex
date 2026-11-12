@@ -576,9 +576,9 @@ func TestEngineFlagFace(t *testing.T) {
 }
 
 // TestDMSurfaceRefusals pins the two commands whose Dameng scope is a subset of
-// the tool's: `list` serves four catalog objects and `show` serves none. The
-// refusals are the CLI face of the same table the import and export paths read,
-// so an unmeasured object exits 2 without dialling.
+// the tool's: `list` serves every catalog object but events, and `show` serves
+// every kind but events. The refusals are the CLI face of the same table the
+// import and export paths read, so an unmeasured object exits 2 without dialling.
 func TestDMSurfaceRefusals(t *testing.T) {
 	dmList := func(object string) *config.ListConfig {
 		cfg := config.NewListConfig()
@@ -592,16 +592,17 @@ func TestDMSurfaceRefusals(t *testing.T) {
 		return cfg
 	}
 
-	const dmListReason = "this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, schemas, tables, columns and indexes"
+	const dmListReason = "Dameng Oracle mode has no event scheduler, so there is no scheduled event to list; scheduled work lives in the DM job package"
 	served := map[string]bool{
-		"databases": true, "schemas": true, "tables": true, "columns": true, "indexes": true,
+		"databases": true, "schemas": true, "tables": true, "views": true,
+		"columns": true, "indexes": true, "triggers": true, "routines": true,
 	}
 	for _, object := range list.Objects() {
 		cfg := dmList(object)
 		if object == "columns" || object == "indexes" {
 			cfg.Table = "RT"
 		}
-		if object == "tables" {
+		if object == "tables" || object == "routines" {
 			cfg.Type = "all"
 		}
 		err := validateListConfig(cfg)

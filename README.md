@@ -26,7 +26,7 @@
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
-- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；导出侧仍限单线程，`--no-hex-blob` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export`/`import` 支持 `-f del|parquet`（单线程、`--mode insert|replace`）和 `list` 的四个对象，`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`-f sql`、并行导出、`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
+- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；导出侧仍限单线程，`--no-hex-blob` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export`/`import` 支持 `-f del|parquet`（单线程、`--mode insert|replace`）和 `list` 的八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`-f sql`、并行导出、`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -375,7 +375,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时九个对象里八个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时五个对象可用（`databases`、`schemas`、`tables`、`columns`、`indexes`），其余四个退出 `2`；`-D` 对 tables/columns/indexes 是模式名（进 DSN 并过滤 `OWNER`），对 `databases` 过滤库名、对 `schemas` 过滤模式名且都不进 DSN；五个系统模式在 `schemas` 与 `tables` 上默认排除，`--all` 取消排除（见「达梦引擎」）。对象名就是子命令名：
+`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时九个对象里八个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时八个对象可用（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`），`events` 退出 `2`；`-D` 对 tables/views/triggers/routines/columns/indexes 是模式名（进 DSN 并过滤 `OWNER`），对 `databases` 过滤库名、对 `schemas` 过滤模式名且都不进 DSN；五个系统模式在 `schemas`、`tables`、`views`、`triggers`、`routines` 上默认排除，`--all` 取消排除（见「达梦引擎」）。对象名就是子命令名：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -633,11 +633,15 @@ imex import --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE \
 imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 ```
 
-**能用的**：`export -f del|parquet`（单线程，任意 `--query`，DEL 布局修饰项照常生效）、`import -f del|parquet` 的 `--mode insert`（出厂默认值）与 `--mode replace`、`list` 的四个对象（`databases`、`tables`、`columns`、`indexes`，`tables` 的 `--type base|view|all` 可用）。`list` 四个对象的输出列名与 MySQL 侧逐列相同，解析表头的下游脚本不必为引擎分叉。导入侧的 `--threads` 不在拒绝之列——多 worker 各自攒批发的是同一句方言 INSERT，与引擎无关；被拒的是导出侧的并行，它的分片语句靠 `MOD()` 与 `LIMIT … OFFSET`。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
+**能用的**：`export -f del|parquet`（单线程，任意 `--query`，DEL 布局修饰项照常生效）、`import -f del|parquet` 的 `--mode insert`（出厂默认值）与 `--mode replace`、`list` 的八个对象（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`，`tables` 的 `--type base|view|all` 可用）。`list` 八个对象的输出列名与 MySQL 侧逐列相同，解析表头的下游脚本不必为引擎分叉。导入侧的 `--threads` 不在拒绝之列——多 worker 各自攒批发的是同一句方言 INSERT，与引擎无关；被拒的是导出侧的并行，它的分片语句靠 `MOD()` 与 `LIMIT … OFFSET`。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
 
 `list databases` 回答**库**这一层：达梦一个实例只有一个库，所以它读 `V$DATABASE`、只回一行（本机是 `DAMENG`）；`-D` 在这条命令上过滤库名，并且不写进 DSN——库名不是模式，写进去会在登录时被当成模式名拒掉（`Error -2103`）。**模式**是另一层，用 `list schemas`（别名 `sch`）看：`SELECT DISTINCT OBJECT_NAME FROM ALL_OBJECTS WHERE OBJECT_TYPE = 'SCH'`，不带 `--all` 回 `DMPROBE`、`VPROBE` 两行，`--all` 回全部 7 个（`CTISYS`、`DMPROBE`、`SYS`、`SYSAUDITOR`、`SYSDBA`、`SYSSSO`、`VPROBE`）。选 `ALL_OBJECTS` 而不是 `DBA_USERS`，是因为它不丢 `CTISYS`（内置全文检索模式、无登录账号但 `-D CTISYS` 可用）；也没用 `V$DATABASE`，因为库名不是模式名。它同样不需要 DBA 权限——只持 `RESOURCE` 的普通账号也读到 7 行，而 `SYS.SYSOBJECTS` 对它会报 `No select privilege`。`show sch` 取 `DBMS_METADATA.GET_DDL('USER',…)`：达梦的模式与账号是同一个对象，`GET_DDL('SCHEMA',…)` 报 `-20001 invalid object type`，所以输出是 `CREATE USER … IDENTIFIED BY <PASSWORD>`——口令是服务端元数据层自己的占位符，不能直接重放；`CTISYS` 这类没有账号的内置模式会报 `-20008 object is not found`。
 
-`-D` 在达梦上对表、列、索引是**模式名**（达梦是「一个角色一个模式」的结构）：它既写进驱动的 `schema` 参数，也是目录查询过滤的 `OWNER`，用 `UPPER(OWNER) = UPPER(?)` 匹配，所以小写给也行；`list schemas` 上它过滤 `OBJECT_NAME`、`list databases` 上过滤库名 `NAME`，这两条命令都不把 `-D` 写进 DSN（不存在的名字回 0 行，而不是登录失败）。不给 `-D` 时 `list schemas`/`list tables` 默认排除服务端自带的系统模式 `SYS`、`SYSDBA`、`SYSSSO`、`SYSAUDITOR`、`CTISYS`（实测名单：前四个在 `DBA_USERS` 里，`CTISYS` 是全文检索用的内置模式、无登录账号但持有 `SYSCONTEXTINDEXES`），`--all` 取消排除。`-u` 不能为空，为空在建连之前退出 `2`（`--user is required for --engine dm`）。标识符用双引号包裹、内部双引号翻倍（`a"b` → `"a""b"`）；Oracle 模式把未加引号的名字折成大写，要保住原名大小写唯有加引号这一条路。
+`-D` 在达梦上对表、视图、触发器、例程、列、索引是**模式名**（达梦是「一个角色一个模式」的结构）：它既写进驱动的 `schema` 参数，也是目录查询过滤的 `OWNER`。**这一项区分大小写，且是登录这一关定的**：Oracle 模式把未加引号的名字存成大写，`-D dmprobe` 在 ping 阶段就报 `Error -2103: 无效的模式名[dmprobe]`（实测，六类对象一致），得写 `-D DMPROBE`；目录查询里虽然用 `UPPER(OWNER) = UPPER(?)` 比较，但那层容错发生在登录之后，够不着这个错。`list schemas` 上 `-D` 过滤 `OBJECT_NAME`、`list databases` 上过滤库名 `NAME`，这两条命令不把 `-D` 写进 DSN（不存在的名字回 0 行，而不是登录失败），也只有在这两条上小写是认的。不给 `-D` 时 `list schemas`/`list tables` 默认排除服务端自带的系统模式 `SYS`、`SYSDBA`、`SYSSSO`、`SYSAUDITOR`、`CTISYS`（实测名单：前四个在 `DBA_USERS` 里，`CTISYS` 是全文检索用的内置模式、无登录账号但持有 `SYSCONTEXTINDEXES`），`--all` 取消排除。`-u` 不能为空，为空在建连之前退出 `2`（`--user is required for --engine dm`）。标识符用双引号包裹、内部双引号翻倍（`a"b` → `"a""b"`）；Oracle 模式把未加引号的名字折成大写，要保住原名大小写唯有加引号这一条路。
+
+`list views`／`list triggers`／`list routines` 读 `ALL_VIEWS`／`ALL_TRIGGERS`／`ALL_PROCEDURES` 而不是 `DBA_*`：实测同一台服务器上，只持 `RESOURCE` 的普通账号查 `SYS.DBA_VIEWS`／`DBA_TRIGGERS`／`DBA_PROCEDURES` 一律 `Error -5504: 没有 […] 对象的查询权限`，而三张 `ALL_*` 视图正常返回它有权看到的行。三者的列名与 MySQL 侧逐列相同，但达梦目录缺的信息印成空格子、不猜：`list views` 的 `check_option` 无处可读——`ALL_VIEWS.TEXT` 只有查询文本，`CREATE VIEW … WITH CASCADED CHECK OPTION` 只在 `DBMS_METADATA.GET_DDL` 的产物里（`show vw` 打的就是它）；`is_updatable` 只有一个候选列 `READ_ONLY`，本构建 244 行全是 `NULL`，映射写好但当前恒空；`security_type` 是实测常量 `DEFINER`（普通账号拿到视图的 `SELECT` 授权后能读视图、读基表却报 `-5504`，即按属主权限执行）。`list triggers` 的 `timing` 由 `TRIGGERING_TYPE` 折掉行模式（`BEFORE ROW`→`BEFORE`、`INSTEAD OF ROW`→`INSTEAD OF`），`event` 原样输出——达梦允许一个触发器挂多个事件，存成 `DELETE OR INSERT OR UPDATE` 这样的一格，MySQL 的一触发器一事件表达不了；`statement` 是 `TRIGGER_BODY`——它在本构建里存的是整段触发器源码（含 `CREATE OR REPLACE TRIGGER …` 头），与 MySQL 的 `ACTION_STATEMENT` 只放 body 不同；达梦没有 body-only 的列，故原样输出、不在 SQL 里猜切点。`list routines` 没有 `DBA_ROUTINES` 可用（`SELECT COUNT(*) FROM SYS.DBA_ROUTINES` 报 `-2106 无效的表或视图名`），改读 `ALL_PROCEDURES` 并只取顶层例程（`PROCEDURE_NAME IS NULL`）：包本身是 `OBJECT_TYPE='PACKAGE'`、包子程序各占一行并带自己的 `PROCEDURE_NAME`，不过滤会把一个包当成一个例程；`security` 由 `AUTHID` 映射成 `DEFINER`／`INVOKER`，`deterministic` 目录里就是 `YES`／`NO`，`data_access` 没有对应列、留空。
+
+`list indexes` 只列**声明过的**索引，达梦给每张表自动建的那一个聚簇索引不在其中：它叫 `INDEX335554xx`、`INDEX_TYPE` 是 `CLUSTER`，`DBMS_METADATA.GET_DDL` 的产物里根本没有列清单（`CREATE OR REPLACE CLUSTER INDEX … ON "DMPROBE"."FX_DST"( STORAGE(ON "MAIN", CLUSTERBTR) ;`），`DBA_IND_COLUMNS` 因此没有它的行，与 `DBA_IND_COLUMNS` 的内连接自然把它挡在外面。这样才对得上 MySQL：`information_schema.STATISTICS` 也不会为一张没声明索引的表虚构一行（实测 MySQL 8.0.46 同形状的表只回表头）。所以 `list indexes -D DMPROBE -t FX_DST` 回 0 行不是漏行——那张表确实只有聚簇索引，没有主键也没有二级索引；建表时写了 `CLUSTER PRIMARY KEY` 的另算，它的索引有列清单（一行，`UNIQUE`／`CLUSTER`），照常出现。`seq` 原样输出，函数索引在达梦里是 `-1`、`index_type` 是 `FUNCTION-BASED NORMAL`，不折成 MySQL 的从 1 开始。
 
 **连接超时（156 轮修复）**：达梦驱动 `gitee.com/chunanyong/dm` v1.8.23 在建连之后**不设任何 socket 超时**，且其单机连接路径把调用方 context 丢成 `context.Background()`，所以服务端「TCP 接了但不回应」（容器休眠、服务僵死、半开防火墙）时旧版会**永久挂起**，日志停在 `list config` 之后、没有任何输出。现在 `--connect-timeout`（默认 5s）真正约束 TCP 拨号与登录握手，`--socket-read-timeout`／`--socket-write-timeout`（默认 5m）约束握手之后的每次读写，`list`／`show`／`exec` 的语句另有 context deadline 兜底。冻结 DM8 容器实测：旧 `v0.31.0` 12 秒外层强杀仍卡住，修复后 **4.10 秒**退 1 并报 `i/o timeout`／`context deadline exceeded`，恢复容器后 `list dbs` 秒回 5 行。想更快报错就调小这两个时长（如 `--connect-timeout 3s --socket-read-timeout 10s`）。注意 `export`／`import` 的数据读写阶段仍是裸查询，只有建连与 ping 受这层保护。
 
@@ -646,7 +650,7 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 | 命令 / 选项 | 拒绝理由 |
 |-------------|----------|
 | `show evt` | DM8 Oracle 模式没有 MySQL 式的事件调度器，没有可打印的事件定义；定时任务在 DM 的 job 包里 |
-| `list` 的 `views`/`triggers`/`routines`/`events` | 这四个对象没对达梦 Oracle 模式目录测过，给不出与 MySQL 同形的列。注意 `list tables --type view` 可用——被拒的是列不齐的那个对象，不是 `DBA_VIEWS` 那张表 |
+| `list events` | DM8 Oracle 模式没有事件调度器，没有可列的事件；定时任务在 DM 的 job 包里。其余八个对象都可用（`views`／`triggers`／`routines` 读 `ALL_*`，见上） |
 | `export/import -f sql` | SQL 写出器发的是 MySQL 反引号与 MySQL 转义文本，达梦读不进去；SQL 解析器同样走 MySQL 语句语法 |
 | `export --threads > 1` | 并行导出的分片没对达梦测过，用 `--threads 1` |
 | `--mode insert_update` | 方言层的 upsert 在达梦上根本没实现，绕过 CLI 直接调库的调用方同样失败 |
@@ -1094,6 +1098,21 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
 > 以下各节按版本记录每轮改动的摘要。同一批变更的完整设计理由与实测取证在 `docs/requirements.md` 十四节的编号变更记录，两处按轮次对齐，**编号变更记录为权威源**；本节只写“改了什么”，取值以当轮实测为准。
+
+## 修复记录（v0.35.0）
+
+本轮把 164/165 两轮随 `v0.35.0` 发布：达梦的 `list` 补齐视图、触发器、例程三个对象；另外查清了「`list indexes` 回 0 行」并把一处 `-D` 大小写的旧口径订正。
+
+| 变更 | 旧行为 | 新行为 |
+|------|--------|--------|
+| 达梦 `list views`／`triggers`／`routines` | 退出 `2`（这三个对象没对达梦目录测过） | 读 `ALL_VIEWS`／`ALL_TRIGGERS`／`ALL_PROCEDURES`，列名与 MySQL 逐列相同；只持 `RESOURCE` 的账号查 `DBA_*` 一律 `-5504`，`ALL_*` 正常返回可见行。`list` 九个对象里只剩 `events` 仍退 `2` |
+| 达梦 `list indexes` 的 0 行 | 表只有自动聚簇索引时回 0 行，容易被当成丢行 | 行为不变（本来就对），归因与边界写清：隐式聚簇索引没有列清单（`GET_DDL` 产物里连列都没有）、`DBA_IND_COLUMNS` 无行，与 MySQL 对无索引表只回表头同口径 |
+
+**订正**：`-D` 在达梦上不是「小写也行」——它同时写进 DSN 的 `schema=`，`-D dmprobe` 在六类对象上都于 ping 阶段报 `-2103 无效的模式名`；只有不把 `-D` 写进 DSN 的 `list databases`／`list schemas` 认小写。
+
+**真库验证**（DM8 `dm8_20241022_rev244896`／MySQL 8.0.46）：DM `list views` **4** 行、`list triggers` **3** 行（含 `INSTEAD OF` 与多事件 `DELETE OR INSERT OR UPDATE`）、`list routines` **2** 行、`--type function` **1** 行、`list events` 仍退 **2**；`list indexes -t FX_DST` **0** 行（该表只有聚簇索引）、`-t FX_IDX` **3** 行（含 `seq=-1` 的函数索引）、`-t FX_CLU` **1** 行（`CLUSTER PRIMARY KEY`）；MySQL 无键表只回表头、加 `PRIMARY KEY` 回 `PRIMARY` 一行。`gofmt` 0／`vet` 净／`go test ./...` 11 包全绿、`imex version` 报 **0.35.0**。
+
+完整设计理由与逐条实测见 `docs/requirements.md` 十四节变更记录 **164**（views／triggers／routines）、**165**（索引归因与 `-D` 订正）与 **166**（发版轮）。
 
 ## 修复记录（v0.34.0）
 

@@ -42,8 +42,8 @@ func TestDMDispatchFollowsTheParsedEngine(t *testing.T) {
 	}
 }
 
-// TestDMHeadersMatchMySQLHeaders asserts that the four objects Dameng serves
-// return the same column names as buildMySQLQuery. Downstream scripts parse these
+// TestDMHeadersMatchMySQLHeaders asserts that every object Dameng serves returns
+// the same column names as buildMySQLQuery. Downstream scripts parse these
 // headers, so they must not drift between engines.
 func TestDMHeadersMatchMySQLHeaders(t *testing.T) {
 	tests := []struct {
@@ -58,6 +58,16 @@ func TestDMHeadersMatchMySQLHeaders(t *testing.T) {
 		{"tables_type_view", func() *config.ListConfig { c := dmListCfg(ObjectTables); c.Type = "view"; return c }()},
 		{"tables_type_all", func() *config.ListConfig { c := dmListCfg(ObjectTables); c.Type = "all"; return c }()},
 		{"tables_with_pattern", func() *config.ListConfig { c := dmListCfg(ObjectTables); c.Pattern = "user_%"; return c }()},
+		{"views", dmListCfg(ObjectViews)},
+		{"views_with_db", func() *config.ListConfig { c := dmListCfg(ObjectViews); c.Database = "mydb"; return c }()},
+		{"views_with_pattern", func() *config.ListConfig { c := dmListCfg(ObjectViews); c.Pattern = "v_%"; return c }()},
+		{"triggers", dmListCfg(ObjectTriggers)},
+		{"triggers_with_table", func() *config.ListConfig { c := dmListCfg(ObjectTriggers); c.Table = "users"; return c }()},
+		{"triggers_with_pattern", func() *config.ListConfig { c := dmListCfg(ObjectTriggers); c.Pattern = "trg_%"; return c }()},
+		{"routines", dmListCfg(ObjectRoutines)},
+		{"routines_procedure", func() *config.ListConfig { c := dmListCfg(ObjectRoutines); c.Type = "procedure"; return c }()},
+		{"routines_function", func() *config.ListConfig { c := dmListCfg(ObjectRoutines); c.Type = "function"; return c }()},
+		{"routines_with_pattern", func() *config.ListConfig { c := dmListCfg(ObjectRoutines); c.Pattern = "p_%"; return c }()},
 		{"columns", func() *config.ListConfig {
 			c := dmListCfg(ObjectColumns)
 			c.Database = "mydb"
@@ -120,14 +130,15 @@ func TestDMHeadersMatchMySQLHeaders(t *testing.T) {
 	}
 }
 
-// TestDMRefusesUnmeasuredObjects pins the library-level wall for the four objects
-// the MVP does not claim. The CLI refuses them before it dials; a hand-built
-// config must still not reach the MySQL catalog for them.
+// TestDMRefusesUnmeasuredObjects pins the library-level wall for the one object
+// the engine does not claim: events, which need a scheduler DM8 Oracle mode does
+// not have. The CLI refuses it before it dials; a hand-built config must still
+// not reach the MySQL catalog for it.
 func TestDMRefusesUnmeasuredObjects(t *testing.T) {
-	for _, object := range []string{ObjectViews, ObjectTriggers, ObjectRoutines, ObjectEvents} {
+	for _, object := range []string{ObjectEvents} {
 		cfg := dmListCfg(object)
 		_, _, _, err := buildDMQuery(cfg)
-		want := "list " + object + " is not supported with --engine dm: this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, schemas, tables, columns and indexes"
+		want := "list " + object + " is not supported with --engine dm: this object has not been measured against Dameng Oracle-mode catalog; supported objects are databases, schemas, tables, views, columns, indexes, triggers and routines"
 		if err == nil || err.Error() != want {
 			t.Errorf("list %s refusal = %v, want %q", object, err, want)
 		}
@@ -386,5 +397,227 @@ func TestDMPatternUsesBindAndEscape(t *testing.T) {
 	}
 	if len(args) != 1 || args[0] != `user\_%` {
 		t.Errorf("args = %v, want the pattern", args)
+	}
+}
+
+// TestDMViewsReadTheAllViewsCatalog pins the source and the shape of
+// `list views`. ALL_VIEWS is the readable catalog for an ordinary account
+// (DBA_VIEWS answers -5504), and the two columns DM does not record stay blank
+// instead of being filled with a guess: check_option has no catalog column at
+// all, and is_updatable only gets a value when READ_ONLY carries one.
+func TestDMViewsReadTheAllViewsCatalog(t *testing.T) {
+	cfg := dmListCfg(ObjectViews)
+	query, args, headers, err := buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "FROM SYS.ALL_VIEWS") {
+		t.Fatalf("views must read SYS.ALL_VIEWS: %s", query)
+	}
+	if strings.Contains(query, "DBA_VIEWS") {
+		t.Fatalf("DBA_VIEWS is denied to an ordinary account: %s", query)
+	}
+	if !strings.Contains(query, "OWNER NOT IN ("+dmSystemSchemas+")") {
+		t.Fatalf("the default scope must hide system schemas: %s", query)
+	}
+	if len(args) != 0 {
+		t.Fatalf("an unscoped list must bind nothing, got %v", args)
+	}
+	want := "database,view,check_option,is_updatable,definer,security_type"
+	if strings.Join(headers, ",") != want {
+		t.Fatalf("headers = %v, want %s", headers, want)
+	}
+	// Measured: Oracle-mode views run with the owner's privileges.
+	if !strings.Contains(query, "'DEFINER'") {
+		t.Errorf("security_type must be the measured DEFINER, got: %s", query)
+	}
+
+	cfg = dmListCfg(ObjectViews)
+	cfg.Database = "dmprobe"
+	query, args, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "UPPER(OWNER) = UPPER(?)") || len(args) != 1 || args[0] != "dmprobe" {
+		t.Fatalf("--database must scope by schema: %s %v", query, args)
+	}
+
+	cfg = dmListCfg(ObjectViews)
+	cfg.All = true
+	query, _, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(query, "NOT IN (") {
+		t.Fatalf("--all must lift the schema exclusion: %s", query)
+	}
+}
+
+// TestDMTriggersMapTheTiming pins the two transformations `list triggers` makes:
+// TRIGGERING_TYPE folds the row mode into MySQL's BEFORE/AFTER vocabulary, while
+// the event and the body are printed as stored (a DM trigger may fire on several
+// events, which MySQL's one-event-per-trigger column cannot express).
+func TestDMTriggersMapTheTiming(t *testing.T) {
+	cfg := dmListCfg(ObjectTriggers)
+	query, args, headers, err := buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "FROM SYS.ALL_TRIGGERS") {
+		t.Fatalf("triggers must read SYS.ALL_TRIGGERS: %s", query)
+	}
+	for _, arm := range []string{
+		"TRIGGERING_TYPE LIKE 'BEFORE%' THEN 'BEFORE'",
+		"TRIGGERING_TYPE LIKE 'AFTER%' THEN 'AFTER'",
+		"TRIGGERING_TYPE LIKE 'INSTEAD OF%' THEN 'INSTEAD OF'",
+	} {
+		if !strings.Contains(query, arm) {
+			t.Errorf("timing mapping missing %q in: %s", arm, query)
+		}
+	}
+	want := "database,trigger,event,table,timing,statement,definer"
+	if strings.Join(headers, ",") != want {
+		t.Fatalf("headers = %v, want %s", headers, want)
+	}
+	if len(args) != 0 {
+		t.Fatalf("an unscoped list must bind nothing, got %v", args)
+	}
+
+	cfg = dmListCfg(ObjectTriggers)
+	cfg.Table = "fx_src"
+	query, args, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "TABLE_NAME = ?") || len(args) != 1 || args[0] != "fx_src" {
+		t.Fatalf("--table must filter the subject table: %s %v", query, args)
+	}
+
+	cfg = dmListCfg(ObjectTriggers)
+	cfg.Pattern = "FX%"
+	query, args, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "TRIGGER_NAME LIKE ? ESCAPE") || len(args) != 1 || args[0] != "FX%" {
+		t.Fatalf("--pattern must bind on the trigger name: %s %v", query, args)
+	}
+}
+
+// TestDMRoutinesReadTheAllProceduresCatalog pins `list routines`. DM8 has no
+// DBA_ROUTINES at all (-2106), and ALL_PROCEDURES lists packages and their
+// subprograms next to top-level routines: only rows with PROCEDURE_NAME NULL
+// are routines, which is what keeps a package from being reported as one.
+func TestDMRoutinesReadTheAllProceduresCatalog(t *testing.T) {
+	cfg := dmListCfg(ObjectRoutines)
+	query, args, headers, err := buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "FROM SYS.ALL_PROCEDURES") {
+		t.Fatalf("routines must read SYS.ALL_PROCEDURES: %s", query)
+	}
+	if strings.Contains(query, "DBA_ROUTINES") {
+		t.Fatalf("DBA_ROUTINES does not exist on DM8: %s", query)
+	}
+	if !strings.Contains(query, "PROCEDURE_NAME IS NULL") {
+		t.Fatalf("package subprograms and package rows must be excluded: %s", query)
+	}
+	if !strings.Contains(query, "OBJECT_TYPE IN ('PROCEDURE', 'FUNCTION')") {
+		t.Fatalf("the default must list both routine kinds: %s", query)
+	}
+	want := "database,routine,type,definer,security,deterministic,data_access"
+	if strings.Join(headers, ",") != want {
+		t.Fatalf("headers = %v, want %s", headers, want)
+	}
+	if len(args) != 0 {
+		t.Fatalf("an unscoped list must bind nothing, got %v", args)
+	}
+
+	for _, tt := range []struct{ typ, clause string }{
+		{"procedure", "OBJECT_TYPE = 'PROCEDURE'"},
+		{"function", "OBJECT_TYPE = 'FUNCTION'"},
+	} {
+		cfg = dmListCfg(ObjectRoutines)
+		cfg.Type = tt.typ
+		query, _, _, err = buildDMQuery(cfg)
+		if err != nil {
+			t.Fatalf("--type %s: %v", tt.typ, err)
+		}
+		if !strings.Contains(query, tt.clause) {
+			t.Errorf("--type %s must filter with %q: %s", tt.typ, tt.clause, query)
+		}
+	}
+
+	cfg = dmListCfg(ObjectRoutines)
+	cfg.Type = "nonsense"
+	if _, _, _, err := buildDMQuery(cfg); err == nil || !strings.Contains(err.Error(), "invalid --type") {
+		t.Errorf("bad routine type should be rejected, got %v", err)
+	}
+
+	cfg = dmListCfg(ObjectRoutines)
+	cfg.Pattern = "FX%"
+	query, args, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "OBJECT_NAME LIKE ? ESCAPE") || len(args) != 1 || args[0] != "FX%" {
+		t.Fatalf("--pattern must bind on the routine name: %s %v", query, args)
+	}
+}
+
+// TestDMIndexesJoinColumnsAndSkipTheImplicitClusterIndex pins the reason
+// `list indexes` can return no rows for a table that DBA_INDEXES mentions: every
+// DM table carries one implicit cluster index, its DDL has no column list, and
+// DBA_IND_COLUMNS has no row for it -- so the join (not a filter) is what leaves
+// it out. Two properties matter and are asserted here: the join keys include the
+// table name, and there is no INDEX_TYPE filter, because a declared CLUSTER
+// PRIMARY KEY does have column rows and a type filter would hide it.
+func TestDMIndexesJoinColumnsAndSkipTheImplicitClusterIndex(t *testing.T) {
+	cfg := dmListCfg(ObjectIndexes)
+	cfg.Database = "dmprobe"
+	cfg.Table = "fx_dst"
+	query, args, headers, err := buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJoin := "JOIN SYS.DBA_IND_COLUMNS ic ON i.OWNER = ic.INDEX_OWNER" +
+		" AND i.INDEX_NAME = ic.INDEX_NAME AND i.TABLE_NAME = ic.TABLE_NAME"
+	if !strings.Contains(query, wantJoin) {
+		t.Fatalf("the column join must carry all three keys, got: %s", query)
+	}
+	for _, banned := range []string{"INDEX_TYPE =", "INDEX_TYPE <", "INDEX_TYPE >", "INDEX_TYPE NOT"} {
+		if strings.Contains(query, banned) {
+			t.Errorf("an INDEX_TYPE filter (%q) would hide a CLUSTER PRIMARY KEY: %s", banned, query)
+		}
+	}
+	if !strings.Contains(query, "UPPER(i.OWNER) = UPPER(?)") || !strings.Contains(query, "i.TABLE_NAME = ?") {
+		t.Fatalf("--database and --table must both scope the query: %s", query)
+	}
+	if len(args) != 2 || args[0] != "dmprobe" || args[1] != "fx_dst" {
+		t.Fatalf("args = %v, want [dmprobe fx_dst]", args)
+	}
+	want := "database,table,index,non_unique,seq,column,cardinality,index_type"
+	if strings.Join(headers, ",") != want {
+		t.Fatalf("headers = %v, want %s", headers, want)
+	}
+
+	cfg = dmListCfg(ObjectIndexes)
+	cfg.Database = "dmprobe"
+	cfg.Table = "fx_src"
+	cfg.Pattern = "INDEX%"
+	query, args, _, err = buildDMQuery(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(query, "i.INDEX_NAME LIKE ? ESCAPE") || len(args) != 3 || args[2] != "INDEX%" {
+		t.Fatalf("--pattern must bind on the index name: %s %v", query, args)
+	}
+
+	for _, object := range []string{ObjectIndexes, ObjectColumns} {
+		cfg = dmListCfg(object)
+		if _, _, _, err := buildDMQuery(cfg); err == nil || !strings.Contains(err.Error(), "--database is required") {
+			t.Errorf("%s without --database = %v, want the scope error", object, err)
+		}
 	}
 }
