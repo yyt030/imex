@@ -56,18 +56,20 @@ func TestResultSinkChannelMatrix(t *testing.T) {
 	const payload = "row one\nrow two\n"
 
 	// One result destination per run: whichever cell the flags select holds the
-	// bytes, the others stay empty.
+	// bytes, the others stay empty. --messages is not a result channel (3.6
+	// revision, 变更记录 158): with it the result still lands on stdout, and the
+	// message file is left to the log sink alone.
 	cases := []struct {
 		name   string
 		output bool
 		msgs   bool
-		// want is the channel holding the payload: "stdout", "output" or "messages".
+		// want is the channel holding the payload: "stdout" or "output".
 		want string
 	}{
 		{name: "output only", output: true, want: "output"},
 		{name: "output and messages", output: true, msgs: true, want: "output"},
 		{name: "neither", want: "stdout"},
-		{name: "messages only", msgs: true, want: "messages"},
+		{name: "messages only", msgs: true, want: "stdout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,12 +122,13 @@ func TestResultSinkChannelMatrix(t *testing.T) {
 	}
 }
 
-func TestResultSinkAppendsAfterExistingLogRecords(t *testing.T) {
+func TestResultSinkLeavesMessagesFileToTheLog(t *testing.T) {
+	// --messages is the log's channel only: the result must not be appended to
+	// it, and the log records already there must survive untouched.
 	dir := t.TempDir()
 	msg := filepath.Join(dir, "messages.log")
-	// Stand in for the log sink, which opens the file in append mode before the
-	// command body runs.
-	if err := os.WriteFile(msg, []byte("INFO imex starting\nINFO list config\n"), 0666); err != nil {
+	const logs = "INFO imex starting\nINFO list config\n"
+	if err := os.WriteFile(msg, []byte(logs), 0666); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,17 +142,15 @@ func TestResultSinkAppendsAfterExistingLogRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if got := stdout.String(); got != "header\nrow\n" {
+		t.Errorf("stdout = %q, want the result", got)
+	}
 	got, err := os.ReadFile(msg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "INFO imex starting\nINFO list config\nheader\nrow\n"
-	if string(got) != want {
-		t.Errorf("message file = %q, want %q", got, want)
-	}
-	// The message file must not be truncated: the log records are still there.
-	if !strings.Contains(string(got), "imex starting") {
-		t.Error("log records lost")
+	if string(got) != logs {
+		t.Errorf("message file = %q, want the log records only", got)
 	}
 }
 
@@ -231,8 +232,8 @@ func TestResultSinkNoOverwriteCreatesMissingFile(t *testing.T) {
 }
 
 func TestResultSinkEmptyResultIsSilent(t *testing.T) {
-	// A run with nothing to print must not create an empty message file or write a
-	// stray byte to stdout.
+	// A run with nothing to print must not write a stray byte to stdout, and must
+	// not touch the message file (that one belongs to the log sink).
 	dir := t.TempDir()
 	msg := filepath.Join(dir, "messages.log")
 
@@ -300,7 +301,7 @@ func TestValidateDistinctPathsRefusesSameFile(t *testing.T) {
 		if !strings.Contains(err.Error(), "--output and --messages must name different files") {
 			t.Errorf("error = %v", err)
 		}
-		if !strings.Contains(err.Error(), "omit --output to append the result") {
+		if !strings.Contains(err.Error(), "omit --output to send the result to stdout") {
 			t.Errorf("optional result flag must name the way out: %v", err)
 		}
 	}

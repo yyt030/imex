@@ -463,6 +463,17 @@
 # change the new engine name forces, and the reason this is a re-baseline rather
 # than a quiet edit. No statement this tool sends a MySQL or PostgreSQL server
 # changed: the dm backend is its own files. See requirements.md 变更记录 135.
+# Re-baselined note 28 (2026-11-12): `--messages` stopped being a result channel.
+# The seventeen affected bodies (`## list`, its eight objects, `## show`, its six
+# kinds, and `## exec`) were regenerated from the working tree, so each diffs
+# EMPTY again: their `-o, --output` line now ends at "(default: stdout)" and their
+# `-m, --messages` line reads "Log/error file; result still goes to stdout or
+# --output; nothing on screen". The `## list` and `## show` Long texts lost the
+# "with --messages and no --output the log and the result share that file"
+# paragraph that note 24 recorded as the v0.17.0 ruling; 3.6's bottom-right cell
+# is retired under 变更记录 158. `## export`, `## import` and `## root` are
+# untouched: export and import require --output, so --messages was never a result
+# channel there. `## version` remains the frozen snapshot.
 
 ## export
 Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
@@ -622,9 +633,8 @@ Global Flags:
 ## list
 List databases, tables, views, columns, indexes, triggers, routines or events.
 
-The result goes to --output when it names a file, and to stdout when it does not
-and no --messages file was given. With --messages and no --output the log and
-the result share that file and nothing is printed to the screen:
+The result goes to --output when it names a file, and to stdout otherwise.
+--messages only takes the log and the errors; it never receives the result:
   imex list tables -D mydb
   imex list tables -D mydb -o /backup/tables.txt
 
@@ -673,10 +683,10 @@ Flags:
   -?, --help                            help for list databases
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -707,10 +717,10 @@ Flags:
   -?, --help                            help for list tables
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -742,10 +752,10 @@ Flags:
   -?, --help                            help for list views
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -775,10 +785,10 @@ Flags:
   -?, --help                            help for list columns
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -809,10 +819,10 @@ Flags:
   -?, --help                            help for list indexes
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -844,10 +854,10 @@ Flags:
   -?, --help                            help for list triggers
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -879,10 +889,10 @@ Flags:
   -?, --help                            help for list routines
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -914,10 +924,10 @@ Flags:
   -?, --help                            help for list events
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
@@ -934,9 +944,8 @@ Global Flags:
 Show the CREATE statement the server holds for one table, view, trigger,
 event, procedure or function.
 
-The definition goes to --output, or to stdout when neither --output nor
---messages is given. With --messages and no --output the log and the definition
-share that file and nothing is printed to the screen.
+The definition goes to --output when it names a file, and to stdout otherwise.
+--messages only takes the log and the errors; it never receives the definition.
 
   imex show tab users -D mydb
   imex show vws v_orders -D mydb -o /backup/v_orders.sql
@@ -983,9 +992,9 @@ Flags:
   -?, --help                            help for show tab
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
@@ -1014,9 +1023,9 @@ Flags:
   -?, --help                            help for show vws
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
@@ -1045,9 +1054,9 @@ Flags:
   -?, --help                            help for show trg
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
@@ -1076,9 +1085,9 @@ Flags:
   -?, --help                            help for show evt
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
@@ -1107,9 +1116,9 @@ Flags:
   -?, --help                            help for show prc
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
@@ -1138,9 +1147,9 @@ Flags:
   -?, --help                            help for show fcn
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
@@ -1183,10 +1192,10 @@ Flags:
   -?, --help                            help for exec
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
-  -m, --messages string                 Log file; without --output the result is appended here; nothing on screen
+  -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-col-names                    Do not print the header row of a result set
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
-  -o, --output string                   Write the result to this file (default: stdout, or --messages)
+  -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
   -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)

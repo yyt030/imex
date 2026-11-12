@@ -24,9 +24,8 @@ func newListCmd() *cobra.Command {
 		Short: "List databases and schema objects",
 		Long: `List databases, tables, views, columns, indexes, triggers, routines or events.
 
-The result goes to --output when it names a file, and to stdout when it does not
-and no --messages file was given. With --messages and no --output the log and
-the result share that file and nothing is printed to the screen:
+The result goes to --output when it names a file, and to stdout otherwise.
+--messages only takes the log and the errors; it never receives the result:
   imex list tables -D mydb
   imex list tables -D mydb -o /backup/tables.txt
 
@@ -113,9 +112,9 @@ func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 
 	f.StringVar(&cfg.Pattern, "pattern", "", "LIKE pattern for object names (% and _ are wildcards)")
 	f.BoolVar(&cfg.NoColNames, "no-col-names", false, "Do not print the header row")
-	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout, or --messages)")
+	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout)")
 	f.BoolVar(&cfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Log file; without --output the result is appended here; nothing on screen")
+	f.StringVarP(&messagesPath, "messages", "m", "", "Log/error file; result still goes to stdout or --output; nothing on screen")
 	f.StringVar((*string)(&cfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
 }
 

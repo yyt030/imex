@@ -24,9 +24,8 @@ func newShowCmd() *cobra.Command {
 		Long: `Show the CREATE statement the server holds for one table, view, trigger,
 event, procedure or function.
 
-The definition goes to --output, or to stdout when neither --output nor
---messages is given. With --messages and no --output the log and the definition
-share that file and nothing is printed to the screen.
+The definition goes to --output when it names a file, and to stdout otherwise.
+--messages only takes the log and the errors; it never receives the definition.
 
   imex show tab users -D mydb
   imex show vws v_orders -D mydb -o /backup/v_orders.sql
@@ -84,9 +83,9 @@ func registerShowFlags(cmd *cobra.Command, cfg *config.ShowConfig) {
 	f.DurationVar(&cfg.SocketWriteTimeout, "socket-write-timeout", config.DefaultSocketTimeout, "Per-write socket timeout")
 	f.StringVar(&cfg.DefaultCharset, "default-charset", config.DefaultCharset, "Connection charset")
 
-	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout, or --messages)")
+	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout)")
 	f.BoolVar(&cfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Log file; without --output the result is appended here; nothing on screen")
+	f.StringVarP(&messagesPath, "messages", "m", "", "Log/error file; result still goes to stdout or --output; nothing on screen")
 	f.StringVar((*string)(&cfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
 }
 

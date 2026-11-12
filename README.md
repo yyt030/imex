@@ -18,7 +18,7 @@
 - **无包裹符模式**：支持导入导出不使用字符串定界符的纯分隔符文件
 - **OceanBase 兼容**：MySQL 模式共用同一套协议、语句与文件格式，不做服务端类型探测（探测的唯一消费者随 `LOCK TABLES` 一起删除，见变更记录 72/73）
 - **云环境连接加固**：驱动层 socket 超时 + 连接池 TTL + 事务空闲提交 + 瞬断自动重试，规避 LB/NAT 静默回收
-- **日志文件**：`--messages` / `-m` 把本次运行的命令行日志追加到该文件（终端不再打印；文件可保留多次运行的记录）；`list`/`show` 在没有 `--output` 时把结果也追加到同一文件末尾
+- **日志文件**：`--messages` / `-m` 把本次运行的命令行日志与错误追加到该文件（终端不再打印；文件可保留多次运行的记录）；它**不接管结果**——`list`/`show`/`exec` 的结果仍去 `stdout`，或去 `--output` 指定的文件
 - **可调进度节奏**：`--progress-interval` 控制定时进度日志的间隔（默认 5 秒，下限 100ms；进度记录没有关闭开关）
 - **流式处理**：支持 GB 级大文件，不在内存中缓存全量数据
 - **批量优化**：导入使用批量 INSERT（1000 行/批次），提升写入性能
@@ -414,18 +414,18 @@ imex list <object|缩写> [连接选项] [查询选项]
 | `--table` | `-t`，`columns`/`indexes` 必填，`triggers` 用作过滤 | 空 |
 | `--output` | `-o`，把结果写入该文件（覆盖已存在的同名文件） | 空 |
 | `--no-overwrite` | 配合 `--output`：目标已存在则拒绝并退出码 `1`，不改写 `--messages` 文件 | `false` |
-| `--messages` | `-m`，把日志**追加**写入该文件；不给 `--output` 时结果也追加到它末尾，此时屏幕完全安静 | 空 |
+| `--messages` | `-m`，把日志与错误**追加**写入该文件、屏幕完全安静；**结果不受它影响**，仍去 `stdout` 或 `--output` | 空 |
 
-**输出通道**（`list` 与 `show` 共用同一张表）：
+**输出通道**（`list`、`show`、`exec` 共用同一张表）：
 
 | `--output` | `--messages` | 结果 | 日志与错误 |
 |------------|--------------|------|------------|
 | 有 | 无 | 该文件 | stderr |
 | 有 | 有 | 该文件 | `--messages` 文件，屏幕安静 |
 | 无 | 无 | stdout | stderr |
-| 无 | 有 | 追加到 `--messages` 文件末尾 | `--messages` 文件，屏幕安静 |
+| 无 | 有 | **stdout**（不受 `--messages` 影响） | `--messages` 文件，屏幕安静 |
 
-`--output` 与 `--messages` 指向同一个路径是用法错误，退出码 `2`（结果按覆盖写、日志按追加写，同一个文件无法两者兼得；去掉 `--output` 即为第 4 格）。结果先缓冲、成功结束后才投递，因此失败的运行不会在文件里留下半截结果；第 4 格里 `list completed` 记录排在结果之前，文件读起来是「先是日志、最后是结果」。缓冲的上限由命令输出规模决定：本机实测最大的一次普通运行（全服务器 `list tables`）为 12,848 字节 / 141 行（2026-11-02 复测，行数随服务器上的表数变化；同一命令在设计轮为 12,747 字节 / 140 行）。
+`--messages` 只接管日志与错误，**从不接收结果**；要把结果落成文件必须显式给 `--output`。两者指向同一个路径是用法错误，退出码 `2`（结果按覆盖写、日志按追加写，同一个文件无法两者兼得）。结果先缓冲、成功结束后才投递，因此失败的运行不会在文件里留下半截结果。缓冲的上限由命令输出规模决定：本机实测最大的一次普通运行（全服务器 `list tables`）为 12,848 字节 / 141 行（2026-11-02 复测，行数随服务器上的表数变化；同一命令在设计轮为 12,747 字节 / 140 行）。
 
 `table` 是唯一的输出格式：缓冲全部行后按 rune 宽度对齐，列间两个空格，NULL 输出大写 `NULL`（与字面字符串 `NULL` 无法区分），值里的反斜杠、制表符、回车、换行转成 `\\`、`\t`、`\r`、`\n`。空结果不算错误：退出码 0，仍打印表头。
 
@@ -909,7 +909,7 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
 
 版本横幅（`imex starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后是配置参数快照（`export/import config`，由 `NewExporter`/`NewImporter` 在**建立连接之前**打印，因此连不上服务端时也看得到参数；原先重复它的 `export started`/`import started` 已删除）。快照只打印**所选 `--format` 真正读取的字段**，判据与用法错误的拒绝逻辑、`--help` 里的范围标记同出自一张登记表 `internal/config/formatscope.go`：`-f sql` 不再打印 `char_del`/`col_del`/`row_del`/`escape`/`timestamp_fmt` 这些被忽略的 DEL 布局，`-f del` 不再打印 `statement_size`/`no_create`/`extended_insert`，`-f parquet` 两类都不打印（实测：`export` 的回显改动前对三种格式是**逐字节相同**的同一套 26 项，现在分别是 25/20/15；`import` 现在是 29/20/20）。字段按「连接 → 输入输出 → 并行与流水线 → 字符集 → 该格式的专属布局 → 日志」排列，且补齐了 DEL 写入器一直在读、快照却从未打印的 `date_fmt`、`no_escape`、`no_char_del` 三项；`hex_blob` 打印的是**生效值**（`--hex-blob`/`--no-hex-blob` 都没给时由字符集决定），与写入器用的是同一个判定函数；唯一例外是 `imex version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `imex version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**：主要事件词是 `config`/`progress`/`completed`/`aborted`/`failed`（`started` 只出现在版本横幅 `imex starting` 里；如 `export config`、`shard export completed`、`insert batch failed`、`worker completed`），另有 `retrying`/`executing`/`applied`/`derived` 等状态词与交互 SQL 记录 `db interaction`（见「SQL 交互回显」），诊断告警则以 `slow` 开头（`slow insert batch`、`slow commit`）或以 `stalled` 结尾（`export scan stalled`），大小写敏感的一条 grep 就能覆盖全链路；配置、进度、完成、中止每次运行至多一条，慢批、扫描停顿与交互 SQL 按发生次数各一条。默认 `console` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。进度记录随 `--progress-interval` 定时打印，没有关闭开关；带 `--messages` 时进度同样写进文件。
 
-`--messages` / `-m` 把命令行日志**追加**到该文件（与 DB2 的 `MESSAGES` 一致），文件是这次运行日志的唯一目的地：一条记录一个物理行，本次运行的第一条记录一定是版本横幅（文件在根命令打印横幅之前打开，所以它紧接在已有内容之后，而不是文件的绝对首行），`export/import config`（建连接之前）、定时进度、WARN 告警、`completed` 统计与收尾的 `command failed` 都在里面，stdout 与 stderr 一行也不打印；`--log-level`、`--log-format` 一样作用于文件，退出码不受影响（0 成功、1 运行时错误、2 用法错误），脚本照样能判断成败。已有内容不会被删除，多次运行按各自的横幅分段；工具不做截断、轮转或清理，需要每次独立文件请换路径或先自行删除。实测同一条注定失败的导出：**新文件**下带 `-m` 时 stdout/stderr 均 0 字节、文件 5 条记录、退出 1，而不带 `-m` 那次的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同；先写入 `previous run` 再跑同一命令，旧行仍在，新记录从横幅开始追加。两类例外：未知选项在文件打开前就失败，错误只上 stderr 且不建文件；`-m` 路径无法创建时 `failed to create message file <path>: ...` 也只上 stderr。`--help` 与 `-m` 同时给不产生文件。`list` 与 `show` 在这一条上多一个通道：**没有 `--output` 而有 `--messages`** 时结果也追加到该文件末尾（日志在前、结果在后，屏幕仍然全静），有 `--output` 时结果按 `list`/`show` 那节「输出通道」表走文件、`--messages` 只装日志；`--output` 与 `--messages` 同路径是用法错误退出 2，此时文件已由日志打开过，因此文件里只有记录与那句拒绝。早期版本按 DB2 LOAD/EXPORT 风格另写一份 `SQL3104N/3105N/3107N/3109N/3110N` 报告，那份重复的记录与 `MessageWriter` 已整体删除，告警与失败只保留一条日志记录。会出现 WARN 的场景：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调、无表头文件被当作表头丢弃首行、`insert_update` 命中无唯一键的表；另有三个诊断阈值告警：扫描 10 秒取不到行（`export scan stalled`）、单批 INSERT 超过 5 秒（`slow insert batch`）、单次 COMMIT 超过 5 秒（`slow commit`）。
+`--messages` / `-m` 把命令行日志**追加**到该文件（与 DB2 的 `MESSAGES` 一致），文件是这次运行日志的唯一目的地：一条记录一个物理行，本次运行的第一条记录一定是版本横幅（文件在根命令打印横幅之前打开，所以它紧接在已有内容之后，而不是文件的绝对首行），`export/import config`（建连接之前）、定时进度、WARN 告警、`completed` 统计与收尾的 `command failed` 都在里面，stdout 与 stderr 一行也不打印；`--log-level`、`--log-format` 一样作用于文件，退出码不受影响（0 成功、1 运行时错误、2 用法错误），脚本照样能判断成败。已有内容不会被删除，多次运行按各自的横幅分段；工具不做截断、轮转或清理，需要每次独立文件请换路径或先自行删除。实测同一条注定失败的导出：**新文件**下带 `-m` 时 stdout/stderr 均 0 字节、文件 5 条记录、退出 1，而不带 `-m` 那次的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同；先写入 `previous run` 再跑同一命令，旧行仍在，新记录从横幅开始追加。两类例外：未知选项在文件打开前就失败，错误只上 stderr 且不建文件；`-m` 路径无法创建时 `failed to create message file <path>: ...` 也只上 stderr。`--help` 与 `-m` 同时给不产生文件。`list`、`show` 与 `exec` 在这一点上更严格：`--messages` 只装日志与错误，**结果不被它接管**——没有 `--output` 时结果仍去 stdout（屏幕依然全静，因为日志进了文件），有 `--output` 时结果去该文件；`--output` 与 `--messages` 同路径是用法错误退出 2，此时文件已由日志打开过，因此文件里只有记录与那句拒绝。早期版本按 DB2 LOAD/EXPORT 风格另写一份 `SQL3104N/3105N/3107N/3109N/3110N` 报告，那份重复的记录与 `MessageWriter` 已整体删除，告警与失败只保留一条日志记录。会出现 WARN 的场景：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调、无表头文件被当作表头丢弃首行、`insert_update` 命中无唯一键的表；另有三个诊断阈值告警：扫描 10 秒取不到行（`export scan stalled`）、单批 INSERT 超过 5 秒（`slow insert batch`）、单次 COMMIT 超过 5 秒（`slow commit`）。
 
 ### 错误堆栈开关
 
@@ -1089,6 +1089,19 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
 > 以下各节按版本记录每轮改动的摘要。同一批变更的完整设计理由与实测取证在 `docs/requirements.md` 十四节的编号变更记录，两处按轮次对齐，**编号变更记录为权威源**；本节只写“改了什么”，取值以当轮实测为准。
+
+## 修复记录（v0.33.0）
+
+本轮把 158 轮的 `--messages` 语义改造随 `v0.33.0` 发布；代码与测试在 158 轮已完成并验证，本轮只做版本进位与发版记账，无新增代码改动。
+
+| 变更 | 旧行为 | 新行为 |
+|------|--------|--------|
+| `-m`／`--messages` 的职责 | 结果与日志共用该文件：结果追加写进去，屏幕不输出 | 只接管日志与错误；结果照旧走 stdout（或 `-o` 指定的文件），屏幕照常打印 |
+| `-o` 与 `-m` 同路径 | 退 2，提示「omit --output to append the result to the message file」 | 仍退 2，提示改为「omit --output to send the result to stdout」 |
+
+**真库验证**（DM8）：`list dbs` 无选项 stdout 141 B／stderr 475 B；`-o f` 文件 141 B、stdout 0 B；`-m f` **stdout 141 B**、stderr 0 B、文件 475 B 纯日志（改前 stdout 0 B、文件 616 B）。`list`／`show`／`exec` 三命令同步（共用同一个结果通道，只改 `list`／`show` 会留下第三种语义）；`docs/cli-oracle.txt` 重生成 17 段并新增 note 28，与二进制 `--help` 逐字节一致；`gofmt` 0／`vet` 净／`go test ./...` 11 包全绿、`imex version` 报 **0.33.0**。
+
+完整设计理由与逐条实测见 `docs/requirements.md` 十四节变更记录 **158**（代码轮）与 **159**（发版轮）。
 
 ## 修复记录（v0.32.0）
 
@@ -1330,7 +1343,7 @@ imex/
 │   ├── cli_matrix_test.go     # 参数组合矩阵与退出码契约测试
 │   ├── list_test.go           # list 校验、命令树与帮助宽度测试
 │   ├── show_test.go           # show 命令树、kind 唯一性、通道 flag 与校验测试
-│   ├── output_channel_test.go # 四格通道矩阵、--no-overwrite、同路径守卫测试
+│   ├── output_channel_test.go # 通道矩阵、--no-overwrite、同路径守卫测试
 │   ├── validate_fuzz_test.go  # 校验函数 fuzz 测试
 │   └── encrypt.go             # encrypt 子命令（密码加密）
 ├── internal/
@@ -1424,7 +1437,7 @@ imex/
 │       ├── option_matrix_test.go # 真实 CLI 交叉选项矩阵（argv 驱动编译出的二进制，同上门控）
 │       ├── list_test.go         # list 八类对象、table 格式、stdout/stderr 分离与用法错误
 │       ├── show_test.go         # show 六个 kind 的定义文本、库限定名、别名与回放
-│       ├── channel_test.go      # list/show 四格输出通道、同路径拒绝、--no-overwrite、追加语义
+│       ├── channel_test.go      # list/show 输出通道、同路径拒绝、--no-overwrite
 │       ├── lock_contention_test.go # 重复主键 × 导入并发的锁冲突回归（真实二进制 + 真实库）
 │       └── export_cli_test.go   # 导出 CLI 三项：schema 限定查询、产物无 DDL 且旧选项为未知选项、`-q @file`
 ├── docs/

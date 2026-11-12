@@ -76,9 +76,9 @@ func registerExecFlags(cmd *cobra.Command, cfg *config.ExecConfig) {
 
 	f.StringVarP(&cfg.File, "file", "f", "", "Read the SQL to run from this file")
 	f.BoolVar(&cfg.NoColNames, "no-col-names", false, "Do not print the header row of a result set")
-	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout, or --messages)")
+	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout)")
 	f.BoolVar(&cfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Log file; without --output the result is appended here; nothing on screen")
+	f.StringVarP(&messagesPath, "messages", "m", "", "Log/error file; result still goes to stdout or --output; nothing on screen")
 	f.StringVar((*string)(&cfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
 }
 
@@ -143,8 +143,9 @@ func runExec(cmd *cobra.Command, cfg *config.ExecConfig, args []string) error {
 	if err != nil {
 		return errors.Wrap(err, "exec failed")
 	}
-	// The completion record belongs to the log and precedes the delivered result,
-	// so the --messages channel reads as the run's log first and its output last.
+	// The completion record belongs to the log, so it is written before the result
+	// is flushed: with --messages the log file ends with this run's own summary,
+	// while the result goes to stdout or --output and never into that file.
 	common.Logger.Info("exec completed", "statements", stats.Statements, "rows", stats.Rows, "affected", stats.Affected)
 	if err := sink.Flush(); err != nil {
 		return errors.Wrap(err, "exec failed")

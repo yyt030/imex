@@ -12,22 +12,27 @@ import (
 	"github.com/imex/internal/common"
 )
 
-// resultSink is the channel model `list` and `show` share (docs/requirements.md
-// 3.6). Both commands write their result through it instead of straight to
-// stdout, and the sink decides where those bytes land once the run has produced
-// them all:
+// resultSink is the channel model `list`, `show` and `exec` share
+// (docs/requirements.md 3.6). All three write their result through it instead of
+// straight to stdout, and the sink decides where those bytes land once the run
+// has produced them all:
 //
-//	--output               → that file, truncated (refused with --no-overwrite)
-//	no --output, --messages → appended to the message file, after its log records
-//	neither                 → stdout
+//	--output → that file, truncated (refused with --no-overwrite)
+//	neither  → stdout
 //
-// The result is buffered rather than streamed because the message file is written
-// by the log sink while the command runs: interleaving the two would put table
-// rows in the middle of log records. The buffer is bounded by what one command
-// prints — measured on this repository's test server, the largest ordinary result
-// is a whole-server `list tables` at 12,747 bytes — so the trade is size for
-// ordering. Logs themselves are untouched by the sink and keep going to stderr,
-// or to the message file when --messages names one.
+// --messages is deliberately NOT a result channel. It takes the command log and
+// the errors (cmd/root.go hands them over before the command body runs), and the
+// result still goes to stdout or --output. 3.6's original ruling folded the
+// result into the message file when no --output was given; the revision of
+// 2026-11-12 (变更记录 158) dropped that cell, because a file that carries both
+// log records and table rows is neither a log nor a data file — `-m log -o out`
+// already expresses both destinations separately.
+//
+// The result is still buffered rather than streamed: a failed run must not leave
+// half a table in the file (the sink only flushes after the command returns
+// nil). The buffer is bounded by what one command prints — measured on this
+// repository's test server, the largest ordinary result is a whole-server
+// `list tables` at 12,747 bytes.
 //
 // export and import do not use this: their --output is required, so they have
 // never had a result to place anywhere else.
@@ -36,7 +41,6 @@ type resultSink struct {
 	output      string
 	noOverwrite bool
 	stdout      io.Writer
-	messages    string
 }
 
 // newResultSink builds the sink for one run. stdout is the command's own output
@@ -47,7 +51,6 @@ func newResultSink(output string, noOverwrite bool, stdout io.Writer) *resultSin
 		output:      strings.TrimSpace(output),
 		noOverwrite: noOverwrite,
 		stdout:      stdout,
-		messages:    strings.TrimSpace(messagesPath),
 	}
 }
 
@@ -59,45 +62,9 @@ func (s *resultSink) Write(p []byte) (int, error) { return s.buf.Write(p) }
 // half result behind in either file.
 func (s *resultSink) Flush() error {
 	data := s.buf.Bytes()
-	switch {
-	case s.output != "":
-		if s.noOverwrite {
-			if _, err := os.Stat(s.output); err == nil {
-				return errors.Errorf("output file %s already exists, remove --no-overwrite to overwrite", s.output)
-			}
-		}
-		f, err := os.Create(s.output)
-		if err != nil {
-			return errors.Wrapf(err, "failed to create output file %s", s.output)
-		}
-		if _, err := f.Write(data); err != nil {
-			f.Close()
-			return errors.Wrapf(err, "failed to write output file %s", s.output)
-		}
-		if err := f.Close(); err != nil {
-			return errors.Wrapf(err, "failed to close output file %s", s.output)
-		}
-		return nil
-	case s.messages != "":
-		if len(data) == 0 {
-			return nil
-		}
-		// The message file is already open by the log sink in append mode, and a
-		// second O_APPEND handle keeps that ordering: the log's own records come
-		// first, the result last.
-		f, err := os.OpenFile(s.messages, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-		if err != nil {
-			return errors.Wrapf(err, "failed to open message file %s", s.messages)
-		}
-		if _, err := f.Write(data); err != nil {
-			f.Close()
-			return errors.Wrapf(err, "failed to append result to message file %s", s.messages)
-		}
-		if err := f.Close(); err != nil {
-			return errors.Wrapf(err, "failed to close message file %s", s.messages)
-		}
-		return nil
-	default:
+
+	// No --output: stdout is the destination, and --messages has no say here.
+	if s.output == "" {
 		if len(data) == 0 {
 			return nil
 		}
@@ -106,6 +73,24 @@ func (s *resultSink) Flush() error {
 		}
 		return nil
 	}
+
+	if s.noOverwrite {
+		if _, err := os.Stat(s.output); err == nil {
+			return errors.Errorf("output file %s already exists, remove --no-overwrite to overwrite", s.output)
+		}
+	}
+	f, err := os.Create(s.output)
+	if err != nil {
+		return errors.Wrapf(err, "failed to create output file %s", s.output)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return errors.Wrapf(err, "failed to write output file %s", s.output)
+	}
+	if err := f.Close(); err != nil {
+		return errors.Wrapf(err, "failed to close output file %s", s.output)
+	}
+	return nil
 }
 
 // validateDistinctPaths refuses the result file and the message file being the
@@ -114,9 +99,9 @@ func (s *resultSink) Flush() error {
 // because the fix is a flag decision, not a data problem.
 //
 // It guards all four commands: export and import have always been able to collide
-// here, and list and show do now that their result can name a file. When the
-// result flag is optional the message also names the way out, because dropping it
-// is a supported choice rather than a loss.
+// here, and list, show and exec do too. When the result flag is optional the
+// message also names the way out: dropping --output sends the result to stdout,
+// which is a supported choice rather than a loss.
 func validateDistinctPaths(resultFlag, path string, optional bool) error {
 	messages := strings.TrimSpace(messagesPath)
 	path = strings.TrimSpace(path)
@@ -135,7 +120,7 @@ func validateDistinctPaths(resultFlag, path string, optional bool) error {
 		return nil
 	}
 	if optional {
-		return common.Usagef("--%s and --messages must name different files (omit --%s to append the result to the message file)", resultFlag, resultFlag)
+		return common.Usagef("--%s and --messages must name different files (omit --%s to send the result to stdout)", resultFlag, resultFlag)
 	}
 	return common.Usagef("--%s and --messages must name different files", resultFlag)
 }
