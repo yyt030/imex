@@ -898,7 +898,7 @@ func TestDispatchParentExplainsConnectionShorthands(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"list", "-hxx"}, `unknown shorthand flag: 'x' in -xx; imex list needs an object subcommand: databases, schemas, tables, views, columns, indexes, triggers, routines, events`},
+		{[]string{"list", "-hxx"}, `unknown shorthand flag: 'x' in -xx; imex list needs an object subcommand: dbs, sch, tab, vws, col, idx, trg, rtn, evt`},
 		{[]string{"show", "-uxx"}, `unknown shorthand flag: 'u' in -uxx; imex show needs an object subcommand: sch, tab, vws, trg, evt, prc, fcn`},
 	}
 	for _, ck := range checks {

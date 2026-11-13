@@ -663,15 +663,15 @@ Usage:
   imex list [command]
 
 Available Commands:
-  columns     List columns of a table
-  databases   List databases
-  events      List scheduled events
-  indexes     List indexes of a table
-  routines    List stored procedures and functions
-  schemas     List schemas
-  tables      List tables
-  triggers    List triggers
-  views       List views
+  col         List columns of a table
+  dbs         List databases
+  evt         List scheduled events
+  idx         List indexes of a table
+  rtn         List stored procedures and functions
+  sch         List schemas
+  tab         List tables
+  trg         List triggers
+  vws         List views
 
 Flags:
   -h, --help   help for list
@@ -687,17 +687,17 @@ Use "imex list [command] --help" for more information about a command.
 List databases
 
 Usage:
-  imex list databases [flags]
+  imex list dbs [flags]
 
 Aliases:
-  databases, dbs
+  dbs, databases
 
 Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
-  -?, --help                            help for list databases
+  -?, --help                            help for list dbs
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -720,10 +720,10 @@ Global Flags:
 List schemas
 
 Usage:
-  imex list schemas [flags]
+  imex list sch [flags]
 
 Aliases:
-  schemas, sch
+  sch, schemas
 
 Flags:
       --all                             Include system schemas when --database is not given
@@ -731,7 +731,7 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
-  -?, --help                            help for list schemas
+  -?, --help                            help for list sch
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -754,10 +754,10 @@ Global Flags:
 List tables
 
 Usage:
-  imex list tables [flags]
+  imex list tab [flags]
 
 Aliases:
-  tables, tab
+  tab, tables
 
 Flags:
       --all                             Include system schemas when --database is not given
@@ -765,7 +765,7 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
-  -?, --help                            help for list tables
+  -?, --help                            help for list tab
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -789,10 +789,10 @@ Global Flags:
 List views
 
 Usage:
-  imex list views [flags]
+  imex list vws [flags]
 
 Aliases:
-  views, vws
+  vws, views
 
 Flags:
       --all                             Include system schemas when --database is not given
@@ -800,7 +800,7 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
-  -?, --help                            help for list views
+  -?, --help                            help for list vws
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -823,17 +823,17 @@ Global Flags:
 List columns of a table
 
 Usage:
-  imex list columns [flags]
+  imex list col [flags]
 
 Aliases:
-  columns, col
+  col, columns
 
 Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
-  -?, --help                            help for list columns
+  -?, --help                            help for list col
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -857,17 +857,17 @@ Global Flags:
 List indexes of a table
 
 Usage:
-  imex list indexes [flags]
+  imex list idx [flags]
 
 Aliases:
-  indexes, idx
+  idx, indexes
 
 Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
-  -?, --help                            help for list indexes
+  -?, --help                            help for list idx
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -891,10 +891,10 @@ Global Flags:
 List triggers
 
 Usage:
-  imex list triggers [flags]
+  imex list trg [flags]
 
 Aliases:
-  triggers, trg
+  trg, triggers
 
 Flags:
       --all                             Include system schemas when --database is not given
@@ -902,7 +902,7 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
-  -?, --help                            help for list triggers
+  -?, --help                            help for list trg
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -926,10 +926,10 @@ Global Flags:
 List stored procedures and functions
 
 Usage:
-  imex list routines [flags]
+  imex list rtn [flags]
 
 Aliases:
-  routines, rtn
+  rtn, routines
 
 Flags:
       --all                             Include system schemas when --database is not given
@@ -937,7 +937,7 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
-  -?, --help                            help for list routines
+  -?, --help                            help for list rtn
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -961,10 +961,10 @@ Global Flags:
 List scheduled events
 
 Usage:
-  imex list events [flags]
+  imex list evt [flags]
 
 Aliases:
-  events, evt
+  evt, events
 
 Flags:
       --all                             Include system schemas when --database is not given
@@ -972,7 +972,7 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
-  -?, --help                            help for list events
+  -?, --help                            help for list evt
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen

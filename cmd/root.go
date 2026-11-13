@@ -176,7 +176,7 @@ func isDispatchParent(c *cobra.Command) bool {
 func dispatchParentObjects(c *cobra.Command) []string {
 	switch c.Name() {
 	case "list":
-		return list.Objects()
+		return list.ShortNames()
 	case "show":
 		return show.ShortNames()
 	}

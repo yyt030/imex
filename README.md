@@ -375,7 +375,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时九个对象里八个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时八个对象可用（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`），`events` 退出 `2`；`-D` 对 tables/views/triggers/routines/columns/indexes 是模式名（进 DSN 并过滤 `OWNER`），对 `databases` 过滤库名、对 `schemas` 过滤模式名且都不进 DSN；五个系统模式在 `schemas`、`tables`、`views`、`triggers`、`routines` 上默认排除，`--all` 取消排除（见「达梦引擎」）。对象名就是子命令名：
+`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时九个对象里八个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时八个对象可用（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`），`events` 退出 `2`；`-D` 对 tables/views/triggers/routines/columns/indexes 是模式名（进 DSN 并过滤 `OWNER`），对 `databases` 过滤库名、对 `schemas` 过滤模式名且都不进 DSN；五个系统模式在 `schemas`、`tables`、`views`、`triggers`、`routines` 上默认排除，`--all` 取消排除（见「达梦引擎」）。子命令以三字母短名为主名、英文全名为等价别名（`imex list tab` 与 `imex list tables` 解析到同一子命令，与 `show` 同形；下表用全名列举对象）：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -1097,6 +1097,22 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
 > 以下各节按版本记录每轮改动的摘要。同一批变更的完整设计理由与实测取证在 `docs/requirements.md` 十四节的编号变更记录，两处按轮次对齐，**编号变更记录为权威源**；本节只写“改了什么”，取值以当轮实测为准。
+
+## 修复记录（v0.37.0）
+
+本轮把 `imex list` 的子命令命名对齐 `show`：三字母短名成为**主名**（`imex list --help` 的 Available Commands 现列 `col dbs evt idx rtn sch tab trg vws`），英文全名降为**等价别名**——`imex list tables`、`imex list databases` 等旧写法照常解析到同一子命令，脚本不破坏。
+
+| 变更 | 旧行为 | 新行为 |
+|------|--------|--------|
+| `imex list --help` 的子命令名 | 列全名（databases…events），短名只作别名 | 列短名（col…vws），全名转为别名；叶子 `Usage: imex list dbs`、`Aliases: dbs, databases` |
+| 父命令缺对象／未知对象提示 | 列全名清单 | 列短名清单：`list requires an object: dbs, sch, tab, vws, col, idx, trg, rtn, evt` |
+| v0.36.1 的分派提示 `needs an object subcommand` | list 分支复用 `list.Objects()`、列全名 | list 分支改复用 `list.ShortNames()`、列短名，与 show 同用简称表 |
+
+> 本节取代「修复记录（v0.36.1）」里「提示里的对象名」一行对 `list` 半句的旧描述（那里写 `list` 复用 `list.Objects()`、列全名，是 v0.36.1 当时的实况）；v0.36.1 一节正文按历史保留、不改写。
+
+**验证**：`gofmt -l .` 0 行、`go vet ./...` 净、`-race ./...` 十包全绿、双 DSN 真库 **230 PASS／6 FAIL／0 SKIP**（6 条 FAIL 为 168 既债的三条 `channel_test.go` 单元、与本轮无关）、`make build` 后 `imex version` 报 **0.37.0**；因 `--help` 快照确有改动，`docs/cli-oracle.txt` 对 10 个 list 段重基线（`sections=23 identical=23 drift=0`、over118=0）⇒ **Y 档 `0.36.1 → 0.37.0`**；`-h`／`-?` 与全名／短名两种拼法全部照常可用。
+
+完整设计理由与逐条实测见 `docs/requirements.md` 十四节变更记录 **169**。
 
 ## 修复记录（v0.36.1）
 

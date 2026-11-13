@@ -112,41 +112,64 @@ func TestValidateListConfigRoutineType(t *testing.T) {
 
 func TestListCommandTree(t *testing.T) {
 	cmd := newListCmd()
-	want := []string{"databases", "schemas", "tables", "views", "columns", "indexes", "triggers", "routines", "events"}
+	// Aligned with `show`: the three-letter name is the canonical Use and the
+	// long name is a registered alias, so both spellings resolve to one leaf.
+	want := map[string]string{
+		"databases": "dbs", "schemas": "sch", "tables": "tab", "views": "vws",
+		"columns": "col", "indexes": "idx", "triggers": "trg", "routines": "rtn",
+		"events": "evt",
+	}
 	if len(cmd.Commands()) != len(want) {
 		t.Fatalf("subcommands = %d, want %d", len(cmd.Commands()), len(want))
 	}
-	for _, name := range want {
-		found, _, err := cmd.Find([]string{name})
-		if err != nil || found.Name() != name {
-			t.Errorf("subcommand %q not found: cmd=%v err=%v", name, found, err)
+	for full, short := range want {
+		byShort, _, e1 := cmd.Find([]string{short})
+		byFull, _, e2 := cmd.Find([]string{full})
+		if e1 != nil || e2 != nil {
+			t.Errorf("%q / %q: find errors %v / %v", short, full, e1, e2)
+			continue
+		}
+		if byShort != byFull {
+			t.Errorf("%q and %q resolved to different commands", short, full)
+		}
+		if byShort.Name() != short {
+			t.Errorf("%q canonical Name = %q, want %q", full, byShort.Name(), short)
 		}
 	}
 }
 
 func TestListCommandAliases(t *testing.T) {
+	// After the flip the short name is canonical and the long name is the alias,
+	// so each leaf must carry its long name in Aliases and print short names in
+	// `imex list --help`, exactly the way `show` presents its kinds.
 	want := map[string]string{
-		"dbs": "databases",
-		"sch": "schemas",
-		"tab": "tables",
-		"vws": "views",
-		"col": "columns",
-		"idx": "indexes",
-		"trg": "triggers",
-		"rtn": "routines",
+		"dbs": "databases", "sch": "schemas", "tab": "tables", "vws": "views",
+		"col": "columns", "idx": "indexes", "trg": "triggers", "rtn": "routines",
 		"evt": "events",
 	}
 	cmd := newListCmd()
-	for alias, object := range want {
-		found, _, err := cmd.Find([]string{alias})
+	for short, full := range want {
+		found, _, err := cmd.Find([]string{short})
 		if err != nil {
-			t.Errorf("alias %q: %v", alias, err)
+			t.Errorf("short %q: %v", short, err)
 			continue
 		}
-		if found.Name() != object {
-			t.Errorf("alias %q resolved to %q, want %q", alias, found.Name(), object)
+		if found.Name() != short {
+			t.Errorf("short %q resolved to leaf %q, want canonical %q", short, found.Name(), short)
+		}
+		if !containsName(found.Aliases, full) {
+			t.Errorf("leaf %q aliases = %v, want to include %q", short, found.Aliases, full)
 		}
 	}
+}
+
+func containsName(names []string, want string) bool {
+	for _, n := range names {
+		if n == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestListHasNoFormatFlag(t *testing.T) {

@@ -2,40 +2,43 @@ package list
 
 import "testing"
 
-func TestObjectAliasesAreUnique(t *testing.T) {
+func TestListShortNamesAreUnique(t *testing.T) {
 	seen := make(map[string]string)
 	for _, object := range Objects() {
-		aliases := Aliases(object)
-		if len(aliases) != 1 {
-			t.Errorf("%s has %d aliases, want exactly one", object, len(aliases))
+		short := ShortName(object)
+		if short == "" {
+			t.Errorf("%s has an empty short name", object)
 		}
-		for _, alias := range aliases {
-			if alias == "" {
-				t.Errorf("%s has an empty alias", object)
+		if len(short) != 3 {
+			t.Errorf("%s short name %q is not three letters", object, short)
+		}
+		for _, name := range Objects() {
+			if short == name {
+				t.Errorf("%s short name %q collides with object name %q", object, short, name)
 			}
-			if len(alias) != 3 {
-				t.Errorf("%s alias %q is not three letters", object, alias)
-			}
-			for _, name := range Objects() {
-				if alias == name {
-					t.Errorf("%s alias %q collides with object name", object, alias)
-				}
-			}
-			if prev, ok := seen[alias]; ok {
-				t.Errorf("alias %q used by both %s and %s", alias, prev, object)
-			}
-			seen[alias] = object
+		}
+		if prev, ok := seen[short]; ok {
+			t.Errorf("short name %q used by both %s and %s", short, prev, object)
+		}
+		seen[short] = object
+	}
+}
+
+func TestShortNamesFollowObjectOrder(t *testing.T) {
+	objs := Objects()
+	shorts := ShortNames()
+	if len(shorts) != len(objs) {
+		t.Fatalf("ShortNames = %d, want %d", len(shorts), len(objs))
+	}
+	for i, o := range objs {
+		if shorts[i] != ShortName(o) {
+			t.Errorf("ShortNames[%d] = %q, want %q (for %s)", i, shorts[i], ShortName(o), o)
 		}
 	}
 }
 
-func TestAliasesReturnsCopy(t *testing.T) {
-	got := Aliases(ObjectDatabases)
-	if len(got) == 0 {
-		t.Fatal("databases has no aliases")
-	}
-	got[0] = "broken"
-	if Aliases(ObjectDatabases)[0] == "broken" {
-		t.Error("Aliases exposed the registry slice")
+func TestShortNameFallsBackToObject(t *testing.T) {
+	if got := ShortName("nope"); got != "nope" {
+		t.Errorf("unknown object short = %q, want the object itself", got)
 	}
 }

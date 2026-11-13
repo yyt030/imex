@@ -38,9 +38,9 @@ and indexes need both --database and --table.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return common.Usagef("list requires an object: %s", strings.Join(list.Objects(), ", "))
+				return common.Usagef("list requires an object: %s", strings.Join(list.ShortNames(), ", "))
 			}
-			return common.Usagef("unknown object %q: expected one of %s", args[0], strings.Join(list.Objects(), ", "))
+			return common.Usagef("unknown object %q: expected one of %s", args[0], strings.Join(list.ShortNames(), ", "))
 		},
 	}
 
@@ -80,8 +80,13 @@ and indexes need both --database and --table.`,
 func newListObjectCmd(object, short string, extra func(*config.ListConfig, *pflag.FlagSet)) *cobra.Command {
 	cfg := config.NewListConfig()
 	cmd := &cobra.Command{
-		Use:          object,
-		Aliases:      list.Aliases(object),
+		// Aligned with `show`: the three-letter name is canonical (it is what
+		// `imex list --help` lists) and the long name stays a valid alias, so
+		// both `imex list tab -D mydb` and `imex list tables -D mydb` keep
+		// parsing to the same leaf. RunE receives the long `object`, which is
+		// what the query builders key on, so nothing downstream changes.
+		Use:          list.ShortName(object),
+		Aliases:      []string{object},
 		Short:        short,
 		Args:         exactArgs(0),
 		SilenceUsage: true,
@@ -279,7 +284,7 @@ func validateListConfig(cfg *config.ListConfig) error {
 		}
 		return nil
 	default:
-		return common.Usagef("unknown object %q: expected one of %s", cfg.Object, strings.Join(list.Objects(), ", "))
+		return common.Usagef("unknown object %q: expected one of %s", cfg.Object, strings.Join(list.ShortNames(), ", "))
 	}
 }
 
