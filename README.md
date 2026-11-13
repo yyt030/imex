@@ -1098,6 +1098,21 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 
 > 以下各节按版本记录每轮改动的摘要。同一批变更的完整设计理由与实测取证在 `docs/requirements.md` 十四节的编号变更记录，两处按轮次对齐，**编号变更记录为权威源**；本节只写“改了什么”，取值以当轮实测为准。
 
+## 修复记录（v0.36.1）
+
+本轮把「`list`／`show` 父命令没带对象子命令、却收到连接选项简写」时的报错文案优化随 `v0.36.1` 发布。用户原命令 `imex list --help -hxx -pxx -uxx -Px` 原本只回一句 `unknown shorthand flag: 'x' in -xx`，看不出 `'x'` 从哪来；根因是父命令的 `-h` 是 Cobra 的 bool help（不吃后面的值），pflag 吃掉 `h` 后把剩下的 `xx` 当简写簇解析，而连接选项其实挂在对象子命令上。
+
+| 变更 | 旧行为 | 新行为 |
+|------|--------|--------|
+| `list`／`show` 父命令的 `unknown shorthand flag` | 只回 pflag 原文，指向错的字母（`'x' in -xx`） | 保留原文，追加**一句**说明：缺的是 object 子命令，并列出该父命令全部可选对象 |
+| 提示里的对象名 | 无 | `list` 列 `databases, schemas, tables, views, columns, indexes, triggers, routines, events`；`show` 列 `sch, tab, vws, trg, evt, prc, fcn`——复用 `list.Objects()`／`show.ShortNames()`，与 `imex list` 无参数报错同序 |
+
+按用户裁定收敛为**一句话**：先压成 120 字符的单句，再把 `<object>` 占位换成具体对象清单（153 字符）。文案只讲「缺 object」，不解释 `-h` 的 help／host 分裂（那是帮助面的细节，不属于错误）。判断条件 `isDispatchParent()` 只匹配「有父、有子、自身无 `--host`」的分派父命令；叶子命令、`version`／`encrypt`、root 的错误文案一字未动。
+
+**验证**：`gofmt -l .` 0 行、`go vet ./...` 净、`go test ./... -count=1` **11 包全绿**（新增 `TestDispatchParentExplainsConnectionShorthands` 13 例 + 两条完整文案精确断言，钉住「一句话」「必须列举对象」「不得回到 `<object>` 占位」）；改前／改后 **24 份 `--help` 快照逐字节零差异**，`docs/cli-oracle.txt` 未动（仍 23 段、note 30）；四个简写 `-hxx`／`-uxx`／`-pxx`／`-Px` 在 `list`／`show` 上各自报对字母，退出码仍是 **2**；`make build` 后 `imex version` 报 **0.36.1**。
+
+完整设计理由与逐条实测见 `docs/requirements.md` 十四节变更记录 **168**（代码轮 168-1/168-2/168-3 与发版轮合并记账）。
+
 ## 修复记录（v0.35.0）
 
 本轮把 164/165 两轮随 `v0.35.0` 发布：达梦的 `list` 补齐视图、触发器、例程三个对象；另外查清了「`list indexes` 回 0 行」并把一处 `-D` 大小写的旧口径订正。

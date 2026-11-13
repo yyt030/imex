@@ -821,3 +821,103 @@ func TestCLIImportKeepsPipelineOptionsWithThreads(t *testing.T) {
 			importCfg.BatchSize, importCfg.PipelineBuffer, importCfg.ImportThreads)
 	}
 }
+
+// TestDispatchParentExplainsConnectionShorthands pins the one-sentence hint
+// attached to "unknown shorthand flag" on the list/show parents. Those commands
+// own no connection flags, so -h/-u/-p/-P given without an object subcommand
+// used to fail with a bare pflag message that blamed the wrong letter ("-hxx"
+// reported 'x', because on the parent -h is Cobra's bool help flag). Leaves,
+// root and non-dispatch commands must keep the original message untouched. The
+// hint must enumerate the parent's valid objects, in registry order.
+func TestDispatchParentExplainsConnectionShorthands(t *testing.T) {
+	const hint = "needs an object subcommand"
+	// The command tree is package-level and flag values survive Execute(). A
+	// "-h" parsed as the parent's bool help flag leaves help=true behind, and
+	// resetChangedFlags only clears Changed, so later tests would print help
+	// instead of running the command. Restore every flag to its default value
+	// between cases and on the way out.
+	resetFlagState := func() {
+		var walk func(*cobra.Command)
+		walk = func(c *cobra.Command) {
+			for _, fs := range []*pflag.FlagSet{c.Flags(), c.PersistentFlags()} {
+				fs.VisitAll(func(f *pflag.Flag) {
+					_ = f.Value.Set(f.DefValue)
+					f.Changed = false
+				})
+			}
+			for _, sub := range c.Commands() {
+				walk(sub)
+			}
+		}
+		walk(rootCmd)
+	}
+	defer resetFlagState()
+
+	cases := []struct {
+		name     string
+		args     []string
+		wantHint bool
+	}{
+		{"list -hxx", []string{"list", "-hxx"}, true},
+		{"list -uxx", []string{"list", "-uxx"}, true},
+		{"list -pxx", []string{"list", "-pxx"}, true},
+		{"list -Px", []string{"list", "-Px"}, true},
+		{"list --help mixed with connection flags", []string{"list", "--help", "-hxx", "-uxx", "-pxx", "-Px"}, true},
+		{"show -uxx", []string{"show", "-uxx"}, true},
+		{"show -Px", []string{"show", "-Px"}, true},
+		{"list tables -hxx is a leaf", []string{"list", "tables", "-hxx"}, false},
+		{"show tab -hxx is a leaf", []string{"show", "tab", "-hxx"}, false},
+		{"root -?", []string{"-?"}, false},
+		{"version -hxx", []string{"version", "-hxx"}, false},
+		{"encrypt -hxx", []string{"encrypt", "-hxx"}, false},
+		{"export -S", []string{"export", "-S"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetFlagState()
+			rootCmd.SetArgs(tc.args)
+			err := rootCmd.Execute()
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if tc.wantHint && !common.IsUsageError(err) {
+				t.Errorf("expected a UsageError (exit 2), got %T: %v", err, err)
+			}
+			if got := strings.Contains(err.Error(), hint); got != tc.wantHint {
+				t.Errorf("hint present = %v, want %v; error = %q", got, tc.wantHint, err.Error())
+			}
+			if tc.wantHint && !strings.Contains(err.Error(), "unknown shorthand flag") {
+				t.Errorf("original pflag message must be preserved, got %q", err.Error())
+			}
+		})
+	}
+
+	// The hint must stay one sentence and spell out the concrete objects, not a
+	// placeholder. Both parents reuse the same order as their "requires" error.
+	checks := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"list", "-hxx"}, `unknown shorthand flag: 'x' in -xx; imex list needs an object subcommand: databases, schemas, tables, views, columns, indexes, triggers, routines, events`},
+		{[]string{"show", "-uxx"}, `unknown shorthand flag: 'u' in -uxx; imex show needs an object subcommand: sch, tab, vws, trg, evt, prc, fcn`},
+	}
+	for _, ck := range checks {
+		resetFlagState()
+		rootCmd.SetArgs(ck.args)
+		err := rootCmd.Execute()
+		if err == nil {
+			t.Fatalf("expected an error for %v", ck.args)
+		}
+		if err.Error() != ck.want {
+			t.Errorf("unexpected error for %v:\n got %q\nwant %q", ck.args, err.Error(), ck.want)
+		}
+		// One separator means exactly one appended clause, i.e. a single sentence.
+		if n := strings.Count(err.Error(), "; "); n != 1 {
+			t.Errorf("hint must append exactly one clause, got %d separators: %q", n, err.Error())
+		}
+		// A placeholder would defeat the point: the objects must be enumerated.
+		if strings.Contains(err.Error(), "<object>") {
+			t.Errorf("hint must list concrete objects, got %q", err.Error())
+		}
+	}
+}

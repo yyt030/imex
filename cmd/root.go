@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/imex/internal/common"
+	"github.com/imex/internal/list"
+	"github.com/imex/internal/show"
 	"github.com/spf13/cobra"
 )
 
@@ -72,9 +74,7 @@ func init() {
 	// Every flag-parsing failure (unknown flag, bad enum/duration/bool value) is
 	// a parameter problem, so it must exit 2 like the explicit validators rather
 	// than being reported as a runtime failure.
-	rootCmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
-		return common.Usagef("%v", err)
-	})
+	rootCmd.SetFlagErrorFunc(flagErrorUsage)
 
 	// --- Persistent flags (appear on root, inherited by export/import) ---
 
@@ -148,6 +148,54 @@ func init() {
 	rootCmd.AddCommand(importCmd)
 	rootCmd.AddCommand(versionCmd)
 	// encryptCmd is added by encrypt.go's init()
+}
+
+// flagErrorUsage turns a pflag parsing failure into a usage error (exit 2).
+// On a dispatch parent such as "list" or "show", an unknown shorthand is
+// usually a connection option attached to the wrong command level: the parent
+// owns no connection flags, they live on the object subcommands. So the
+// concrete thing missing is that object subcommand, not a flag value.
+func flagErrorUsage(c *cobra.Command, err error) error {
+	if isDispatchParent(c) && strings.Contains(err.Error(), "unknown shorthand flag") {
+		return common.Usagef("%v; %s", err, dispatchParentHint(c))
+	}
+	return common.Usagef("%v", err)
+}
+
+// isDispatchParent matches commands that only dispatch to object subcommands:
+// they have both a parent and children, but no --host flag of their own. That
+// leaves out root (no parent), version/encrypt (no children) and every leaf
+// (which does own the connection flags).
+func isDispatchParent(c *cobra.Command) bool {
+	return c != nil && c.HasParent() && c.HasSubCommands() && c.Flags().Lookup("host") == nil
+}
+
+// dispatchParentObjects returns the object names a dispatch parent accepts, in
+// the same order its own "requires an object" message prints them. Cobra sorts
+// Commands() alphabetically, so go through the registries instead of guessing.
+func dispatchParentObjects(c *cobra.Command) []string {
+	switch c.Name() {
+	case "list":
+		return list.Objects()
+	case "show":
+		return show.ShortNames()
+	}
+	names := make([]string, 0, len(c.Commands()))
+	for _, sub := range c.Commands() {
+		if !sub.Hidden {
+			names = append(names, sub.Name())
+		}
+	}
+	return names
+}
+
+// dispatchParentHint is one sentence that names what is actually missing: an
+// object subcommand. The parent owns no connection flags, so an unknown
+// shorthand here means the object was left out; list the valid objects rather
+// than explaining the parent's "-h is help, not host" help-surface split.
+func dispatchParentHint(c *cobra.Command) string {
+	return fmt.Sprintf("%s needs an object subcommand: %s",
+		c.CommandPath(), strings.Join(dispatchParentObjects(c), ", "))
 }
 
 // envTruthy reports whether the named env var is set to a truthy value
