@@ -115,7 +115,7 @@ func TestShowWithoutKindIsUsageError(t *testing.T) {
 	if err == nil || !common.IsUsageError(err) {
 		t.Fatalf("got %v, want a usage error", err)
 	}
-	want := "show requires a kind: " + strings.Join(show.ShortNames(), ", ")
+	want := "show needs an object subcommand: " + strings.Join(show.ShortNames(), ", ")
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
@@ -130,7 +130,7 @@ func TestShowUnknownKindIsUsageError(t *testing.T) {
 	if err == nil || !common.IsUsageError(err) {
 		t.Fatalf("got %v, want a usage error", err)
 	}
-	if !strings.Contains(err.Error(), `unknown kind "tabel"`) {
+	if !strings.Contains(err.Error(), `unknown object subcommand "tabel"`) {
 		t.Errorf("error = %v", err)
 	}
 	// The message must list the names a user can type.

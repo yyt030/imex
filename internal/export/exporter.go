@@ -121,12 +121,12 @@ func (e *Exporter) backend() backend.Backend {
 	return e.be
 }
 
-// sqlDialect resolves --sql-dialect for a `-f sql` run. An explicit mysql or pg
-// wins; auto (the default, and an empty value) follows the connected engine, so a
-// MySQL run keeps emitting MySQL bytes byte for byte and a PostgreSQL run emits
-// PostgreSQL bytes. An engine with no writer-side dialect yet (Dameng) falls back
-// to MySQL grammar, and its -f sql path is refused at the CLI before a writer is
-// ever built.
+// sqlDialect resolves --sql-dialect for a `-f sql` run. An explicit mysql, pg or
+// dm wins; auto (the default, and an empty value) follows the connected engine,
+// so a MySQL run keeps emitting MySQL bytes byte for byte, a PostgreSQL run emits
+// PostgreSQL bytes, and a Dameng run emits the Oracle-compatible grammar. The
+// matching import-side reader is dialect-aware too, so a Dameng `-f sql` dump
+// round-trips back into Dameng.
 func (e *Exporter) sqlDialect() config.SQLDialect {
 	switch config.SQLDialect(e.config.SQLDialect) {
 	case config.SQLDialectPG:

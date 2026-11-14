@@ -16,26 +16,26 @@ var importCmd = &cobra.Command{
 	Use:     "import",
 	Aliases: []string{"imp"},
 	Args:    cobra.NoArgs,
-	Short:   "Import data into MySQL/OceanBase",
+	Short:   "Import table data from DEL, SQL or Parquet",
 	Long: `Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
-MySQL or OceanBase database.
+MySQL, PostgreSQL or Dameng database.
 
 Examples:
   # Basic import from DEL format
-  imex import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import --host 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del -t users
 
   # Import from Parquet format
-  imex import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import --host 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.parquet -f parquet -t users
 
   # Import with insert_update mode
-  imex import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import --host 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del --mode insert_update -t users
 
   # Import a SQL dump (any CREATE/DDL lines are skipped; only the INSERT data
   # is loaded, into a table that must already exist)
-  imex import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import --host 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.sql -f sql -t users`,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {

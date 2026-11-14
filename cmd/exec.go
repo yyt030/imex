@@ -58,28 +58,20 @@ end of the statement.`,
 func registerExecFlags(cmd *cobra.Command, cfg *config.ExecConfig) {
 	f := cmd.Flags()
 
-	// Same rule as export, import and list: -h belongs to --host, so help gets ?.
-	f.BoolP("help", "?", false, "help for exec")
-
-	f.StringVar(&cfg.Engine, "engine", "mysql", "Database engine: mysql, pg, dm")
-	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
-	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
-	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
-	f.StringVarP(&cfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
-	f.StringVarP(&cfg.Database, "database", "D", "",
-		"Default schema the statements run in (also IMEX_DATABASE)")
-
-	f.DurationVar(&cfg.ConnectTimeout, "connect-timeout", config.DefaultConnectTimeout, "TCP connect timeout")
-	f.DurationVar(&cfg.SocketReadTimeout, "socket-read-timeout", config.DefaultSocketTimeout, "Per-read socket timeout")
-	f.DurationVar(&cfg.SocketWriteTimeout, "socket-write-timeout", config.DefaultSocketTimeout, "Per-write socket timeout")
-	f.StringVar(&cfg.DefaultCharset, "default-charset", config.DefaultCharset, "Connection charset")
+	registerConnFlags(f, &cfg.Config, connFlagOpts{
+		HelpLabel:         "help for exec",
+		DatabaseUsage:     "Default schema the statements run in (also IMEX_DATABASE)",
+		CharsetTarget:     &cfg.DefaultCharset,
+		CharsetDefault:    config.DefaultCharset,
+		CharsetUsage:      "Connection charset",
+		MessagesUsage:     "Log/error file; result still goes to stdout or --output; nothing on screen",
+		OutputTarget:      &cfg.Output,
+		NoOverwriteTarget: &cfg.NoOverwrite,
+		OutputUsage:       "Write the result to this file (default: stdout)",
+	})
 
 	f.StringVarP(&cfg.File, "file", "f", "", "Read the SQL to run from this file")
 	f.BoolVar(&cfg.NoColNames, "no-col-names", false, "Do not print the header row of a result set")
-	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout)")
-	f.BoolVar(&cfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Log/error file; result still goes to stdout or --output; nothing on screen")
-	f.StringVar((*string)(&cfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
 }
 
 func runExec(cmd *cobra.Command, cfg *config.ExecConfig, args []string) error {

@@ -223,7 +223,7 @@ func TestListWithoutObjectIsUsageError(t *testing.T) {
 	if err == nil || !common.IsUsageError(err) {
 		t.Fatalf("got %v, want a usage error", err)
 	}
-	if !strings.Contains(err.Error(), "list requires an object") {
+	if !strings.Contains(err.Error(), "needs an object subcommand: "+strings.Join(list.ShortNames(), ", ")) {
 		t.Errorf("error = %v", err)
 	}
 }
@@ -237,7 +237,7 @@ func TestListUnknownObjectIsUsageError(t *testing.T) {
 	if err == nil || !common.IsUsageError(err) {
 		t.Fatalf("got %v, want a usage error", err)
 	}
-	if !strings.Contains(err.Error(), `unknown object "tabel"`) {
+	if !strings.Contains(err.Error(), `unknown object subcommand "tabel"`) {
 		t.Errorf("error = %v", err)
 	}
 }

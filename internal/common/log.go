@@ -173,6 +173,13 @@ const (
 	LogFormatText    = "text"
 )
 
+// LogFormats returns the --log-format values in the order its help text and
+// invalid-value error list them, so both are generated from the same vocabulary
+// as ValidLogFormat below.
+func LogFormats() []string {
+	return []string{LogFormatConsole, LogFormatText}
+}
+
 // validLogFormat is the set --log-format accepts; cmd/validate.go's
 // validateLogFormat is called from the root command's PersistentPreRunE so a
 // typo fails with exit code 2 instead of silently falling back.

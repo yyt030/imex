@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"time"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -20,21 +20,17 @@ var exportDefaultCharset string
 func registerExportFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
 
-	// Override default help flag to free up -h for --host.
-	f.BoolP("help", "?", false, "help for export")
-
-	// Connection options; each also reads IMEX_* when the flag is not given.
-	f.StringVar(&exportCfg.Engine, "engine", "mysql", "Database engine: mysql, pg, dm")
-	f.StringVarP(&exportCfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
-	f.IntVarP(&exportCfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
-	f.StringVarP(&exportCfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
-	f.StringVarP(&exportCfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
-	f.StringVarP(&exportCfg.Database, "database", "D", "", "Database name (also IMEX_DATABASE)")
-
-	// Timeouts
-	f.DurationVar(&exportCfg.ConnectTimeout, "connect-timeout", 5*time.Second, "TCP connect timeout")
-	f.DurationVar(&exportCfg.SocketReadTimeout, "socket-read-timeout", 5*time.Minute, "Per-read socket timeout")
-	f.DurationVar(&exportCfg.SocketWriteTimeout, "socket-write-timeout", 5*time.Minute, "Per-write socket timeout")
+	registerConnFlags(f, &exportCfg.Config, connFlagOpts{
+		HelpLabel:         "help for export",
+		DatabaseUsage:     "Database name (also IMEX_DATABASE)",
+		CharsetTarget:     &exportDefaultCharset,
+		CharsetDefault:    "",
+		CharsetUsage:      "Connection & output-file charset (utf8mb4 default)",
+		MessagesUsage:     "Redirect the command log to this file; with it, nothing is printed to stderr",
+		OutputTarget:      &exportCfg.Output,
+		NoOverwriteTarget: &exportCfg.NoOverwrite,
+		OutputUsage:       "Output file path (required)",
+	})
 
 	// Progress cadence
 	f.DurationVar(&exportCfg.ProgressInterval, "progress-interval", config.DefaultProgressInterval,
@@ -44,16 +40,10 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.StringArrayVar(&exportCfg.SessionVars, "session-var", nil,
 		"Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES")
 
-	// Charset (no default shown in oracle; struct keeps utf8mb4 from NewExportConfig)
-	f.StringVar(&exportDefaultCharset, "default-charset", "",
-		"Connection & output-file charset (utf8mb4 default)")
-
 	// Export-specific options
-	f.StringVarP(&exportCfg.Output, "output", "o", "", "Output file path (required)")
-	f.StringVarP(&exportCfg.Format, "format", "f", "del", "Output file format (del/sql/parquet)")
+	f.StringVarP(&exportCfg.Format, "format", "f", "del",
+		"Output file format ("+enumNames(config.Formats())+")")
 	f.StringVarP(&exportCfg.Query, "query", "q", "", "SQL SELECT statement, or @file to read it from a file")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")
-	f.BoolVar(&exportCfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
 
 	// DEL format modifiers
 	f.StringVar(&exportCfg.DelModifier.CharDel, "char-del", "\"", "String delimiter")
@@ -70,11 +60,11 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.IntVar(&exportCfg.StatementSize, "statement-size", config.DefaultStatementSize, "Max bytes per merged INSERT")
 	f.BoolVar(&exportCfg.ExtendedInsert, "extended-insert", false, "Merge rows into multi-row INSERTs")
 	f.StringVar(&exportCfg.SQLDialect, "sql-dialect", string(config.SQLDialectAuto),
-		"SQL dump grammar (auto/mysql/pg/dm)")
+		"SQL dump grammar ("+enumNames(config.SQLDialects())+")")
 
 	// Parquet format modifiers
 	f.StringVar(&exportCfg.ParquetCompression, "parquet-compression", config.ParquetCompressionNone,
-		"Compression: none, snappy, zstd")
+		"Compression: "+strings.Join(config.ParquetCompressions(), ", "))
 
 	// Binary column encoding
 	f.BoolVar(&exportCfg.HexBlob, "hex-blob", false, "Binary columns as 0x hex literals")
@@ -89,9 +79,6 @@ func registerExportFlags(cmd *cobra.Command) {
 	// Parallel export
 	f.IntVar(&exportCfg.Threads, "threads", 1, "Number of parallel export tasks (1 = no parallelism)")
 	f.StringVar(&exportCfg.ShardKey, "shard-key", "", "Column used to shard a parallel export; defaults to the primary key")
-
-	// Log level (local, not persistent)
-	f.StringVar((*string)(&exportCfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
 
 	// Append each format-scoped option's scope to its own help text, from the
 	// registry cmd/validate.go rejects with.

@@ -40,9 +40,9 @@ Batches come from ` + "`imex list`" + `.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return common.Usagef("show requires a kind: %s", strings.Join(show.ShortNames(), ", "))
+				return common.Usagef("%s", dispatchParentHint(cmd))
 			}
-			return common.Usagef("unknown kind %q: expected one of %s", args[0], strings.Join(show.ShortNames(), ", "))
+			return common.Usagef("unknown object subcommand %q: expected one of %s", args[0], strings.Join(show.ShortNames(), ", "))
 		},
 	}
 
@@ -76,26 +76,17 @@ func newShowKindCmd(kind show.Kind) *cobra.Command {
 func registerShowFlags(cmd *cobra.Command, cfg *config.ShowConfig) {
 	f := cmd.Flags()
 
-	// Same rule as export, import and list: -h belongs to --host, so help gets ?.
-	f.BoolP("help", "?", false, "help for show "+cmd.Use)
-
-	f.StringVar(&cfg.Engine, "engine", "mysql", "Database engine: mysql, pg, dm")
-	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
-	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
-	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
-	f.StringVarP(&cfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
-	f.StringVarP(&cfg.Database, "database", "D", "",
-		"Schema of the object (required unless qualified; also IMEX_DATABASE)")
-
-	f.DurationVar(&cfg.ConnectTimeout, "connect-timeout", config.DefaultConnectTimeout, "TCP connect timeout")
-	f.DurationVar(&cfg.SocketReadTimeout, "socket-read-timeout", config.DefaultSocketTimeout, "Per-read socket timeout")
-	f.DurationVar(&cfg.SocketWriteTimeout, "socket-write-timeout", config.DefaultSocketTimeout, "Per-write socket timeout")
-	f.StringVar(&cfg.DefaultCharset, "default-charset", config.DefaultCharset, "Connection charset")
-
-	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout)")
-	f.BoolVar(&cfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Log/error file; result still goes to stdout or --output; nothing on screen")
-	f.StringVar((*string)(&cfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
+	registerConnFlags(f, &cfg.Config, connFlagOpts{
+		HelpLabel:         "help for show " + cmd.Use,
+		DatabaseUsage:     "Schema of the object (required unless qualified; also IMEX_DATABASE)",
+		CharsetTarget:     &cfg.DefaultCharset,
+		CharsetDefault:    config.DefaultCharset,
+		CharsetUsage:      "Connection charset",
+		MessagesUsage:     "Log/error file; result still goes to stdout or --output; nothing on screen",
+		OutputTarget:      &cfg.Output,
+		NoOverwriteTarget: &cfg.NoOverwrite,
+		OutputUsage:       "Write the result to this file (default: stdout)",
+	})
 }
 
 func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref string) error {

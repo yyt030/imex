@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"time"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -18,21 +18,14 @@ var importDefaultCharset string
 func registerImportFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
 
-	// Override default help flag to free up -h for --host.
-	f.BoolP("help", "?", false, "help for import")
-
-	// Connection options; each also reads IMEX_* when the flag is not given.
-	f.StringVar(&importCfg.Engine, "engine", "mysql", "Database engine: mysql, pg, dm")
-	f.StringVarP(&importCfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
-	f.IntVarP(&importCfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
-	f.StringVarP(&importCfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
-	f.StringVarP(&importCfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
-	f.StringVarP(&importCfg.Database, "database", "D", "", "Database name (also IMEX_DATABASE)")
-
-	// Timeouts
-	f.DurationVar(&importCfg.ConnectTimeout, "connect-timeout", 5*time.Second, "TCP connect timeout")
-	f.DurationVar(&importCfg.SocketReadTimeout, "socket-read-timeout", 5*time.Minute, "Per-read socket timeout")
-	f.DurationVar(&importCfg.SocketWriteTimeout, "socket-write-timeout", 5*time.Minute, "Per-write socket timeout")
+	registerConnFlags(f, &importCfg.Config, connFlagOpts{
+		HelpLabel:      "help for import",
+		DatabaseUsage:  "Database name (also IMEX_DATABASE)",
+		CharsetTarget:  &importDefaultCharset,
+		CharsetDefault: "",
+		CharsetUsage:   "Connection & input-file charset (utf8mb4 default)",
+		MessagesUsage:  "Redirect the command log to this file; with it, nothing is printed to stderr",
+	})
 
 	// Progress cadence
 	f.DurationVar(&importCfg.ProgressInterval, "progress-interval", config.DefaultProgressInterval,
@@ -42,17 +35,14 @@ func registerImportFlags(cmd *cobra.Command) {
 	f.StringArrayVar(&importCfg.SessionVars, "session-var", nil,
 		"Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES")
 
-	// Charset
-	f.StringVar(&importDefaultCharset, "default-charset", "",
-		"Connection & input-file charset (utf8mb4 default)")
-
 	// Import-specific options
 	f.StringVarP(&importCfg.Input, "input", "i", "", "Input file path (required)")
-	f.StringVarP(&importCfg.Format, "format", "f", "del", "Input file format (del/sql/parquet)")
-	f.StringVarP((*string)(&importCfg.Mode), "mode", "M", "insert", "insert, insert_update, replace (clears the table)")
+	f.StringVarP(&importCfg.Format, "format", "f", "del",
+		"Input file format ("+enumNames(config.Formats())+")")
+	f.StringVarP((*string)(&importCfg.Mode), "mode", "M", "insert",
+		strings.Join(config.ImportModes(), ", ")+" (clears the table)")
 	f.StringVarP(&importCfg.Table, "table", "t", "", "Target table name")
 	f.StringVarP(&importCfg.Columns, "columns", "c", "", "Target columns (one per input column) or file=table mapping (subset ok)")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Redirect the command log to this file; with it, nothing is printed to stderr")
 
 	// DEL format modifiers
 	f.StringVar(&importCfg.DelModifier.CharDel, "char-del", "\"", "String delimiter")
@@ -77,9 +67,6 @@ func registerImportFlags(cmd *cobra.Command) {
 
 	// Parallel import
 	f.IntVar(&importCfg.ImportThreads, "threads", 1, "Number of parallel import tasks (1 = no parallelism)")
-
-	// Log level (local, not persistent)
-	f.StringVar((*string)(&importCfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
 
 	// Append each format-scoped option's scope to its own help text, from the
 	// registry cmd/validate.go rejects with.

@@ -94,14 +94,19 @@ func validateRowCount(count int) error {
 	return nil
 }
 
+// enumNames renders a value list the way the invalid-value errors always have:
+// slash-separated, in the registry's contract order. The registry owns the
+// values, so help text, the validator and the error cannot drift apart.
+func enumNames(values []string) string {
+	return strings.Join(values, "/")
+}
+
 // validateLogLevel checks that the log level is one of debug/info/warn/error.
 func validateLogLevel(level string) error {
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "debug", "info", "warn", "error":
-		return nil
-	default:
-		return common.Usagef("invalid --log-level %q: must be one of debug/info/warn/error", level)
+	if !config.ValidLogLevel(strings.ToLower(strings.TrimSpace(level))) {
+		return common.Usagef("invalid --log-level %q: must be one of %s", level, enumNames(config.LogLevels()))
 	}
+	return nil
 }
 
 // validateParquetCompression checks the codec name before the writer sees it, so
@@ -109,7 +114,7 @@ func validateLogLevel(level string) error {
 // been created.
 func validateParquetCompression(codec string) error {
 	if !config.ValidParquetCompression(codec) {
-		return common.Usagef("invalid --parquet-compression %q: must be one of none/snappy/zstd", codec)
+		return common.Usagef("invalid --parquet-compression %q: must be one of %s", codec, enumNames(config.ParquetCompressions()))
 	}
 	return nil
 }
@@ -120,7 +125,7 @@ func validateParquetCompression(codec string) error {
 // non-sql format, so a run that reaches here and names a bad value is a real typo.
 func validateSQLDialect(dialect string) error {
 	if !config.ValidSQLDialect(dialect) {
-		return common.Usagef("invalid --sql-dialect %q: must be one of auto/mysql/pg/dm", dialect)
+		return common.Usagef("invalid --sql-dialect %q: must be one of %s", dialect, enumNames(config.SQLDialects()))
 	}
 	return nil
 }
@@ -128,7 +133,7 @@ func validateSQLDialect(dialect string) error {
 // validateLogFormat checks that the log format is valid.
 func validateLogFormat(format string) error {
 	if !common.ValidLogFormat(format) {
-		return common.Usagef("invalid --log-format %q: must be one of console/text", format)
+		return common.Usagef("invalid --log-format %q: must be one of %s", format, enumNames(common.LogFormats()))
 	}
 	return nil
 }
@@ -207,20 +212,16 @@ func validateOptionScopes(cmd *cobra.Command, scopes config.OptionScopes, format
 
 // validateFormat checks that the format is one of del/sql/parquet.
 func validateFormat(format string) error {
-	switch format {
-	case "del", "sql", "parquet":
-		return nil
-	default:
-		return common.Usagef("invalid --format %q: must be one of del/sql/parquet", format)
+	if !config.ValidFormat(format) {
+		return common.Usagef("invalid --format %q: must be one of %s", format, enumNames(config.Formats()))
 	}
+	return nil
 }
 
 // validateMode checks that the import mode is valid.
 func validateMode(mode string, format string) error {
-	switch mode {
-	case "insert", "insert_update", "replace":
-	default:
-		return common.Usagef("invalid --mode %q: must be one of insert/insert_update/replace", mode)
+	if !config.ValidImportMode(mode) {
+		return common.Usagef("invalid --mode %q: must be one of %s", mode, enumNames(config.ImportModes()))
 	}
 	return nil
 }

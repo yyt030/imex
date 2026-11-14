@@ -26,8 +26,8 @@ func newListCmd() *cobra.Command {
 
 The result goes to --output when it names a file, and to stdout otherwise.
 --messages only takes the log and the errors; it never receives the result:
-  imex list tables -D mydb
-  imex list tables -D mydb -o /backup/tables.txt
+  imex list tab -D mydb
+  imex list tab -D mydb -o /backup/tables.txt
 
 list databases names the databases the server holds (one row on Dameng, where an
 instance owns a single database); list schemas names the schemas inside them.
@@ -38,9 +38,9 @@ and indexes need both --database and --table.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return common.Usagef("list requires an object: %s", strings.Join(list.ShortNames(), ", "))
+				return common.Usagef("%s", dispatchParentHint(cmd))
 			}
-			return common.Usagef("unknown object %q: expected one of %s", args[0], strings.Join(list.ShortNames(), ", "))
+			return common.Usagef("unknown object subcommand %q: expected one of %s", args[0], strings.Join(list.ShortNames(), ", "))
 		},
 	}
 
@@ -104,28 +104,20 @@ func newListObjectCmd(object, short string, extra func(*config.ListConfig, *pfla
 func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 	f := cmd.Flags()
 
-	// Override the default help flag so -h stays available for --host.
-	f.BoolP("help", "?", false, "help for list "+cmd.Use)
-
-	f.StringVar(&cfg.Engine, "engine", "mysql", "Database engine: mysql, pg, dm")
-	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
-	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
-	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
-	f.StringVarP(&cfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
-	f.StringVarP(&cfg.Database, "database", "D", "",
-		"Database to inspect (required for columns and indexes; also IMEX_DATABASE)")
-
-	f.DurationVar(&cfg.ConnectTimeout, "connect-timeout", config.DefaultConnectTimeout, "TCP connect timeout")
-	f.DurationVar(&cfg.SocketReadTimeout, "socket-read-timeout", config.DefaultSocketTimeout, "Per-read socket timeout")
-	f.DurationVar(&cfg.SocketWriteTimeout, "socket-write-timeout", config.DefaultSocketTimeout, "Per-write socket timeout")
-	f.StringVar(&cfg.DefaultCharset, "default-charset", config.DefaultCharset, "Connection charset")
+	registerConnFlags(f, &cfg.Config, connFlagOpts{
+		HelpLabel:         "help for list " + cmd.Use,
+		DatabaseUsage:     "Database to inspect (required for columns and indexes; also IMEX_DATABASE)",
+		CharsetTarget:     &cfg.DefaultCharset,
+		CharsetDefault:    config.DefaultCharset,
+		CharsetUsage:      "Connection charset",
+		MessagesUsage:     "Log/error file; result still goes to stdout or --output; nothing on screen",
+		OutputTarget:      &cfg.Output,
+		NoOverwriteTarget: &cfg.NoOverwrite,
+		OutputUsage:       "Write the result to this file (default: stdout)",
+	})
 
 	f.StringVar(&cfg.Pattern, "pattern", "", "LIKE pattern for object names (% and _ are wildcards)")
 	f.BoolVar(&cfg.NoColNames, "no-col-names", false, "Do not print the header row")
-	f.StringVarP(&cfg.Output, "output", "o", "", "Write the result to this file (default: stdout)")
-	f.BoolVar(&cfg.NoOverwrite, "no-overwrite", false, "Refuse to overwrite an existing output file (default: overwrite)")
-	f.StringVarP(&messagesPath, "messages", "m", "", "Log/error file; result still goes to stdout or --output; nothing on screen")
-	f.StringVar((*string)(&cfg.LogLevel), "log-level", "info", "Log level (debug/info/warn/error)")
 }
 
 func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {

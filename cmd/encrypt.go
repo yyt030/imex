@@ -26,7 +26,7 @@ Examples:
   # Output: ENC:base64-encoded-encrypted-data...
 
   # Use encrypted password in export
-  imex export -h 127.0.0.1 -u root -p "ENC:base64..." -D mydb -o backup.sql`,
+  imex export --host 127.0.0.1 -u root -p "ENC:base64..." -D mydb -o backup.sql`,
 	Args: exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		password := args[0]

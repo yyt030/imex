@@ -1,8 +1,8 @@
 # imex
 
-名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度 MySQL 逻辑备份与恢复工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，同时支持 MySQL 和 OceanBase MySQL 模式。
+名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度逻辑导入导出工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，通过 `--engine` 支持 MySQL（含 MariaDB 与 OceanBase MySQL 模式）、PostgreSQL 与达梦 DM8（Oracle 兼容模式）。
 
-> **当前版本 `v0.38.1`**（2026-11-14，**纯文档轮**：文档瘦身与历史记录外迁，无功能／选项／产物／错误文案／下发 SQL 变更）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——`v0.38.1` 无功能变更，故不新增记录节，本轮内容见 `docs/requirements.md` 变更记录 **172**。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
+> **当前版本 `v0.38.2`**（2026-11-14，**Z 档收敛轮**：命令面评估 P0 五项收敛——公共 flags 单点注册、枚举文案改由注册表派生、定位／报错文案统一、过时文档口径清理、矩阵重建；无选项增删、默认值、退出码、产物或下发 SQL 变更，`--help` 仅 5 份纯文案收敛）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——`v0.38.1`／`v0.38.2` 均无功能变更，故不新增记录节，本轮内容见 `docs/requirements.md` 变更记录 **173**（收敛）／**174**（发版）。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
 
 ## 目录
 
@@ -395,7 +395,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时九个对象里八个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时八个对象可用（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`），`events` 退出 `2`；`-D` 对 tables/views/triggers/routines/columns/indexes 是模式名（进 DSN 并过滤 `OWNER`），对 `databases` 过滤库名、对 `schemas` 过滤模式名且都不进 DSN；五个系统模式在 `schemas`、`tables`、`views`、`triggers`、`routines` 上默认排除，`--all` 取消排除（见「达梦引擎」）。子命令以三字母短名为主名、英文全名为等价别名（`imex list tab` 与 `imex list tables` 解析到同一子命令，与 `show` 同形；下表用全名列举对象）：
+`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时九个对象里八个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时八个对象可用（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`），`events` 退出 `2`；`-D` 对 tables/views/triggers/routines/columns/indexes 是模式名（进 DSN 并过滤 `OWNER`），对 `databases` 过滤库名、对 `schemas` 过滤模式名且都不进 DSN；五个系统模式在 `schemas`、`tables`、`views`、`triggers`、`routines` 上默认排除，`--all` 取消排除（见「达梦引擎」）。子命令以三字母短名为主名、英文全名为等价别名（`imex list tab` 与 `imex list tab` 解析到同一子命令，与 `show` 同形；下表用全名列举对象）：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -458,7 +458,7 @@ imex list tab -u root -p pass -D shop
 imex list columns -u root -p pass -D shop -t orders
 imex list indexes -u root -p pass -D shop -t orders
 imex list routines -u root -p pass --type procedure --pattern 'etl\_%'
-imex list tables -u root -p pass -D shop -o /backup/shop_tables.txt
+imex list tab -u root -p pass -D shop -o /backup/shop_tables.txt
 ```
 
 用法错误（未知对象、缺少 `-D`/`-t`、非法 `--type`、`--output` 与 `--messages` 同路径）退出码 2，错误文本在 stderr；连接或查询失败、`--no-overwrite` 命中已存在文件退出码 1。
@@ -586,7 +586,7 @@ export、import、`list`、`show` 四条需要连库的命令，五个连接选�
 export IMEX_HOST=127.0.0.1 IMEX_PORT=3306 IMEX_USER=app IMEX_PASSWORD=pass IMEX_DATABASE=mydb
 imex export -q "SELECT * FROM users" -o /backup/users.del   # 一个连接参数都没写
 imex import -i /backup/users.del -t users
-imex list tables
+imex list tab
 ```
 
 | 选项 | 环境变量 | 空白取值 | 说明 |

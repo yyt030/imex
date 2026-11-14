@@ -33,20 +33,26 @@ var messagesPath string
 
 var rootCmd = &cobra.Command{
 	Use:   "imex",
-	Short: "MySQL logical backup and restore tool",
-	Long: `imex is a table-level MySQL logical backup and restore tool.
-It supports both MySQL and OceanBase MySQL mode.
+	Short: "Table-level logical import/export for MySQL, PostgreSQL and Dameng",
+	Long: `imex is a table-level logical import/export tool.
+
+Engines: MySQL (including MariaDB and OceanBase MySQL mode), PostgreSQL, and
+Dameng DM8 in Oracle-compatible mode, selected with --engine.
+
+Commands:
+  export, import   move table data to and from DEL, SQL or Parquet files
+  list, show       inspect catalog objects and print their definitions
+  exec             run SQL statements and report each result
+  encrypt          encrypt a password for use on the command line
+  version          print version, commit, build time and Go version
 
 Features:
-  - Export data to DEL (delimited ASCII), SQL or Parquet format
-  - Import data from DEL, SQL or Parquet format
-  - Customizable delimiters and format options
-  - Secure password encryption (AES-256-GCM)
-  - Command log file (--messages)
-  - Multiple import modes (insert, insert_update, replace)
-  - Parallel export/import with pipeline optimization
-  - Column mapping for flexible data import
-  - Smart JOIN detection for parallel export`,
+  - DEL (delimited ASCII), SQL and Parquet file formats
+  - Secure password encryption (AES-256-GCM, key from IMEX_KEY)
+  - Command log file (--messages) and console/text logging (--log-format)
+  - Import modes: insert, insert_update, replace
+  - Parallel export/import with automatic primary-key sharding
+  - Column mapping, format-scoped options and DEL layout controls`,
 	SilenceErrors: true,
 	SilenceUsage:  true,
 }
@@ -85,7 +91,7 @@ func init() {
 		"Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)")
 
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "console",
-		"Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT")
+		"Log layout: "+strings.Join(common.LogFormats(), " or ")+" (slog key=value); also IMEX_LOG_FORMAT")
 
 	rootCmd.PersistentFlags().BoolVar(&noSQLTag, "no-sql-tag", false,
 		"Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)")
@@ -190,9 +196,11 @@ func dispatchParentObjects(c *cobra.Command) []string {
 }
 
 // dispatchParentHint is one sentence that names what is actually missing: an
-// object subcommand. The parent owns no connection flags, so an unknown
-// shorthand here means the object was left out; list the valid objects rather
-// than explaining the parent's "-h is help, not host" help-surface split.
+// object subcommand. Two callers share it so the wording cannot drift: the
+// flag-error hook attaches it to an "unknown shorthand flag" on a parent, and
+// the parent's own RunE returns it when no object was given at all. A parent
+// owns no connection flags, so in either case the object was left out; list the
+// valid objects rather than explaining the "-h is help, not host" split.
 func dispatchParentHint(c *cobra.Command) string {
 	return fmt.Sprintf("%s needs an object subcommand: %s",
 		c.CommandPath(), strings.Join(dispatchParentObjects(c), ", "))

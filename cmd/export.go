@@ -18,36 +18,36 @@ var exportCmd = &cobra.Command{
 	Use:     "export",
 	Aliases: []string{"exp"},
 	Args:    cobra.NoArgs,
-	Short:   "Export data from MySQL/OceanBase",
-	Long: `Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
-SQL, or Parquet format file.
+	Short:   "Export table data to DEL, SQL or Parquet",
+	Long: `Export data from a MySQL, PostgreSQL or Dameng database to a DEL
+(delimited ASCII), SQL, or Parquet format file.
 
 Examples:
   # Basic export to DEL format
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del -q "SELECT * FROM users"
 
   # Export to SQL format
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.sql -f sql -q "SELECT * FROM users"
 
   # SQL export carries data only; get the table definition from show
   imex show tab users -D mydb -o /backup/users_ddl.sql
 
   # Read the query from a file instead of the command line
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.sql -f sql -q @/backup/users_query.sql
 
   # Export to Parquet format
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.parquet -f parquet -q "SELECT * FROM users"
 
   # Parallel export with 4 threads
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del --threads 4 -q "SELECT * FROM users"
 
   # Custom delimiters
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del --char-del '!' --col-del '@' \
     -q "SELECT * FROM users"`,
 	SilenceUsage: true,

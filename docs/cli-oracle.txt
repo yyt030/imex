@@ -489,36 +489,54 @@
 # binary built from this tree, the file reads 1337 lines, and 0 lines exceed 118
 # bytes. See requirements.md 变更记录 162.
 
+# Re-baselined note 31 (2026-11-14): the P0/Z convergence round rewrote four
+# frozen bodies: `## root`, `## export`, `## import` and `## list`. root's
+# Short/Long now name the three engines and the five command groups instead of
+# "MySQL logical backup and restore tool / OceanBase MySQL mode"; export and
+# import name the same three engines in their Short and Long first line, and
+# their examples spell --host instead of -h (on a leaf -h is the host flag).
+# `## root` therefore also picks up the two new Short lines in Available
+# Commands. `## list` changes only its two examples, from `imex list tables`
+# to the short name `imex list tab` (v0.37.0 made the short name canonical).
+# The bare-parent error is now the same sentence as the flag-error hint but
+# is not a help body, so it adds no section. encrypt's Long example also moved
+# -h to --host; encrypt has no frozen body here, and `## version` remains the
+# 4934dd2 snapshot. No option was added, removed or reworded and no default
+# changed: the other 19 bodies are byte-for-byte unchanged, and all 24 --help
+# outputs were diffed against the previous binary first. The option value
+# lists are now generated from backend.Engines() and config's registries,
+# which is why the visible strings did not move. See requirements.md 173.
+
 ## export
-Export data from a MySQL or OceanBase database to a DEL (delimited ASCII),
-SQL, or Parquet format file.
+Export data from a MySQL, PostgreSQL or Dameng database to a DEL
+(delimited ASCII), SQL, or Parquet format file.
 
 Examples:
   # Basic export to DEL format
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del -q "SELECT * FROM users"
 
   # Export to SQL format
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.sql -f sql -q "SELECT * FROM users"
 
   # SQL export carries data only; get the table definition from show
   imex show tab users -D mydb -o /backup/users_ddl.sql
 
   # Read the query from a file instead of the command line
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.sql -f sql -q @/backup/users_query.sql
 
   # Export to Parquet format
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.parquet -f parquet -q "SELECT * FROM users"
 
   # Parallel export with 4 threads
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del --threads 4 -q "SELECT * FROM users"
 
   # Custom delimiters
-  imex export -h 127.0.0.1 -u root -p pass -D mydb \
+  imex export --host 127.0.0.1 -u root -p pass -D mydb \
     -o /backup/users.del --char-del '!' --col-del '@' \
     -q "SELECT * FROM users"
 
@@ -575,24 +593,24 @@ Global Flags:
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
 ## import
 Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
-MySQL or OceanBase database.
+MySQL, PostgreSQL or Dameng database.
 
 Examples:
   # Basic import from DEL format
-  imex import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import --host 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del -t users
 
   # Import from Parquet format
-  imex import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import --host 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.parquet -f parquet -t users
 
   # Import with insert_update mode
-  imex import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import --host 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.del --mode insert_update -t users
 
   # Import a SQL dump (any CREATE/DDL lines are skipped; only the INSERT data
   # is loaded, into a table that must already exist)
-  imex import -h 127.0.0.1 -u root -p pass -D mydb \
+  imex import --host 127.0.0.1 -u root -p pass -D mydb \
     -i /backup/users.sql -f sql -t users
 
 Usage:
@@ -649,8 +667,8 @@ List databases, schemas, tables, views, columns, indexes, triggers, routines or 
 
 The result goes to --output when it names a file, and to stdout otherwise.
 --messages only takes the log and the errors; it never receives the result:
-  imex list tables -D mydb
-  imex list tables -D mydb -o /backup/tables.txt
+  imex list tab -D mydb
+  imex list tab -D mydb -o /backup/tables.txt
 
 list databases names the databases the server holds (one row on Dameng, where an
 instance owns a single database); list schemas names the schemas inside them.
@@ -1295,19 +1313,25 @@ Global Flags:
       --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
       --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
 ## root
-imex is a table-level MySQL logical backup and restore tool.
-It supports both MySQL and OceanBase MySQL mode.
+imex is a table-level logical import/export tool.
+
+Engines: MySQL (including MariaDB and OceanBase MySQL mode), PostgreSQL, and
+Dameng DM8 in Oracle-compatible mode, selected with --engine.
+
+Commands:
+  export, import   move table data to and from DEL, SQL or Parquet files
+  list, show       inspect catalog objects and print their definitions
+  exec             run SQL statements and report each result
+  encrypt          encrypt a password for use on the command line
+  version          print version, commit, build time and Go version
 
 Features:
-  - Export data to DEL (delimited ASCII), SQL or Parquet format
-  - Import data from DEL, SQL or Parquet format
-  - Customizable delimiters and format options
-  - Secure password encryption (AES-256-GCM)
-  - Command log file (--messages)
-  - Multiple import modes (insert, insert_update, replace)
-  - Parallel export/import with pipeline optimization
-  - Column mapping for flexible data import
-  - Smart JOIN detection for parallel export
+  - DEL (delimited ASCII), SQL and Parquet file formats
+  - Secure password encryption (AES-256-GCM, key from IMEX_KEY)
+  - Command log file (--messages) and console/text logging (--log-format)
+  - Import modes: insert, insert_update, replace
+  - Parallel export/import with automatic primary-key sharding
+  - Column mapping, format-scoped options and DEL layout controls
 
 Usage:
   imex [command]
@@ -1315,9 +1339,9 @@ Usage:
 Available Commands:
   encrypt     Encrypt password for secure automation
   exec        Execute SQL statements and report each result
-  export      Export data from MySQL/OceanBase
+  export      Export table data to DEL, SQL or Parquet
   help        Help about any command
-  import      Import data into MySQL/OceanBase
+  import      Import table data from DEL, SQL or Parquet
   list        List databases and schema objects
   show        Show the definition of one object
   version     Print version information

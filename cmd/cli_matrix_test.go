@@ -893,7 +893,8 @@ func TestDispatchParentExplainsConnectionShorthands(t *testing.T) {
 	}
 
 	// The hint must stay one sentence and spell out the concrete objects, not a
-	// placeholder. Both parents reuse the same order as their "requires" error.
+	// placeholder. Both parents reuse the same order as their bare-command
+	// "needs an object subcommand" error, which comes from this same function.
 	checks := []struct {
 		args []string
 		want string
