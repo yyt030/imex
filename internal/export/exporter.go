@@ -793,8 +793,10 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 		}
 	}()
 
-	// Build shard-specific query using SQL parser
-	shardQuery, err := e.sqlParser.BuildShardedQuery(e.config.Query, shardInfo, shardRange)
+	// Build shard-specific query using SQL parser, rendered in the grammar of the
+	// engine that has to run it: the MySQL parser hands back backticks and
+	// backslash escapes that PostgreSQL and Dameng read as syntax errors.
+	shardQuery, err := e.sqlParser.BuildShardedQueryFor(e.config.Query, shardInfo, shardRange, e.backend())
 	if err != nil {
 		return 0, errors.Wrap(err, "failed to build sharded query")
 	}

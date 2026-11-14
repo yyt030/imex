@@ -94,20 +94,14 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			want: `invalid --engine "postgres": must be one of mysql/pg/dm`,
 		},
 
-		// --engine dm. The MVP claims del/parquet/sql export (sql in the Dameng
-		// grammar), del/parquet import in insert/replace mode, and four list
-		// objects; everything else has to stop here rather than at the server.
+		// --engine dm. What the Dameng surface still refuses has to stop here
+		// rather than at the server; --threads > 1 joined the accepted list in
+		// TestDMOptionsAreAccepted once the shard planner learned the catalogue.
 		{
 			name: "dm_export_engine_dm8",
 			sub:  "export",
 			args: append(append([]string{}, dmConnFlags...), "-o", "/tmp/x.del", "-q", "SELECT 1", "--engine", "dm8"),
 			want: `invalid --engine "dm8": must be one of mysql/pg/dm`,
-		},
-		{
-			name: "dm_export_threads",
-			sub:  "export",
-			args: dmExportFlags("--threads", "4"),
-			want: "--threads is not supported with --engine dm: parallel export has not been measured against Dameng, use --threads 1",
 		},
 		{
 			name: "dm_export_no_hex_blob",
@@ -654,6 +648,8 @@ func TestDMOptionsAreAccepted(t *testing.T) {
 		{"export_del", "export", dmExportFlags()},
 		{"export_parquet", "export", dmExportFlags("-f", "parquet", "-o", "/tmp/imex-engine-test.parquet")},
 		{"export_threads_one", "export", dmExportFlags("--threads", "1")},
+		{"export_threads", "export", dmExportFlags("--threads", "4")},
+		{"export_threads_with_sql", "export", dmExportFlags("-f", "sql", "--threads", "4")},
 		{"export_hex_blob", "export", dmExportFlags("--hex-blob")},
 		{"import_insert", "import", dmImportFlags()},
 		{"import_replace", "import", dmImportFlags("--mode", "replace")},

@@ -26,7 +26,7 @@
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
-- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；导出侧仍限单线程，`--no-hex-blob` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export`/`import` 支持 `-f del|parquet`（单线程、`--mode insert|replace`）和 `list` 的八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`-f sql`、并行导出、`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
+- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，导出侧 `--threads 1–256` 并行分片导出（见「PostgreSQL 引擎」），`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；`--no-hex-blob` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export` 支持 `-f del|sql|parquet`（`--threads 1–256` 并行分片导出，见「达梦引擎」）、`import` 支持 `-f del|sql|parquet` 的 `--mode insert|replace` 与 `--threads`，`list` 给八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -633,7 +633,9 @@ imex import --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE \
 imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 ```
 
-**能用的**：`export -f del|parquet|sql`（单线程，任意 `--query`，DEL 布局修饰项照常生效；`-f sql` 按达梦（Oracle 兼容）语法写：双引号标识符、二进制 `HEXTORAW('..')`、串字面量只翻倍单引号且反斜杠原样）、`import -f del|parquet|sql` 的 `--mode insert`（出厂默认值）与 `--mode replace`（`-f sql` 由方言感知的读取器回放，按目标引擎取达梦语法——`HEXTORAW` 解码为字节、串里的反斜杠当字面量，因此一份达梦 `-f sql` dump 能导回达梦；它是同引擎回放解析器，不读任意外部 Oracle/dexp dump，跨引擎搬运仍走 del/parquet）、`list` 的八个对象（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`，`tables` 的 `--type base|view|all` 可用）。`list` 八个对象的输出列名与 MySQL 侧逐列相同，解析表头的下游脚本不必为引擎分叉。导入侧的 `--threads` 不在拒绝之列——多 worker 各自攒批发的是同一句方言 INSERT，与引擎无关；被拒的是导出侧的并行，它的分片语句靠 `MOD()` 与 `LIMIT … OFFSET`。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
+**能用的**：`export -f del|parquet|sql`（单线程，或 `--threads 1–256` 并行分片导出；任意 `--query`，DEL 布局修饰项照常生效；`-f sql` 按达梦（Oracle 兼容）语法写：双引号标识符、二进制 `HEXTORAW('..')`、串字面量只翻倍单引号且反斜杠原样）、`import -f del|parquet|sql` 的 `--mode insert`（出厂默认值）与 `--mode replace`（`-f sql` 由方言感知的读取器回放，按目标引擎取达梦语法——`HEXTORAW` 解码为字节、串里的反斜杠当字面量，因此一份达梦 `-f sql` dump 能导回达梦；它是同引擎回放解析器，不读任意外部 Oracle/dexp dump，跨引擎搬运仍走 del/parquet）、`list` 的八个对象（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`，`tables` 的 `--type base|view|all` 可用）。`list` 八个对象的输出列名与 MySQL 侧逐列相同，解析表头的下游脚本不必为引擎分叉。导入侧的 `--threads` 不在拒绝之列——多 worker 各自攒批发的是同一句方言 INSERT，与引擎无关；导出侧的并行也已放行：分片度量改读达梦的 Oracle 兼容目录（`ALL_CONS_COLUMNS`＋`ALL_CONSTRAINTS` 取主键、`ALL_TAB_COLUMNS` 取列类型与可空性、`ALL_TABLES` 取 `NUM_ROWS`／`BLOCKS`，平均行长按 `BLOCKS × SF_GET_PAGE_SIZE() / NUM_ROWS` 折算），分片语句按达梦语法下发（下一段）。MySQL 一侧的行为与产物一字未变，`--engine` 不给就是 `mysql`。
+
+**并行导出在达梦上与 MySQL 有三处不同**（2026-11-14 真 DM8 实测）：① 达梦没有**行值比较**——`WHERE (A, B) >= (15, 1)` 报 `Error -2007: nearby [15] has error`，所以复合键的分片边界改写成同一序的**字典序展开**（`A > 15 or (A = 15 and B >= 1)`：前缀项一律严格比较、只有最后一项取含等号，否则 `(15, 0)` 这样的行会同时落进相邻两片）。单键边界与 MySQL／PG 同形。② 分片语句是**按目标引擎的语法重新渲染**的：`--query` 过 MySQL 解析器再序列化回文本时，会带上反引号与 MySQL 的反斜杠转义（`'O\'Brien'`）——这两种形态达梦和 PG 都读作语法错误，而单线程路径把用户原文照发、从不遇到。规则是「用户怎么写就怎么发」：标识符裸写（让服务端自己的大小写折叠照常生效），只有该引擎不接受裸写的保留字才加引号（达梦实测 53 个词、PG 15 个词，名单取自解析器关键字域在两个语法位置上真库报错码的逐一分类，不是抄文档）；串字面量解码后按 SQL 标准翻倍单引号重发。MySQL 一侧整个渲染跳过，发出的语句一字未变。③ worker 数 + 1 与 `MAX_SESSIONS` 的预检读 `V$DM_INI`，只持 `RESOURCE` 的普通账号在那里拿 `Error -5504: 没有 […] 对象的查询权限`，因此这条预检对这类账号是惰性的（记 `debug`、不记 `warn`，并行照常跑）。`-f parquet` 与 MySQL／PG 同规则不并行（分片文件无法拼接），`--threads>1` 时自动降级单线程并记一条 info。
 
 `list databases` 回答**库**这一层：达梦一个实例只有一个库，所以它读 `V$DATABASE`、只回一行（本机是 `DAMENG`）；`-D` 在这条命令上过滤库名，并且不写进 DSN——库名不是模式，写进去会在登录时被当成模式名拒掉（`Error -2103`）。**模式**是另一层，用 `list schemas`（别名 `sch`）看：`SELECT DISTINCT OBJECT_NAME FROM ALL_OBJECTS WHERE OBJECT_TYPE = 'SCH'`，不带 `--all` 回 `DMPROBE`、`VPROBE` 两行，`--all` 回全部 7 个（`CTISYS`、`DMPROBE`、`SYS`、`SYSAUDITOR`、`SYSDBA`、`SYSSSO`、`VPROBE`）。选 `ALL_OBJECTS` 而不是 `DBA_USERS`，是因为它不丢 `CTISYS`（内置全文检索模式、无登录账号但 `-D CTISYS` 可用）；也没用 `V$DATABASE`，因为库名不是模式名。它同样不需要 DBA 权限——只持 `RESOURCE` 的普通账号也读到 7 行，而 `SYS.SYSOBJECTS` 对它会报 `No select privilege`。`show sch` 取 `DBMS_METADATA.GET_DDL('USER',…)`：达梦的模式与账号是同一个对象，`GET_DDL('SCHEMA',…)` 报 `-20001 invalid object type`，所以输出是 `CREATE USER … IDENTIFIED BY <PASSWORD>`——口令是服务端元数据层自己的占位符，不能直接重放；`CTISYS` 这类没有账号的内置模式会报 `-20008 object is not found`。
 
@@ -651,7 +653,6 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 |-------------|----------|
 | `show evt` | DM8 Oracle 模式没有 MySQL 式的事件调度器，没有可打印的事件定义；定时任务在 DM 的 job 包里 |
 | `list events` | DM8 Oracle 模式没有事件调度器，没有可列的事件；定时任务在 DM 的 job 包里。其余八个对象都可用（`views`／`triggers`／`routines` 读 `ALL_*`，见上） |
-| `export --threads > 1` | 并行导出的分片没对达梦测过，用 `--threads 1` |
 | `--mode insert_update` | 方言层的 upsert 在达梦上根本没实现，绕过 CLI 直接调库的调用方同样失败 |
 | `--session-var` | `SET <name>=<value>` 是 MySQL 会话语法，本工具不翻译，请写进服务器或角色的配置 |
 | `--no-hex-blob` | 达梦拒绝文本值里出现 NUL 字节，二进制列恒以 `0x` 十六进制写出，关不掉 |
@@ -1097,6 +1098,25 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
 > 以下各节按版本记录每轮改动的摘要。同一批变更的完整设计理由与实测取证在 `docs/requirements.md` 十四节的编号变更记录，两处按轮次对齐，**编号变更记录为权威源**；本节只写“改了什么”，取值以当轮实测为准。
+
+## 修复记录（v0.38.0）
+
+本轮放行达梦导出侧的并行：`--engine dm` 的 `export` 不再在连库之前拒绝 `--threads 2–256`，分片规划器改问达梦自己的目录，分片语句按达梦语法下发。等价性在同一台真 DM8 上逐段对照 `--threads 1` 量过。
+
+| 变更 | 旧行为 | 新行为 |
+|------|--------|--------|
+| `--engine dm` 的 `export --threads 2–256` | 连库之前退出码 2（并行导出的分片没对达梦测过） | 真并行：按达梦目录定分片、按达梦语法下发，产物与单线程一致（见下表） |
+| 分片规划器的目录查询 | 只有 MySQL 一套语句，在达梦上取不到主键、可空性、行数与平均行长 | 加一门达梦方言：主键读 `ALL_CONS_COLUMNS` 连 `ALL_CONSTRAINTS`、可空性读 `ALL_TAB_COLUMNS`（Y／N 折成 YES／NO）、行数与平均行长由 `ALL_TABLES.NUM_ROWS` 与 `BLOCKS × SF_GET_PAGE_SIZE()` 折算；统计为 NULL 时不报错，直接等宽切分 |
+| 复合主键的边界写法 | `(A, B) >= (15.875, 1)` 行值比较 | 达梦没有行值比较（实测报 -2007），改按列序展开成逐列判定链；MySQL 与 PG 仍发行值比较原形 |
+| 分片语句的语法 | 解析器重渲染带回 MySQL 反引号与反斜杠转义，达梦报 -2007、PG 报 syntax error | 按目标引擎语法渲染：标识符默认裸写（大小写折叠与单线程同形），只有该引擎不接受裸写时才加引号；字面量按 SQL 标准翻倍单引号 |
+
+**实测对照**（真 DM8，30,000 行多类型表）：`-f del` 在 `--threads 1／2／4／8`、`-f sql` 在 `1／4／8` 与单线程产物**逐字节相同**；保留字列名的投影逐字节相同；未跑统计过程的表逐字节相同。复合主键 12,000 行表在 `2／4／8` 与 `1` **排序后行集相同**（展开式让段边界互不重叠，字节差异只来自段序）。`-f parquet` 仍不分片（与 MySQL／PG 同规则，分片文件没法拼接）。PG 的并行路径不受影响，MySQL 的产物与服务端可见语句跟 v0.37.0 一致。
+
+**一处要知道的边界**：`--threads` 给得很大时（实测 100，服务端 `MAX_SESSIONS` 也是 100）会先记一条 `workers exceed the server connection limit` 的 WARN、随后照常跑完并退 0——段数上限是 64，实开会话至多 65，那条 WARN 报的是配置值而非实开数。只持 `RESOURCE` 的账号读 `V$DM_INI` 拿 `-5504`，这条预检对它就是惰性的（既有口径，本轮测出）。
+
+**验证**：`gofmt -l .` 0 行、`go vet ./...` 净、`-race ./...` 十包全绿（`test/integration` 那 3 条 `channel_test.go` 陈旧单元为 167／168 既债、与本轮无关）、双 DSN 真库 **230 PASS／6 FAIL／0 SKIP**；`make build` 后 `imex version` 报 **0.38.0**、产物 29,757,602 B；`--help` 一字未改 ⇒ `docs/cli-oracle.txt` 未重基线（`sections=23 identical=23 drift=0`、over118=0）⇒ **Y 档 `0.37.0 → 0.38.0`**（面②③⑤ 变、面①④ 不变）。
+
+完整设计理由与逐条实测见 `docs/requirements.md` 变更记录 **170**（实现与取证）与 **171**（本笔进位）。
 
 ## 修复记录（v0.37.0）
 

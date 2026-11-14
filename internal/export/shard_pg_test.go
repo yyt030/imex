@@ -64,11 +64,12 @@ func TestShardDialectIsChosenByEngine(t *testing.T) {
 		t.Error("pg row estimate must come from pg_class statistics cast to bigint")
 	}
 
-	// Dameng refuses --threads > 1 before this path, so it keeps the MySQL
-	// statements; the Gauss spike inherits PostgreSQL's refusals and protocol and
-	// must therefore inherit its sharding dialect too.
-	if got := shardDialectFor(backend.Must(backend.EngineDM)).primaryKey; got != mysql.primaryKey {
-		t.Error("dm shard dialect must stay MySQL")
+	// Dameng got its own catalogue when --threads > 1 stopped being a refusal
+	// (shard_dm_test.go pins its statements), so it must not land on the MySQL
+	// bytes any more; the Gauss spike inherits PostgreSQL's refusals and protocol
+	// and must therefore inherit its sharding dialect too.
+	if got := shardDialectFor(backend.Must(backend.EngineDM)).primaryKey; got == mysql.primaryKey || got == pg.primaryKey {
+		t.Error("dm shard dialect must be its own ALL_* catalogue read")
 	}
 	if got := shardDialectFor(backend.Must(backend.EngineGauss)).primaryKey; got != pg.primaryKey {
 		t.Error("gauss must inherit the PostgreSQL shard dialect")

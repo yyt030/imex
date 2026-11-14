@@ -5,8 +5,9 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-
 	"vitess.io/vitess/go/vt/sqlparser"
+
+	"github.com/imex/internal/backend"
 )
 
 // splitLeadingOptimizerHint extracts a leading optimizer hint block
@@ -47,32 +48,62 @@ func NewSQLParser() *SQLParser {
 
 // BuildShardedQuery takes an original query and injects shard conditions intelligently
 func (p *SQLParser) BuildShardedQuery(originalQuery string, shardInfo *ShardInfo, shardRange ShardRange) (string, error) {
+	leadingHint, body, err := p.shardedQueryParts(originalQuery, shardInfo, shardRange, true)
+	if err != nil {
+		return "", err
+	}
+	return leadingHint + body, nil
+}
+
+// BuildShardedQueryFor is BuildShardedQuery for an engine that does not speak
+// MySQL: the injected condition and the re-serialized query are rendered in the
+// target's own quoting grammar (see shard_render.go), and a composite key is
+// bounded the way that engine reads an order. The MySQL family takes the
+// identical path it always took, so the byte-for-byte MySQL behaviour lives in
+// the case above.
+func (p *SQLParser) BuildShardedQueryFor(originalQuery string, shardInfo *ShardInfo, shardRange ShardRange, be backend.Backend) (string, error) {
+	reserved, quoteIdent := shardIdentQuoter(be)
+	leadingHint, body, err := p.shardedQueryParts(originalQuery, shardInfo, shardRange, shardRowValueComparison(be))
+	if err != nil {
+		return "", err
+	}
+	body, err = translateShardQuery(body, reserved, quoteIdent)
+	if err != nil {
+		return "", err
+	}
+	return leadingHint + body, nil
+}
+
+// shardedQueryParts returns the statement with the shard condition injected,
+// split from any leading optimizer hint so a caller that re-renders the body for
+// another grammar leaves the hint alone.
+func (p *SQLParser) shardedQueryParts(originalQuery string, shardInfo *ShardInfo, shardRange ShardRange, rowValue bool) (hint, body string, err error) {
 	// Preserve a leading optimizer hint (OceanBase/Oracle style "/*+ ... */"
 	// placed before the SELECT keyword); vitess drops it on re-serialize.
 	leadingHint, parseable := splitLeadingOptimizerHint(originalQuery)
 
 	stmt, err := p.parser.Parse(parseable)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to parse SQL")
+		return "", "", errors.Wrap(err, "failed to parse SQL")
 	}
 
 	selectStmt, ok := stmt.(*sqlparser.Select)
 	if !ok {
-		return "", errors.New("only SELECT statements are supported for sharding")
+		return "", "", errors.New("only SELECT statements are supported for sharding")
 	}
 
-	shardCondition := p.buildShardCondition(shardInfo, shardRange)
+	shardCondition := p.buildShardCondition(shardInfo, shardRange, rowValue)
 	p.injectShardCondition(selectStmt, shardInfo, shardCondition)
 
-	out := sqlparser.String(selectStmt)
+	body = sqlparser.String(selectStmt)
 	if leadingHint != "" {
-		out = leadingHint + " " + out
+		hint = leadingHint + " "
 	}
-	return out, nil
+	return hint, body, nil
 }
 
 // buildShardCondition creates the WHERE condition for sharding
-func (p *SQLParser) buildShardCondition(shardInfo *ShardInfo, shardRange ShardRange) sqlparser.Expr {
+func (p *SQLParser) buildShardCondition(shardInfo *ShardInfo, shardRange ShardRange, rowValue bool) sqlparser.Expr {
 	if shardRange.NullOnly {
 		// Rows the numeric range shards can never match: the key is NULL.
 		return &sqlparser.IsExpr{
@@ -108,43 +139,116 @@ func (p *SQLParser) buildShardCondition(shardInfo *ShardInfo, shardRange ShardRa
 		}
 	}
 
+	upperOp := sqlparser.LessThanOp
+	if shardRange.IsLast {
+		upperOp = sqlparser.LessEqualOp
+	}
+
 	// Composite key: use tuple comparison
 	// (col1, col2, ...) >= (val1, val2, ...)
-	cols := make(sqlparser.ValTuple, len(shardInfo.Columns))
-	for i, col := range shardInfo.Columns {
-		cols[i] = sqlparser.NewColName(col)
+	if rowValue {
+		cols := make(sqlparser.ValTuple, len(shardInfo.Columns))
+		for i, col := range shardInfo.Columns {
+			cols[i] = sqlparser.NewColName(col)
+		}
+
+		minVals := make(sqlparser.ValTuple, len(shardRange.Mins))
+		for i, val := range shardRange.Mins {
+			minVals[i] = p.valueToExpr(val)
+		}
+
+		gteExpr := &sqlparser.ComparisonExpr{
+			Operator: sqlparser.GreaterEqualOp,
+			Left:     cols,
+			Right:    minVals,
+		}
+
+		maxVals := make(sqlparser.ValTuple, len(shardRange.Maxs))
+		for i, val := range shardRange.Maxs {
+			maxVals[i] = p.valueToExpr(val)
+		}
+
+		ltExpr := &sqlparser.ComparisonExpr{
+			Operator: upperOp,
+			Left:     cols,
+			Right:    maxVals,
+		}
+
+		return &sqlparser.AndExpr{
+			Left:  gteExpr,
+			Right: ltExpr,
+		}
 	}
 
-	minVals := make(sqlparser.ValTuple, len(shardRange.Mins))
-	for i, val := range shardRange.Mins {
-		minVals[i] = p.valueToExpr(val)
-	}
-
-	gteExpr := &sqlparser.ComparisonExpr{
-		Operator: sqlparser.GreaterEqualOp,
-		Left:     cols,
-		Right:    minVals,
-	}
-
-	maxVals := make(sqlparser.ValTuple, len(shardRange.Maxs))
-	for i, val := range shardRange.Maxs {
-		maxVals[i] = p.valueToExpr(val)
-	}
-
-	op := sqlparser.LessThanOp
-	if shardRange.IsLast {
-		op = sqlparser.LessEqualOp
-	}
-	ltExpr := &sqlparser.ComparisonExpr{
-		Operator: op,
-		Left:     cols,
-		Right:    maxVals,
-	}
-
+	// An engine without row-value comparisons reads the same order as a chain of
+	// per-column tests: (a, b) >= (1, 2) means "a past 1, or a exactly 1 and b
+	// from 2 up". Both bounds expand, and the two expansions are ANDed, so the
+	// ranges stay a contiguous cover of the key space — which is what makes the
+	// merged dump the same set of rows a single-threaded one writes.
 	return &sqlparser.AndExpr{
-		Left:  gteExpr,
-		Right: ltExpr,
+		Left:  p.lexicographicComparison(shardInfo.Columns, shardRange.Mins, sqlparser.GreaterEqualOp),
+		Right: p.lexicographicComparison(shardInfo.Columns, shardRange.Maxs, upperOp),
 	}
+}
+
+// lexicographicComparison expands "tuple op (val1, val2, ...)" into OR-of-ANDs
+// over the key columns: one disjunct per column, the columns before it compared
+// equal, this column carrying the comparison. Only the last disjunct may use the
+// inclusive operator — every earlier one has already conceded equality to the
+// next column, so it has to be strict or the ranges would overlap: with
+// (a, b) >= (15, 1) written as "a >= 15 OR (a = 15 AND b >= 1)", the row
+// (15, 0) lands in this shard *and* in the one below it. "a > 15 OR (a = 15 AND
+// b >= 1)" puts it where it belongs, and the all-equal tuple is still covered,
+// because it satisfies the last disjunct.
+func (p *SQLParser) lexicographicComparison(columns []string, vals []interface{}, op sqlparser.ComparisonExprOperator) sqlparser.Expr {
+	strict := op
+	switch op {
+	case sqlparser.GreaterEqualOp:
+		strict = sqlparser.GreaterThanOp
+	case sqlparser.LessEqualOp:
+		strict = sqlparser.LessThanOp
+	}
+
+	var disjuncts []sqlparser.Expr
+	for i := range columns {
+		cmpOp := strict
+		if i == len(columns)-1 {
+			cmpOp = op
+		}
+		var term sqlparser.Expr
+		for j := 0; j < i; j++ {
+			eq := &sqlparser.ComparisonExpr{
+				Operator: sqlparser.EqualOp,
+				Left:     sqlparser.NewColName(columns[j]),
+				Right:    p.valueToExpr(vals[j]),
+			}
+			if term == nil {
+				term = eq
+			} else {
+				term = &sqlparser.AndExpr{Left: term, Right: eq}
+			}
+		}
+		cmp := &sqlparser.ComparisonExpr{
+			Operator: cmpOp,
+			Left:     sqlparser.NewColName(columns[i]),
+			Right:    p.valueToExpr(vals[i]),
+		}
+		if term == nil {
+			disjuncts = append(disjuncts, cmp)
+			continue
+		}
+		disjuncts = append(disjuncts, &sqlparser.AndExpr{Left: term, Right: cmp})
+	}
+
+	var acc sqlparser.Expr
+	for _, d := range disjuncts {
+		if acc == nil {
+			acc = d
+			continue
+		}
+		acc = &sqlparser.OrExpr{Left: acc, Right: d}
+	}
+	return acc
 }
 
 // injectShardCondition injects the shard condition into the SELECT statement
@@ -248,6 +352,12 @@ func (p *SQLParser) qualifyCondition(expr sqlparser.Expr, tableAlias string) sql
 			}
 		}
 	case *sqlparser.AndExpr:
+		e.Left = p.qualifyCondition(e.Left, tableAlias)
+		e.Right = p.qualifyCondition(e.Right, tableAlias)
+	case *sqlparser.OrExpr:
+		// The lexicographic expansion of a composite key for an engine without
+		// row-value comparisons is an OR of ANDs, and every leg needs the same
+		// table qualifier the tuple form would have carried.
 		e.Left = p.qualifyCondition(e.Left, tableAlias)
 		e.Right = p.qualifyCondition(e.Right, tableAlias)
 	}

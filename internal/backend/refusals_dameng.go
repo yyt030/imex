@@ -5,7 +5,7 @@ import (
 )
 
 // Dameng (DM8 Oracle mode) option refusals. The first cut only supports:
-//   - export: --format del/sql/parquet, single-threaded, any --query
+//   - export: --format del/sql/parquet, --threads > 1 included, any --query
 //   - import: --format del/sql/parquet, --mode insert/replace
 //   - list: databases, schemas, tables, views, columns, indexes, triggers and
 //     routines (everything but events, which DM has no scheduler for)
@@ -18,6 +18,16 @@ import (
 // byte rather than an escape, so a Dameng `-f sql` dump imports back into Dameng.
 // The reader is still a same-engine replay parser — it does not attempt to read an
 // arbitrary external Oracle/dexp dump — so cross-engine transport stays DEL/parquet.
+//
+// --threads > 1 is no longer refused: the shard planner learned the Dameng
+// catalogue (internal/export/shard_dialect.go) and sharded dumps were measured
+// against the single-threaded one on a real DM8. del and sql came out byte-for-
+// byte identical where the shard order matches (single-key tables, all threads
+// values tried); with a composite key the ranges are expanded column by column
+// (Dameng has no row-value comparison), which keeps the row multiset identical
+// but not the byte order, so those are compared sorted. parquet never shards —
+// like every other engine, the writer falls back to a single-threaded dump.
+// What is still refused is listed below.
 
 const dmSessionVarReason = "SET <name>=<value> is MySQL session grammar and imex does not translate it for Dameng; put session settings in the server or role configuration"
 
@@ -25,11 +35,6 @@ func (damengBackend) Refusals(c Command) []Refusal {
 	switch c {
 	case CmdExport:
 		return []Refusal{
-			{
-				Option:  static("--threads"),
-				Reason:  "parallel export has not been measured against Dameng, use --threads 1",
-				Applies: func(o RunOptions) bool { return o.Threads > 1 },
-			},
 			{
 				Option:  static("--no-hex-blob"),
 				Reason:  "Dameng rejects a NUL byte inside a text value, so binary columns must go out as 0x hex; imex always does it on this engine",

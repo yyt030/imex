@@ -167,7 +167,7 @@ func TestEngineNameInRefusalMessageIsTheValue(t *testing.T) {
 // this pins the shape that owns them.
 func TestDamengSQLRoundTripsBothWays(t *testing.T) {
 	exp := Must(EngineDM).Refusals(CmdExport)
-	wantExp := []string{"--threads", "--no-hex-blob", "--session-var"}
+	wantExp := []string{"--no-hex-blob", "--session-var"}
 	if len(exp) != len(wantExp) {
 		t.Fatalf("dm export has %d rules, want %d", len(exp), len(wantExp))
 	}
@@ -179,6 +179,12 @@ func TestDamengSQLRoundTripsBothWays(t *testing.T) {
 	for _, r := range exp {
 		if r.Option(RunOptions{Format: "sql"}) == "--format sql" {
 			t.Errorf("dm export must not refuse --format sql")
+		}
+		// --threads > 1 stopped being a refusal when the shard planner learned the
+		// Dameng catalogue; re-adding it here would be a contract change, so it has
+		// to fail this test rather than slip through as a deleted row.
+		if r.Option(RunOptions{Threads: 4}) == "--threads" {
+			t.Errorf("dm export must not refuse --threads > 1")
 		}
 	}
 	imp := Must(EngineDM).Refusals(CmdImport)

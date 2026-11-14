@@ -143,12 +143,16 @@ func (s *targetStmt) Query(args []driver.Value) (driver.Rows, error) {
 
 func (f *targetFake) rowsFor(query string, args []driver.Value) (driver.Rows, error) {
 	upper := strings.ToUpper(query)
-	// Both dialects are recognised here so the same fake can drive the
-	// PostgreSQL catalogue cases in shard_pg_test.go. The MySQL needles are
-	// unchanged; the PostgreSQL ones are the pg_constraint/reltuples shapes.
-	keyRead := strings.Contains(upper, "KEY_COLUMN_USAGE") || strings.Contains(upper, "PG_CONSTRAINT")
-	primaryRead := strings.Contains(query, "CONSTRAINT_NAME = 'PRIMARY'") || strings.Contains(query, "con.contype = 'p'")
-	statsRead := strings.Contains(upper, "TABLE_ROWS") || strings.Contains(upper, "RELTUPLES")
+	// All three dialects are recognised here so the same fake can drive the
+	// PostgreSQL catalogue cases in shard_pg_test.go and the Dameng ones in
+	// shard_dm_test.go. The MySQL needles are unchanged; the PostgreSQL ones are
+	// the pg_constraint/reltuples shapes; the Dameng ones are the ALL_* shapes.
+	keyRead := strings.Contains(upper, "KEY_COLUMN_USAGE") || strings.Contains(upper, "PG_CONSTRAINT") ||
+		strings.Contains(upper, "ALL_CONS_COLUMNS")
+	primaryRead := strings.Contains(query, "CONSTRAINT_NAME = 'PRIMARY'") || strings.Contains(query, "con.contype = 'p'") ||
+		strings.Contains(query, "CONSTRAINT_TYPE = 'P'")
+	statsRead := strings.Contains(upper, "TABLE_ROWS") || strings.Contains(upper, "RELTUPLES") ||
+		strings.Contains(upper, "ALL_TABLES")
 	switch {
 	case keyRead && primaryRead:
 		return &targetRows{cols: []string{"COLUMN_NAME"}, rows: singleColumn(f.pkCols)}, nil
@@ -158,7 +162,7 @@ func (f *targetFake) rowsFor(query string, args []driver.Value) (driver.Rows, er
 			rows = append(rows, []driver.Value{c, "uk_first"})
 		}
 		return &targetRows{cols: []string{"COLUMN_NAME", "CONSTRAINT_NAME"}, rows: rows}, nil
-	case strings.Contains(upper, "INFORMATION_SCHEMA.COLUMNS"):
+	case strings.Contains(upper, "INFORMATION_SCHEMA.COLUMNS"), strings.Contains(upper, "ALL_TAB_COLUMNS"):
 		return &targetRows{cols: []string{"DATA_TYPE", "IS_NULLABLE"},
 			rows: [][]driver.Value{{f.colType, f.nullable}}}, nil
 	case statsRead:
