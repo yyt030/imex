@@ -6,10 +6,10 @@ import (
 	"github.com/imex/internal/config"
 )
 
-// effectiveHexBlob resolves the binary-column encoding for a run: --hex-blob
-// forces it on, --no-hex-blob forces it off, and neither flag means automatic,
-// which asks the engine whether hex is mandatory and otherwise lets the charset
-// decide.
+// effectiveHexBlob resolves the binary-column encoding for a run:
+// --blob-encoding hex forces it on, raw forces it off, and auto (the default,
+// also an empty value from a caller building ExportConfig by hand) asks the
+// engine whether hex is mandatory and otherwise lets the charset decide.
 //
 // The single-threaded path, a parallel shard, and the configuration record all
 // need the same answer, so it lives in one place here.
@@ -20,13 +20,13 @@ import (
 // `ERROR: invalid byte sequence for encoding "UTF8": 0x00`, SQLSTATE 22021, on
 // the first row of a bytea column dumped raw under utf8mb4) and the charset rule
 // that exists to protect MySQL's byte-safe charsets cannot apply to bytea.
-// --no-hex-blob is refused for that engine in cmd/engine.go rather than silently
-// overridden.
+// --blob-encoding raw is refused for that engine in cmd/engine.go rather than
+// silently overridden.
 func effectiveHexBlob(cfg *config.ExportConfig) bool {
-	if cfg.HexBlob {
+	switch config.BlobEncoding(cfg.BlobEncoding) {
+	case config.BlobEncodingHex:
 		return true
-	}
-	if cfg.NoHexBlob {
+	case config.BlobEncodingRaw:
 		return false
 	}
 	if backend.Lookup(cfg.Engine).HexBlobMandatory() {
@@ -106,11 +106,16 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		{"no-char-del", "no_char_del", cfg.DelModifier.NoCharDel},
 		{"timestamp-fmt", "timestamp_fmt", cfg.DelModifier.TimestampFmt},
 		{"date-fmt", "date_fmt", cfg.DelModifier.DateFmt},
-		{"no-col-names", "no_col_names", cfg.DelModifier.NoColNames},
+		// The flag name is the scope-registry key; the record key stays
+		// no_col_names so a --format-filtered record reads exactly as it did
+		// before the option was renamed from --no-col-names to --header.
+		{"header", "no_col_names", cfg.DelModifier.NoColNames},
 
-		// Binary encoding, as the run will actually apply it: the flag pair says
-		// what was asked for, this says what the writer will do.
-		{"hex-blob", "hex_blob", hex},
+		// Binary encoding, as the run will actually apply it: the option says
+		// what was asked for (auto/hex/raw), this says what the writer will do.
+		// The flag name is the scope-registry key; the record key stays hex_blob
+		// so a --format-filtered record reads exactly as it did before.
+		{"blob-encoding", "hex_blob", hex},
 
 		// Logging
 		{"log-level", "log_level", cfg.LogLevel},

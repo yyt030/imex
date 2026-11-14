@@ -34,7 +34,8 @@ const (
 // the values the operator typed, Threads and NoHexBlob are already resolved, and
 // SessionVar says whether --session-var was named, which is the only case where the
 // presence of an option is the problem rather than its value. ShowKind is empty
-// outside `imex show`.
+// outside `imex show`. NoHexBlob is folded from `--blob-encoding raw` by cmd; the
+// field name keeps the byte-safety meaning rather than the option's spelling.
 type RunOptions struct {
 	Format     string
 	Mode       string

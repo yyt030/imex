@@ -48,6 +48,35 @@ func ValidSQLDialect(name string) bool {
 	}
 }
 
+// HeaderMode is --header, shared by export, import, list, show and exec. "on"
+// writes/reads the column-name row, "off" omits it. One spelling now covers
+// both a DEL file's first record and a result set's header; the effective value
+// the writers read stays the bool NoColNames, resolved by HeaderEnabled.
+type HeaderMode string
+
+const (
+	HeaderOn  HeaderMode = "on"
+	HeaderOff HeaderMode = "off"
+)
+
+// BlobEncoding is --blob-encoding: how binary columns are written in the DEL
+// and SQL text formats. It replaces the old --hex-blob / --no-hex-blob pair,
+// which was two mutually exclusive booleans for one three-way choice.
+//
+//   - auto (the default): let the engine and charset decide. An engine whose
+//     text protocol cannot carry a NUL (pg, dm) always gets hex; otherwise hex
+//     is enabled only when --default-charset is not byte-safe.
+//   - hex: force 0x hexadecimal literals.
+//   - raw: force raw binary passthrough. It may corrupt data under a charset
+//     that cannot carry the bytes, and pg/dm refuse it outright.
+type BlobEncoding string
+
+const (
+	BlobEncodingAuto BlobEncoding = "auto"
+	BlobEncodingHex  BlobEncoding = "hex"
+	BlobEncodingRaw  BlobEncoding = "raw"
+)
+
 // LogLevel represents the logging level.
 type LogLevel string
 
@@ -137,7 +166,8 @@ type DelModifier struct {
 	TimestampFmt string // timestamp format
 	DateFmt      string // date format
 	NoCharDel    bool   // do not use string delimiter
-	NoColNames   bool   // do not output/read column names
+	NoColNames   bool   // do not output/read column names (effective --header value)
+	Header       string // --header: on or off; folded into NoColNames by cmd
 }
 
 // Config holds all connection and common options.
@@ -227,12 +257,12 @@ type ExportConfig struct {
 	// writers ignore the value, and cmd/validate.go rejects it for them.
 	ParquetCompression string
 
-	// Binary column encoding. HexBlob forces 0x literals; NoHexBlob forces raw
-	// passthrough. Both false means "automatic": hex is enabled whenever
-	// DefaultCharset is not a byte-safe charset. The two flags are mutually
-	// exclusive.
-	HexBlob   bool
-	NoHexBlob bool
+	// BlobEncoding is --blob-encoding, the single three-way choice (auto/hex/raw)
+	// for binary columns in DEL/SQL. It replaced the mutually exclusive
+	// --hex-blob / --no-hex-blob boolean pair. effectiveHexBlob resolves it
+	// together with the engine's HexBlobMandatory() and the charset rule; an
+	// empty value (a caller building ExportConfig by hand) behaves as auto.
+	BlobEncoding string
 
 	// Pipeline hand-off controls (see the constants above).
 	BatchSize      int
@@ -286,6 +316,7 @@ func defaultDelModifier() DelModifier {
 		Escape:       `"`,
 		TimestampFmt: "yyyy-MM-dd HH:mm:ss",
 		DateFmt:      "yyyy-MM-dd",
+		Header:       string(HeaderOn),
 	}
 }
 
@@ -324,6 +355,7 @@ func NewExportConfig() *ExportConfig {
 		StatementSize:      DefaultStatementSize,
 		ParquetCompression: ParquetCompressionNone,
 		SQLDialect:         string(SQLDialectAuto),
+		BlobEncoding:       string(BlobEncodingAuto),
 		Threads:            1,
 		BatchSize:          DefaultBatchSize,
 		PipelineBuffer:     DefaultPipelineBuffer,

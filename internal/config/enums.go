@@ -54,6 +54,29 @@ func LogLevels() []string {
 	}
 }
 
+// BlobEncodings returns the --blob-encoding values, in order. auto comes first
+// because it is the default and the option's own help lists it first.
+func BlobEncodings() []string {
+	return []string{
+		string(BlobEncodingAuto),
+		string(BlobEncodingHex),
+		string(BlobEncodingRaw),
+	}
+}
+
+// HeaderModes returns the --header values, in order. on comes first because it
+// is the default and the option's own help lists it first.
+func HeaderModes() []string {
+	return []string{string(HeaderOn), string(HeaderOff)}
+}
+
+// ValidHeaderMode reports whether s is a --header value.
+func ValidHeaderMode(s string) bool { return slices.Contains(HeaderModes(), s) }
+
+// HeaderEnabled resolves --header to the bool the writers read. An empty value
+// (a caller building a config by hand) behaves as on, like the shipped default.
+func HeaderEnabled(s string) bool { return HeaderMode(s) != HeaderOff }
+
 // ValidFormat reports whether s is a --format value.
 func ValidFormat(s string) bool { return slices.Contains(Formats(), s) }
 
@@ -63,3 +86,6 @@ func ValidImportMode(s string) bool { return slices.Contains(ImportModes(), s) }
 // ValidLogLevel reports whether s is a --log-level value. The caller is
 // responsible for the trim/lower normalisation the option has always applied.
 func ValidLogLevel(s string) bool { return slices.Contains(LogLevels(), s) }
+
+// ValidBlobEncoding reports whether s is a --blob-encoding value.
+func ValidBlobEncoding(s string) bool { return slices.Contains(BlobEncodings(), s) }

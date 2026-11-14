@@ -14,7 +14,7 @@ import (
 // independent check that a new layout option cannot escape the registry.
 var delModifierFlags = []string{
 	"char-del", "col-del", "row-del", "escape", "no-escape",
-	"timestamp-fmt", "date-fmt", "no-char-del", "no-col-names",
+	"timestamp-fmt", "date-fmt", "no-char-del", "header",
 }
 
 func scopeFlags(scopes config.OptionScopes) map[string]bool {

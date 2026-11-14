@@ -86,13 +86,13 @@ func parquetOnly(flag string) OptionScope {
 	return onlyWith(flag, FormatParquet, "--format "+FormatParquet)
 }
 
-// binaryEncodingReason is shared by the two hex-blob flags.
+// binaryEncodingReason is the single --blob-encoding option's parquet refusal.
 const binaryEncodingReason = "binary columns are already stored as binary"
 
 // ExportOptionScopes lists the export flags that are not format-independent.
 // The order is the order mismatches are reported in, and it is what the shipped
 // CLI has always produced: SQL layout first, then DEL modifiers, then the binary
-// encoding pair.
+// encoding option.
 func ExportOptionScopes() OptionScopes {
 	delAndSQL := []string{FormatDel, FormatSQL}
 	return OptionScopes{
@@ -108,9 +108,8 @@ func ExportOptionScopes() OptionScopes {
 		delOnly("timestamp-fmt"),
 		delOnly("date-fmt"),
 		delOnly("no-char-del"),
-		delOnly("no-col-names"),
-		notWith("hex-blob", delAndSQL, FormatParquet, binaryEncodingReason),
-		notWith("no-hex-blob", delAndSQL, FormatParquet, binaryEncodingReason),
+		delOnly("header"),
+		notWith("blob-encoding", delAndSQL, FormatParquet, binaryEncodingReason),
 	}
 }
 
@@ -128,7 +127,7 @@ func ImportOptionScopes() OptionScopes {
 		delOnly("timestamp-fmt"),
 		delOnly("date-fmt"),
 		delOnly("no-char-del"),
-		delOnly("no-col-names"),
+		delOnly("header"),
 	}
 }
 

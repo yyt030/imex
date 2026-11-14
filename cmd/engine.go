@@ -119,9 +119,11 @@ func checkCharsetForEngine(e backend.Engine, charset string) error {
 // backend.RunOptions, because cobra's flag state cannot cross into that package.
 func checkExportEngineOptions(cmd *cobra.Command, e backend.Engine, cfg *config.ExportConfig) error {
 	o := backend.RunOptions{
-		Format:     cfg.Format,
-		Threads:    cfg.Threads,
-		NoHexBlob:  cfg.NoHexBlob,
+		Format:  cfg.Format,
+		Threads: cfg.Threads,
+		// raw is the only value the byte-safety refusal cares about; the old
+		// --no-hex-blob boolean folded to exactly this fact.
+		NoHexBlob:  cfg.BlobEncoding == string(config.BlobEncodingRaw),
 		SessionVar: cmd.Flags().Changed("session-var"),
 	}
 	if err := checkEngineRefusals(e, backend.CmdExport, o); err != nil {

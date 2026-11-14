@@ -52,7 +52,7 @@ func (postgresBackend) DefaultPort() int { return pgPortDefault }
 // encoding "UTF8": 0x00`, SQLSTATE 22021, on the first row of a bytea column
 // dumped raw under utf8mb4), and bytea is binary in every client encoding. The
 // charset rule that protects MySQL therefore cannot apply here; cmd refuses
-// --no-hex-blob on this engine rather than overriding the operator silently.
+// --blob-encoding raw on this engine rather than overriding the operator silently.
 func (postgresBackend) HexBlobMandatory() bool { return true }
 
 // pgClientEncoding maps the --default-charset vocabulary (the 16 names cmd's gate
@@ -648,7 +648,7 @@ func ClassifyPostgresType(name string) common.ColumnKind {
 
 // pgBinaryTypes are the PostgreSQL types whose value is not printable text, so
 // they take the same path through the writers as a MySQL BLOB does: BYTE_ARRAY
-// in Parquet, and the --hex-blob rule in DEL and SQL.
+// in Parquet, and the --blob-encoding rule in DEL and SQL.
 //
 // uuid, json and xml stay out of the list: their driver text is already valid
 // ASCII and re-imports as itself.

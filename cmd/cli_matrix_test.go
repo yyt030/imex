@@ -268,7 +268,7 @@ func TestCLIDELFlagFormatValidation(t *testing.T) {
 		{"--timestamp-fmt", "yyyy-MM-dd HH:mm"},
 		{"--date-fmt", "dd/MM/yyyy"},
 		{"--no-char-del", ""},
-		{"--no-col-names", ""},
+		{"--header", "off"},
 	}
 
 	bases := map[string][]string{
@@ -311,18 +311,20 @@ func TestCLIDELFlagFormatValidation(t *testing.T) {
 	}
 }
 
-// TestCLIParquetHexBlobRejected covers --format parquet's other silent no-op:
-// parquet stores binary columns natively, so the hex-blob switches cannot
-// change the output and must not be accepted quietly.
-func TestCLIParquetHexBlobRejected(t *testing.T) {
+// TestCLIParquetBlobEncodingRejected covers --format parquet's silent no-op:
+// parquet stores binary columns natively, so --blob-encoding cannot change the
+// output and must not be accepted quietly. The three values share one flag now;
+// the old --hex-blob / --no-hex-blob pair is asserted gone in
+// TestBlobEncodingReplacesTheFlagPair below.
+func TestCLIParquetBlobEncodingRejected(t *testing.T) {
 	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.dat", "-q", "SELECT 1"}
 
 	for _, format := range []string{"del", "sql", "parquet"} {
-		for _, flag := range []string{"--hex-blob", "--no-hex-blob"} {
+		for _, value := range []string{"auto", "hex", "raw"} {
 			args := append([]string{}, base...)
-			args = append(args, "-f", format, flag)
+			args = append(args, "-f", format, "--blob-encoding", value)
 
-			t.Run("export "+flag+" with --format "+format, func(t *testing.T) {
+			t.Run("export --blob-encoding "+value+" with --format "+format, func(t *testing.T) {
 				err := validateOnly(t, "export", args)
 				if format != "parquet" {
 					if err != nil {
@@ -330,7 +332,7 @@ func TestCLIParquetHexBlobRejected(t *testing.T) {
 					}
 					return
 				}
-				want := flag + " cannot be used with --format parquet"
+				want := "--blob-encoding cannot be used with --format parquet"
 				if err == nil {
 					t.Fatalf("expected usage error %q, got nil", want)
 				}
@@ -345,24 +347,93 @@ func TestCLIParquetHexBlobRejected(t *testing.T) {
 	}
 }
 
-// TestCLINoHeaderIsUnknown pins the naming decision: the switch keeps its
-// long-standing name --no-col-names, and the shorter --no-header that was tried
-// for a moment is not accepted. One flag, one name, so a spelling that is not in
-// the help text never quietly works.
-func TestCLINoHeaderIsUnknown(t *testing.T) {
+// TestBlobEncodingReplacesTheFlagPair pins the rename: the two mutually
+// exclusive booleans are gone, the three-way value is the only spelling, and an
+// invalid value is a usage error built from the same registry the help reads.
+func TestBlobEncodingReplacesTheFlagPair(t *testing.T) {
+	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.del", "-q", "SELECT 1"}
+
+	// validateOnly parses the command's own FlagSet, so a removed flag shows up
+	// as pflag's raw "unknown flag" error. In the real CLI rootCmd's
+	// SetFlagErrorFunc(flagErrorUsage) wraps that into a usage error (exit 2);
+	// here we only need to prove the spelling no longer exists, exactly as
+	// TestCLINoHeaderIsUnknown does.
+	for _, old := range []string{"--hex-blob", "--no-hex-blob"} {
+		t.Run("old "+old+" is gone", func(t *testing.T) {
+			err := validateOnly(t, "export", append(append([]string{}, base...), old))
+			if err == nil || !strings.Contains(err.Error(), "unknown flag: "+old) {
+				t.Fatalf("%s must be an unknown flag, got %v", old, err)
+			}
+		})
+	}
+
+	// One option cannot contradict itself: the mutual-exclusion error is gone
+	// and repeating the flag just takes the last value, like any string option.
+	t.Run("no mutual exclusion", func(t *testing.T) {
+		args := append(append([]string{}, base...), "--blob-encoding", "hex", "--blob-encoding", "raw")
+		if err := validateOnly(t, "export", args); err != nil {
+			t.Fatalf("repeating --blob-encoding must be legal: %v", err)
+		}
+	})
+
+	t.Run("invalid value", func(t *testing.T) {
+		args := append(append([]string{}, base...), "--blob-encoding", "bogus")
+		err := validateOnly(t, "export", args)
+		if err == nil {
+			t.Fatal("expected a usage error for an unknown --blob-encoding value")
+		}
+		want := `invalid --blob-encoding "bogus": must be one of auto/hex/raw`
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("expected %q, got %q", want, err.Error())
+		}
+		if !common.IsUsageError(err) {
+			t.Errorf("error %q must be a usage error (exit code 2)", err)
+		}
+	})
+
+	t.Run("default is auto", func(t *testing.T) {
+		if got := config.NewExportConfig().BlobEncoding; got != string(config.BlobEncodingAuto) {
+			t.Errorf("default --blob-encoding = %q, want auto", got)
+		}
+	})
+}
+
+// TestCLIHeaderReplacesNoColNames pins the rename: --header=on/off is the one
+// switch on export and import, and neither the old --no-col-names spelling nor
+// the shorter --no-header tried earlier is kept as an alias. The value is
+// validated like every other enumerated option.
+func TestCLIHeaderReplacesNoColNames(t *testing.T) {
 	bases := map[string][]string{
 		"export": {"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-o", "/tmp/out.dat", "-q", "SELECT 1"},
 		"import": {"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-i", "/tmp/in.dat", "-t", "users"},
 	}
 	for _, sub := range []string{"export", "import"} {
-		args := append(append([]string{}, bases[sub]...), "--no-header")
-		t.Run(sub, func(t *testing.T) {
+		for _, old := range []string{"--no-col-names", "--no-header"} {
+			args := append(append([]string{}, bases[sub]...), old)
+			t.Run(sub+" "+old, func(t *testing.T) {
+				err := validateOnly(t, sub, args)
+				if err == nil || !strings.Contains(err.Error(), "unknown flag: "+old) {
+					t.Fatalf("%s must be an unknown flag, got %v", old, err)
+				}
+			})
+		}
+		for _, value := range []string{"on", "off"} {
+			args := append(append([]string{}, bases[sub]...), "--header", value)
+			t.Run(sub+" --header "+value, func(t *testing.T) {
+				if err := validateOnly(t, sub, args); err != nil {
+					t.Fatalf("--header %s must be legal: %v", value, err)
+				}
+			})
+		}
+		t.Run(sub+" --header bogus", func(t *testing.T) {
+			args := append(append([]string{}, bases[sub]...), "--header", "bogus")
 			err := validateOnly(t, sub, args)
-			if err == nil {
-				t.Fatal("--no-header must be an unknown flag: the switch is --no-col-names")
+			want := `invalid --header "bogus": must be one of on/off`
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("want %q, got %v", want, err)
 			}
-			if !strings.Contains(err.Error(), "unknown flag: --no-header") {
-				t.Errorf("expected an unknown-flag error, got %q", err.Error())
+			if !common.IsUsageError(err) {
+				t.Errorf("error %q must be a usage error (exit code 2)", err)
 			}
 		})
 	}
@@ -919,6 +990,52 @@ func TestDispatchParentExplainsConnectionShorthands(t *testing.T) {
 		// A placeholder would defeat the point: the objects must be enumerated.
 		if strings.Contains(err.Error(), "<object>") {
 			t.Errorf("hint must list concrete objects, got %q", err.Error())
+		}
+	}
+}
+
+// TestLogFlagsShareOneLayer pins the layer merge: --log-level used to be a
+// per-command flag while --log-format was a root persistent one, so they sat in
+// different help sections. Both are declared by registerConnFlags now.
+func TestLogFlagsShareOneLayer(t *testing.T) {
+	if f := rootCmd.PersistentFlags().Lookup("log-format"); f != nil {
+		t.Errorf("--log-format is still a root persistent flag")
+	}
+	for _, path := range [][]string{{"export"}, {"import"}, {"list", "tab"}, {"show", "tab"}, {"exec"}} {
+		cmd, _, err := rootCmd.Find(path)
+		if err != nil {
+			t.Fatalf("find %v: %v", path, err)
+		}
+		name := strings.Join(path, " ")
+		if cmd.Flags().Lookup("log-level") == nil || cmd.Flags().Lookup("log-format") == nil {
+			t.Errorf("%s: both log flags must be local", name)
+		}
+		if cmd.InheritedFlags().Lookup("log-level") != nil || cmd.InheritedFlags().Lookup("log-format") != nil {
+			t.Errorf("%s: a log flag is still inherited", name)
+		}
+	}
+}
+
+// TestHeaderRegisteredOnEveryResultCommand pins the uniform --header surface:
+// export/import (DEL file), list/exec (result table) and show (a definition,
+// which has no header row) all accept it, and the old spelling is gone.
+func TestHeaderRegisteredOnEveryResultCommand(t *testing.T) {
+	for _, path := range [][]string{
+		{"export"}, {"import"}, {"list", "tab"}, {"show", "tab"}, {"exec"},
+	} {
+		cmd, _, err := rootCmd.Find(path)
+		if err != nil {
+			t.Fatalf("find %v: %v", path, err)
+		}
+		name := strings.Join(path, " ")
+		f := cmd.Flags().Lookup("header")
+		if f == nil {
+			t.Errorf("%s: --header missing", name)
+		} else if f.DefValue != "on" {
+			t.Errorf("%s: --header default = %q, want on", name, f.DefValue)
+		}
+		if cmd.Flags().Lookup("no-col-names") != nil {
+			t.Errorf("%s: --no-col-names must be gone", name)
 		}
 	}
 }

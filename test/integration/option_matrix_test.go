@@ -262,8 +262,8 @@ func TestOptionMatrixDELModifiers(t *testing.T) {
 			// be read back without it, with the target columns named explicitly
 			// because the file no longer carries them.
 			name:        "不输出列名行",
-			exportFlags: []string{"--no-col-names"},
-			importFlags: []string{"--no-col-names", "--columns", "id,name,amount,note,created,payload,flag"},
+			exportFlags: []string{"--header=off"},
+			importFlags: []string{"--header=off", "--columns", "id,name,amount,note,created,payload,flag"},
 		},
 		{
 			name:        "关闭转义",
@@ -301,7 +301,7 @@ func TestOptionMatrixDELModifiers(t *testing.T) {
 }
 
 // TestOptionMatrixNoColNamesSymmetry pins what happens when the two sides of the
-// --no-col-names pair are not matched. The file cannot say whether its first
+// --header=off pair are not matched. The file cannot say whether its first
 // record is a header or data, so positional --columns keeps the header behaviour
 // for normal dumps and the tool's only safe move is to report the record it
 // dropped: a WARN record naming the fields, which --messages writes to the log
@@ -310,7 +310,7 @@ func TestOptionMatrixNoColNamesSymmetry(t *testing.T) {
 	env := newCLILive(t)
 	src, dst := env.makePair(t, "ncol")
 
-	file := env.cliExport(t, src, "del", "no_col_names.del", "--no-col-names")
+	file := env.cliExport(t, src, "del", "no_col_names.del", "--header=off")
 	msg := filepath.Join(env.dir, "no-col-names.log")
 	out, code := env.runImportCLI(t, "-i", file, "-t", dst, "-f", "del",
 		"--columns", "id,name,amount,note,created,payload,flag", "--messages", msg,
@@ -332,7 +332,7 @@ func TestOptionMatrixNoColNamesSymmetry(t *testing.T) {
 
 	// The matched pairing loses nothing.
 	env.exec(t, "TRUNCATE TABLE `"+dst+"`")
-	out, code = env.runImportCLI(t, "-i", file, "-t", dst, "-f", "del", "--no-col-names",
+	out, code = env.runImportCLI(t, "-i", file, "-t", dst, "-f", "del", "--header=off",
 		"--columns", "id,name,amount,note,created,payload,flag")
 	if code != 0 {
 		t.Fatalf("matched import failed: exit %d\n%s", code, out)

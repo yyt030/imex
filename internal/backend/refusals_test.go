@@ -17,7 +17,7 @@ func TestRefusalTablesAreInReportingOrder(t *testing.T) {
 		c    Command
 		want []string // option labels, in order
 	}{
-		{CmdExport, []string{"--no-hex-blob"}},
+		{CmdExport, []string{"--blob-encoding raw"}},
 		{CmdImport, nil},
 		{CmdList, []string{"list events"}},
 		{CmdShow, []string{"show table"}},
@@ -81,8 +81,8 @@ func TestRefusalPredicatesFireOnValueNotDefault(t *testing.T) {
 		o      RunOptions
 		want   bool
 	}{
-		{"--no-hex-blob", RunOptions{NoHexBlob: true}, true},
-		{"--no-hex-blob", RunOptions{NoHexBlob: false}, false},
+		{"--blob-encoding raw", RunOptions{NoHexBlob: true}, true},
+		{"--blob-encoding raw", RunOptions{NoHexBlob: false}, false},
 		{"list events", RunOptions{Object: "events"}, true},
 		{"list events", RunOptions{Object: "tables"}, false},
 		// On pg the only show kind still refused is event; the predicate must fire
@@ -167,7 +167,7 @@ func TestEngineNameInRefusalMessageIsTheValue(t *testing.T) {
 // this pins the shape that owns them.
 func TestDamengSQLRoundTripsBothWays(t *testing.T) {
 	exp := Must(EngineDM).Refusals(CmdExport)
-	wantExp := []string{"--no-hex-blob", "--session-var"}
+	wantExp := []string{"--blob-encoding raw", "--session-var"}
 	if len(exp) != len(wantExp) {
 		t.Fatalf("dm export has %d rules, want %d", len(exp), len(wantExp))
 	}

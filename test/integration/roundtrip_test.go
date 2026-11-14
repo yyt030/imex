@@ -222,7 +222,7 @@ func TestSQLRoundTrip_HexBinaryLiterals(t *testing.T) {
 
 // TestSQLRoundTrip_MySQLTextValuesMatchHexValues proves the two binary
 // encodings the exporter can emit decode to the same bytes, so a dump written
-// with --hex-blob and one written without it land identically in a BLOB column.
+// with --blob-encoding hex and one written without it land identically in a BLOB column.
 func TestSQLRoundTrip_MySQLTextValuesMatchHexValues(t *testing.T) {
 	columns := []string{"id", "payload"}
 	payload := []byte{0x00, 0x1a, '\'', '"', '\\', '\n', 0x80, 0xff}

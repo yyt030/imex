@@ -79,7 +79,7 @@ func (d *DelWriter) WriteHeader(columns []string) error {
 	}
 	// Column names are identifiers, never row data: the per-index binary/hex
 	// treatment that writeRow applies must not touch them, otherwise a
-	// --hex-blob (or non-utf8mb4 charset) export writes header fields such as
+	// --blob-encoding hex (or non-utf8mb4 charset) export writes header fields such as
 	// 0x7662 instead of "vb" and the file can no longer be imported.
 	hexBlob := d.hexBlob
 	d.hexBlob = false

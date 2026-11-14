@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/imex/internal/backend"
+	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
 
@@ -81,6 +82,13 @@ func registerConnFlags(f *pflag.FlagSet, cfg *config.Config, o connFlagOpts) {
 	f.StringVarP(&messagesPath, "messages", "m", "", o.MessagesUsage)
 	f.StringVar((*string)(&cfg.LogLevel), "log-level", "info",
 		"Log level ("+enumNames(config.LogLevels())+")")
+	// --log-format used to be a root persistent flag while --log-level was a
+	// per-command one, so the two log options sat in different help sections.
+	// Both are declared here now: one registration, one layer, one section on
+	// every command that owns a connection. The root hook still reads logFormat
+	// through the package-level binding, exactly as --messages does.
+	f.StringVar(&logFormat, "log-format", "console",
+		"Log layout: "+strings.Join(common.LogFormats(), " or ")+"; also IMEX_LOG_FORMAT")
 
 	if o.OutputTarget != nil {
 		f.StringVarP(o.OutputTarget, "output", "o", "", o.OutputUsage)

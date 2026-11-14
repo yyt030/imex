@@ -72,8 +72,8 @@ func TestEngineRefusalMatrix(t *testing.T) {
 		{
 			name: "export_no_hex_blob",
 			sub:  "export",
-			args: pgExportFlags("--no-hex-blob"),
-			want: "--no-hex-blob is not supported with --engine pg: a PostgreSQL server rejects a NUL inside any text value (SQLSTATE 22021), so bytea columns must go out as 0x hex; imex always does it on this engine",
+			args: pgExportFlags("--blob-encoding", "raw"),
+			want: "--blob-encoding raw is not supported with --engine pg: a PostgreSQL server rejects a NUL inside any text value (SQLSTATE 22021), so bytea columns must go out as 0x hex; imex always does it on this engine",
 		},
 		{
 			name: "export_charset",
@@ -106,8 +106,8 @@ func TestEngineRefusalMatrix(t *testing.T) {
 		{
 			name: "dm_export_no_hex_blob",
 			sub:  "export",
-			args: dmExportFlags("--no-hex-blob"),
-			want: "--no-hex-blob is not supported with --engine dm: Dameng rejects a NUL byte inside a text value, so binary columns must go out as 0x hex; imex always does it on this engine",
+			args: dmExportFlags("--blob-encoding", "raw"),
+			want: "--blob-encoding raw is not supported with --engine dm: Dameng rejects a NUL byte inside a text value, so binary columns must go out as 0x hex; imex always does it on this engine",
 		},
 		{
 			name: "dm_export_session_var",
@@ -245,7 +245,7 @@ func TestListAndShowRefusals(t *testing.T) {
 // counter-assertion, and --session-var is honoured the way MySQL honours it (a
 // real name that is not tool- or driver-owned reaches the server as a SET).
 // --threads above 1 joined this list when the parallel path learned the
-// PostgreSQL catalogue; --no-hex-blob stays a refusal and is restated so
+// PostgreSQL catalogue; --blob-encoding raw stays a refusal and is restated so
 // accepting it later is a deliberate edit.
 func TestPGExportOptionsAreAccepted(t *testing.T) {
 	accepted := []struct {
@@ -272,7 +272,7 @@ func TestPGExportOptionsAreAccepted(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"no_hex_blob", pgExportFlags("--no-hex-blob")},
+		{"blob_encoding_raw", pgExportFlags("--blob-encoding", "raw")},
 		{"bad_dialect", pgExportFlags("-f", "sql", "--sql-dialect", "oracle")},
 		{"dialect_without_sql", pgExportFlags("-f", "del", "--sql-dialect", "pg")},
 	}
@@ -385,7 +385,7 @@ func TestMySQLOptionsAreUntouched(t *testing.T) {
 		sub  string
 		args []string
 	}{
-		{"export_sql_threads_sessionvar", "export", append(append([]string{}, base...), "-o", "/tmp/x.sql", "-q", "SELECT 1", "-f", "sql", "--threads", "4", "--session-var", "sql_mode=ALL", "--no-hex-blob")},
+		{"export_sql_threads_sessionvar", "export", append(append([]string{}, base...), "-o", "/tmp/x.sql", "-q", "SELECT 1", "-f", "sql", "--threads", "4", "--session-var", "sql_mode=ALL", "--blob-encoding", "raw")},
 		{"export_default_engine", "export", append(append([]string{}, base...), "-o", "/tmp/x.sql", "-q", "SELECT 1", "-f", "sql", "--threads", "4")},
 		{"import_modes", "import", append(append([]string{}, base...), "-i", "/tmp/x.sql", "-t", "rt", "-f", "sql", "--mode", "replace")},
 		{"import_replace_threads", "import", append(append([]string{}, base...), "-i", "/tmp/x.del", "-t", "rt", "--mode", "replace", "--threads", "8", "--session-var", "sql_mode=ALL")},
@@ -650,7 +650,7 @@ func TestDMOptionsAreAccepted(t *testing.T) {
 		{"export_threads_one", "export", dmExportFlags("--threads", "1")},
 		{"export_threads", "export", dmExportFlags("--threads", "4")},
 		{"export_threads_with_sql", "export", dmExportFlags("-f", "sql", "--threads", "4")},
-		{"export_hex_blob", "export", dmExportFlags("--hex-blob")},
+		{"export_blob_encoding_hex", "export", dmExportFlags("--blob-encoding", "hex")},
 		{"import_insert", "import", dmImportFlags()},
 		{"import_replace", "import", dmImportFlags("--mode", "replace")},
 		{"import_parquet", "import", dmImportFlags("-f", "parquet", "-i", "/tmp/imex-engine-test.parquet")},

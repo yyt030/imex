@@ -109,6 +109,30 @@ func validateLogLevel(level string) error {
 	return nil
 }
 
+// validateHeader checks that --header is one of on/off. An empty value means a
+// library caller built the config by hand and left the option unset; it resolves
+// to the shipped default, on.
+func validateHeader(mode string) error {
+	if mode == "" {
+		return nil
+	}
+	if !config.ValidHeaderMode(mode) {
+		return common.Usagef("invalid --header %q: must be one of %s", mode, enumNames(config.HeaderModes()))
+	}
+	return nil
+}
+
+// applyHeader folds --header into the effective NoColNames bool the writers and
+// the configuration record still read, so --header=off produces byte-for-byte
+// what the old --no-col-names produced.
+func applyHeader(mode string, noColNames *bool) error {
+	if err := validateHeader(mode); err != nil {
+		return err
+	}
+	*noColNames = !config.HeaderEnabled(mode)
+	return nil
+}
+
 // validateParquetCompression checks the codec name before the writer sees it, so
 // a typo is a usage error (exit 2) rather than an error raised after the file has
 // been created.
@@ -188,10 +212,12 @@ func validateCharset(charset string, format string, be backend.Backend) error {
 	return nil
 }
 
-// validateHexBlob checks that --hex-blob and --no-hex-blob are mutually exclusive.
-func validateHexBlob(hexBlob, noHexBlob bool) error {
-	if hexBlob && noHexBlob {
-		return common.Usagef("--hex-blob and --no-hex-blob are mutually exclusive")
+// validateBlobEncoding checks that --blob-encoding is one of auto/hex/raw.
+// The three-way value replaced the --hex-blob / --no-hex-blob boolean pair, so
+// the mutual-exclusion check is gone: one option cannot contradict itself.
+func validateBlobEncoding(v string) error {
+	if !config.ValidBlobEncoding(v) {
+		return common.Usagef("invalid --blob-encoding %q: must be one of %s", v, enumNames(config.BlobEncodings()))
 	}
 	return nil
 }
@@ -320,6 +346,9 @@ var parallelExportIgnoredOptions = []string{"batch-size", "pipeline-buffer"}
 // validateExportConfig performs all validation for export.
 // Order: threads → batch-size → pipeline-buffer → parallel-path conflicts → rest.
 func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
+	if err := applyHeader(cfg.DelModifier.Header, &cfg.DelModifier.NoColNames); err != nil {
+		return err
+	}
 	e, err := parseEngine(cfg.Engine)
 	if err != nil {
 		return err
@@ -376,7 +405,7 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 	if err := validateStatementSize(cfg.StatementSize); err != nil {
 		return err
 	}
-	if err := validateHexBlob(cfg.HexBlob, cfg.NoHexBlob); err != nil {
+	if err := validateBlobEncoding(cfg.BlobEncoding); err != nil {
 		return err
 	}
 	if err := validateOptionScopes(cmd, config.ExportOptionScopes(), cfg.Format); err != nil {
@@ -389,6 +418,9 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 // validateImportConfig performs all validation for import.
 // Order: threads → batch-size → pipeline-buffer → rest.
 func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
+	if err := applyHeader(cfg.DelModifier.Header, &cfg.DelModifier.NoColNames); err != nil {
+		return err
+	}
 	e, err := parseEngine(cfg.Engine)
 	if err != nil {
 		return err

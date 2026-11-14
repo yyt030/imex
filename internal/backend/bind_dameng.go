@@ -192,8 +192,8 @@ func dmBindFloatNumber(v interface{}) interface{} {
 // every form a file can carry and hands back one canonical digit.
 //
 // The forms a file carries, measured on this round's harness: a Parquet file
-// gives the payload as bytes; a DEL dump written with --hex-blob gives an 0x…
-// token; a DEL dump written without it gives the stored bytes inside the field's
+// gives the payload as bytes; a DEL dump written with --blob-encoding hex gives
+// an 0x… token; a DEL dump written without it gives the stored bytes inside the field's
 // own quotes, because MySQL only forces hex when the dump's charset cannot carry
 // the bytes (HexBlobMandatory is false). The third form is a string, and it is
 // what BIT(1) arrives as — 0x00 and 0x01, which no reader can call text — so a

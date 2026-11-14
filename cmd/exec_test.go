@@ -28,7 +28,7 @@ func TestExecCommandRegistersFlags(t *testing.T) {
 		"database":     "D",
 		"help":         "?",
 		"no-overwrite": "",
-		"no-col-names": "",
+		"header":       "",
 	} {
 		flag := cmd.Flags().Lookup(flagName)
 		if flag == nil {

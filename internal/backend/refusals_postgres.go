@@ -12,8 +12,7 @@ package backend
 // server's.
 //
 // Each rule fires on the *value*, not on whether the option was named
-// (--no-hex-blob switched on), so a run configured by any means cannot escape
-// it. --session-var is no longer a refusal at all: this engine now honours it
+// (--blob-encoding raw), so a run configured by any means cannot escape it. --session-var is no longer a refusal at all: this engine now honours it
 // the way MySQL does, running a SET per new connection and rejecting only the
 // names the tool or the driver owns (postgresBackend.IsReservedConnParam).
 // --threads above 1 is no longer a refusal either: the parallel export path
@@ -21,7 +20,7 @@ package backend
 // estimates, $n placeholders and double-quoted identifiers), so a sharded DEL
 // or SQL dump is a measured capability rather than an unmeasured translation.
 //
-// What is left refused is the byte-safety rule: --no-hex-blob, because a
+// What is left refused is the byte-safety rule: --blob-encoding raw, because a
 // PostgreSQL server rejects a NUL inside any text value. Everything else —
 // single-threaded or parallel DEL/SQL/Parquet exports of any SELECT — goes
 // through the same sql.RawBytes pipeline MySQL uses.
@@ -31,7 +30,7 @@ func (postgresBackend) Refusals(c Command) []Refusal {
 	case CmdExport:
 		return []Refusal{
 			{
-				Option:  static("--no-hex-blob"),
+				Option:  static("--blob-encoding raw"),
 				Reason:  "a PostgreSQL server rejects a NUL inside any text value (SQLSTATE 22021), so bytea columns must go out as 0x hex; imex always does it on this engine",
 				Applies: func(o RunOptions) bool { return o.NoHexBlob },
 			},

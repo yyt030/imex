@@ -588,26 +588,33 @@ func TestHexBlobForCharset(t *testing.T) {
 	}
 }
 
-func TestHexBlobEffectiveValue(t *testing.T) {
-	type testCase struct {
-		hexBlob   bool
-		noHexBlob bool
-		charset   string
-		want      bool
-	}
-	cases := []testCase{
-		{false, false, "utf8mb4", false},
-		{false, false, "gbk", true},
-		{true, false, "utf8mb4", true},
-		{true, false, "gbk", true},
-		{false, true, "utf8mb4", false},
-		{false, true, "gbk", false},
-	}
-	for _, tc := range cases {
-		hex := tc.hexBlob || (!tc.noHexBlob && config.HexBlobForCharset(tc.charset))
-		if hex != tc.want {
-			t.Errorf("hex(HexBlob=%v, NoHexBlob=%v, charset=%q) = %v, want %v",
-				tc.hexBlob, tc.noHexBlob, tc.charset, hex, tc.want)
+// TestBlobEncodingMatchesFormerFlagPair pins the migration itself: every legal
+// --hex-blob / --no-hex-blob combination maps to one three-way value that
+// effectiveHexBlob resolves identically. The old pair was mutually exclusive,
+// so the (true, true) combination is skipped. This is the byte-for-byte
+// equivalence the DEL/SQL writers rely on — the option's spelling changed, the
+// file did not.
+func TestBlobEncodingMatchesFormerFlagPair(t *testing.T) {
+	for _, charset := range []string{"utf8mb4", "gbk", "latin1"} {
+		for _, oldHex := range []bool{false, true} {
+			for _, oldRaw := range []bool{false, true} {
+				if oldHex && oldRaw {
+					continue
+				}
+				old := oldHex || (!oldRaw && config.HexBlobForCharset(charset))
+				enc := "auto"
+				if oldHex {
+					enc = "hex"
+				} else if oldRaw {
+					enc = "raw"
+				}
+				cfg := config.NewExportConfig()
+				cfg.BlobEncoding, cfg.DefaultCharset = enc, charset
+				if got := effectiveHexBlob(cfg); got != old {
+					t.Errorf("charset=%q old(hex=%v,raw=%v)=%v but --blob-encoding %s resolved %v",
+						charset, oldHex, oldRaw, old, enc, got)
+				}
+			}
 		}
 	}
 }

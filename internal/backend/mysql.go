@@ -261,8 +261,8 @@ func (mysqlBackend) DefaultPort() int { return 3306 }
 
 // HexBlobMandatory is false: MySQL's binary columns are only unsafe in a charset
 // that cannot carry the bytes, which is the rule config.HexBlobForCharset applies
-// to --default-charset. A byte-safe charset lets --hex-blob off, and the dump
-// carries the raw bytes.
+// to --default-charset. A byte-safe charset keeps hex off under
+// --blob-encoding auto, and the dump carries the raw bytes.
 func (mysqlBackend) HexBlobMandatory() bool { return false }
 
 // CellFixups returns a nil rewriter for every column: the MySQL driver's text

@@ -30,10 +30,9 @@ func TestOptionScopesAppliesTo(t *testing.T) {
 		{"export", "char-del", FormatDel, true},
 		{"export", "char-del", FormatSQL, false},
 		{"export", "date-fmt", FormatSQL, false},
-		{"export", "hex-blob", FormatDel, true},
-		{"export", "hex-blob", FormatSQL, true},
-		{"export", "hex-blob", FormatParquet, false},
-		{"export", "no-hex-blob", FormatParquet, false},
+		{"export", "blob-encoding", FormatDel, true},
+		{"export", "blob-encoding", FormatSQL, true},
+		{"export", "blob-encoding", FormatParquet, false},
 		// An unregistered flag is format-independent, so it always applies.
 		{"export", "threads", FormatParquet, true},
 		{"export", "default-charset", FormatDel, true},
@@ -86,16 +85,16 @@ func TestOptionScopeViolation(t *testing.T) {
 		{
 			name:    "import del option with parquet",
 			scopes:  ImportOptionScopes(),
-			changed: changedOf("no-col-names"),
+			changed: changedOf("header"),
 			format:  FormatParquet,
-			want:    "--no-col-names can only be used with --format del",
+			want:    "--header can only be used with --format del",
 		},
 		{
 			name:    "binary encoding with parquet",
 			scopes:  ExportOptionScopes(),
-			changed: changedOf("hex-blob"),
+			changed: changedOf("blob-encoding"),
 			format:  FormatParquet,
-			want:    "--hex-blob cannot be used with --format parquet: binary columns are already stored as binary",
+			want:    "--blob-encoding cannot be used with --format parquet: binary columns are already stored as binary",
 		},
 		{
 			name:    "first registered flag wins",
@@ -107,7 +106,7 @@ func TestOptionScopeViolation(t *testing.T) {
 		{
 			name:    "format that reads its own options",
 			scopes:  ExportOptionScopes(),
-			changed: changedOf("extended-insert", "hex-blob"),
+			changed: changedOf("extended-insert", "blob-encoding"),
 			format:  FormatSQL,
 		},
 		{

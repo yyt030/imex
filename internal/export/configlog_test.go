@@ -120,7 +120,7 @@ func TestExportConfigRecordCarriesTheThreeFieldsItUsedToOmit(t *testing.T) {
 	}
 }
 
-// TestExportConfigRecordReportsHexBlobAsApplied: the flags say what was asked for,
+// TestExportConfigRecordReportsHexBlobAsApplied: the option says what was asked for,
 // the record has to say what the writer will do.
 func TestExportConfigRecordReportsHexBlobAsApplied(t *testing.T) {
 	auto := config.NewExportConfig()
@@ -133,9 +133,9 @@ func TestExportConfigRecordReportsHexBlobAsApplied(t *testing.T) {
 	forced := config.NewExportConfig()
 	forced.Format = config.FormatSQL
 	forced.DefaultCharset = "gbk"
-	forced.NoHexBlob = true
+	forced.BlobEncoding = string(config.BlobEncodingRaw)
 	if keys := configKeys(t, exportConfigFields(forced)); keys["hex_blob"] != false {
-		t.Errorf("hex_blob = %v with --no-hex-blob, want false: the flag wins over the charset", keys["hex_blob"])
+		t.Errorf("hex_blob = %v with --blob-encoding raw, want false: the value wins over the charset", keys["hex_blob"])
 	}
 
 	off := config.NewExportConfig()
@@ -146,7 +146,9 @@ func TestExportConfigRecordReportsHexBlobAsApplied(t *testing.T) {
 }
 
 // TestEffectiveHexBlob pins the resolution the writer, the shard, and the
-// configuration record now share.
+// configuration record now share. auto is the old "neither flag given", hex is
+// the old --hex-blob, raw is the old --no-hex-blob; an empty encoding is a
+// library caller's auto.
 //
 // The engine rows are the ones the answer moved out of: which engine must dump
 // binary columns as 0x hex is the backend's fact (HexBlobMandatory), and the
@@ -155,29 +157,33 @@ func TestExportConfigRecordReportsHexBlobAsApplied(t *testing.T) {
 // `--engine pg` instead of MySQL's charset rule.
 func TestEffectiveHexBlob(t *testing.T) {
 	cases := []struct {
-		engine             string
-		hexBlob, noHexBlob bool
-		charset            string
-		want               bool
+		engine   string
+		encoding string
+		charset  string
+		want     bool
 	}{
-		{"", false, false, "utf8mb4", false},
-		{"", false, false, "utf8", false},
-		{"", false, false, "gbk", true},
-		{"", false, false, "latin1", true},
-		{"", true, false, "utf8mb4", true},
-		{"", false, true, "gbk", false},
-		{"pg", false, false, "utf8mb4", true},
-		{"pg", false, false, "gbk", true},
-		{"pg", false, true, "utf8mb4", false},
-		{"PG", false, false, "utf8mb4", true},
-		{"  Pg  ", false, false, "utf8mb4", true},
+		{"", "auto", "utf8mb4", false},
+		{"", "auto", "utf8", false},
+		{"", "auto", "gbk", true},
+		{"", "auto", "latin1", true},
+		{"", "", "utf8mb4", false},
+		{"", "", "gbk", true},
+		{"", "hex", "utf8mb4", true},
+		{"", "hex", "gbk", true},
+		{"", "raw", "utf8mb4", false},
+		{"", "raw", "gbk", false},
+		{"pg", "auto", "utf8mb4", true},
+		{"pg", "auto", "gbk", true},
+		{"pg", "raw", "utf8mb4", false},
+		{"PG", "auto", "utf8mb4", true},
+		{"  Pg  ", "auto", "utf8mb4", true},
 	}
 	for _, tc := range cases {
 		cfg := config.NewExportConfig()
-		cfg.Engine, cfg.HexBlob, cfg.NoHexBlob, cfg.DefaultCharset = tc.engine, tc.hexBlob, tc.noHexBlob, tc.charset
+		cfg.Engine, cfg.BlobEncoding, cfg.DefaultCharset = tc.engine, tc.encoding, tc.charset
 		if got := effectiveHexBlob(cfg); got != tc.want {
-			t.Errorf("engine=%q hexBlob=%v noHexBlob=%v charset=%q: effectiveHexBlob=%v, want %v",
-				tc.engine, tc.hexBlob, tc.noHexBlob, tc.charset, got, tc.want)
+			t.Errorf("engine=%q blob-encoding=%q charset=%q: effectiveHexBlob=%v, want %v",
+				tc.engine, tc.encoding, tc.charset, got, tc.want)
 		}
 	}
 }

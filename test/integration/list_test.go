@@ -181,12 +181,12 @@ func TestListCLIObjects(t *testing.T) {
 			t.Errorf("name row = %v", name)
 		}
 
-		noHeader, _, code := env.runListCLI(t, "columns", "-t", tbl, "--no-col-names")
+		noHeader, _, code := env.runListCLI(t, "columns", "-t", tbl, "--header=off")
 		if code != 0 {
-			t.Fatalf("--no-col-names exit %d", code)
+			t.Fatalf("--header=off exit %d", code)
 		}
 		if got := len(outputLines(noHeader)); got != 2 {
-			t.Errorf("--no-col-names printed %d lines, want 2 (header suppressed):\n%s", got, noHeader)
+			t.Errorf("--header=off printed %d lines, want 2 (header suppressed):\n%s", got, noHeader)
 		}
 	})
 

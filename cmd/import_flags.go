@@ -53,7 +53,8 @@ func registerImportFlags(cmd *cobra.Command) {
 	f.StringVar(&importCfg.DelModifier.TimestampFmt, "timestamp-fmt", "yyyy-MM-dd HH:mm:ss", "Timestamp format")
 	f.StringVar(&importCfg.DelModifier.DateFmt, "date-fmt", "yyyy-MM-dd", "Date format")
 	f.BoolVar(&importCfg.DelModifier.NoCharDel, "no-char-del", false, "Do not use string delimiter")
-	f.BoolVar(&importCfg.DelModifier.NoColNames, "no-col-names", false, "First line is not column names")
+	f.StringVar(&importCfg.DelModifier.Header, "header", string(config.HeaderOn),
+		"Include the header row (on/off)")
 
 	// Import-specific DEL options
 	f.IntVar(&importCfg.SkipCount, "skip-count", 0, "Skip first n data rows (header is consumed separately)")

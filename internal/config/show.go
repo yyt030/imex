@@ -19,9 +19,10 @@ type ShowConfig struct {
 
 	Output      string // --output file path, empty when the result has no file
 	NoOverwrite bool   // refuse to truncate an existing --output file
+	Header      string // --header: on or off; a definition has no header row
 }
 
 // NewShowConfig returns a ShowConfig with the shipped defaults.
 func NewShowConfig() *ShowConfig {
-	return &ShowConfig{Config: defaultConfig()}
+	return &ShowConfig{Config: defaultConfig(), Header: string(HeaderOn)}
 }

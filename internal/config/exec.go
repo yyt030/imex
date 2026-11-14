@@ -24,10 +24,11 @@ type ExecConfig struct {
 
 	Output      string // --output file path, empty when the result has no file
 	NoOverwrite bool   // refuse to truncate an existing --output file
-	NoColNames  bool   // do not print the column-header row of a result set
+	NoColNames  bool   // do not print the column-header row of a result set (effective --header value)
+	Header      string // --header: on or off; folded into NoColNames by cmd
 }
 
 // NewExecConfig returns an ExecConfig with the shipped defaults.
 func NewExecConfig() *ExecConfig {
-	return &ExecConfig{Config: defaultConfig()}
+	return &ExecConfig{Config: defaultConfig(), Header: string(HeaderOn)}
 }

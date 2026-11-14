@@ -2,7 +2,7 @@
 
 名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度逻辑导入导出工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，通过 `--engine` 支持 MySQL（含 MariaDB 与 OceanBase MySQL 模式）、PostgreSQL 与达梦 DM8（Oracle 兼容模式）。
 
-> **当前版本 `v0.38.2`**（2026-11-14，**Z 档收敛轮**：命令面评估 P0 五项收敛——公共 flags 单点注册、枚举文案改由注册表派生、定位／报错文案统一、过时文档口径清理、矩阵重建；无选项增删、默认值、退出码、产物或下发 SQL 变更，`--help` 仅 5 份纯文案收敛）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——`v0.38.1`／`v0.38.2` 均无功能变更，故不新增记录节，本轮内容见 `docs/requirements.md` 变更记录 **173**（收敛）／**174**（发版）。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
+> **当前版本 `v0.39.0`**（2026-11-15，**Y 档选项收敛轮**：一次结清 175／176 两笔挂账——`--hex-blob`／`--no-hex-blob` 合为 `--blob-encoding=auto/hex/raw`；`--log-format` 下沉与 `--log-level` 同层同处；`--no-col-names` 统一为 `--header=on/off` 并给 `show` 补上同名选项。**破坏性变更**：三个旧 flag 全部删除且不留别名，脚本需改用 `--blob-encoding hex`／`raw` 与 `--header=off`；`version`／`encrypt`／裸 `list`／`show` 不再接受 `--log-format`）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——本轮虽为 Y 档，但改的是既有选项的合并／层级／命名（非新增功能或缺陷修复），按纪律 12「单一事实源、不长段复述」不在 22 节历史存档与摘要表新增节，本轮内容见 `docs/requirements.md` 变更记录 **175**／**176**／**177**（发版）。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
 
 ## 目录
 
@@ -46,7 +46,7 @@
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
-- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，导出侧 `--threads 1–256` 并行分片导出（见「PostgreSQL 引擎」），`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；`--no-hex-blob` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export` 支持 `-f del|sql|parquet`（`--threads 1–256` 并行分片导出，见「达梦引擎」）、`import` 支持 `-f del|sql|parquet` 的 `--mode insert|replace` 与 `--threads`，`list` 给八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
+- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，导出侧 `--threads 1–256` 并行分片导出（见「PostgreSQL 引擎」），`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；`--blob-encoding raw` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export` 支持 `-f del|sql|parquet`（`--threads 1–256` 并行分片导出，见「达梦引擎」）、`import` 支持 `-f del|sql|parquet` 的 `--mode insert|replace` 与 `--threads`，`list` 给八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -228,7 +228,7 @@ imex export ... --threads 4 \
 - 变量名须匹配 `[A-Za-z][A-Za-z0-9_]*`；与工具/驱动内部参数同名的会被拒绝，且**保留清单按引擎不同**：MySQL 侧是 go-sql-driver 的连接串词汇（`charset`、`parseTime`、`tls`、`timeout` 等，由方言层交出，`internal/backend/dsn_mysql.go`），pg 侧是 libpq/pgx 的连接关键字（`host`、`port`、`dbname`、`user`、`password`、`sslmode`、`connect_timeout` 等）加上工具自己掌控的 GUC（`client_encoding`、`statement_timeout`），清单由 `internal/backend/postgres.go` 交出。这些保留名在连库之前即被 `parseSessionVars` 拒绝，因此解析器本身不认识引擎——它向方言层要一张表。连接/文件字符集由 `--default-charset` 统一掌管，会话级字符集变量 `character_set_client` / `character_set_connection` / `character_set_results` 在 MySQL 侧同样被拒绝——否则会以会话变量绕过该不变量（如 `character_set_results=gbk` 会转码二进制列造成损坏）。未知变量名会在连接阶段由服务端报错，便于尽早发现拼写错误。
 - 运行日志只打印变量**名**（`names=[sql_mode foreign_key_checks]`），**不打印值**——值可能包含密码/密钥等敏感信息，与失败 SQL 默认脱敏的原则一致。
 
-**字符集与二进制编码（`--default-charset` / `--hex-blob`）：**
+**字符集与二进制编码（`--default-charset` / `--blob-encoding`）：**
 
 工具遵循 mysqldump 的字符集惯用法，存在两条**相互独立**的编码边界：
 
@@ -250,7 +250,7 @@ imex export ... --threads 4 \
 
 这 16 个名字是 **MySQL 方言自己的词表**（`internal/backend/charset_mysql.go`，134 轮自 `cmd/validate.go` 下沉），`cmd` 只保留「不认识的字符集」那句文案与它在校验顺序里的位置；`--engine pg` 用的是另一张表，映射到 `client_encoding` 的五个名字（见下方「PostgreSQL 引擎」一节）；`--engine dm` 沿用这 16 个名字做**文件编码**的判定，但连接串里没有对应的字符集参数，服务端一侧的字符集由实例与角色配置决定（见下方「达梦引擎」一节）。
 
-一旦 `--default-charset` 不是 `utf8mb4`，**二进制列（BLOB/BINARY/VARBINARY/BIT 等）自动以 `0x` 十六进制字面量写出**（等价 mysqldump `--hex-blob`）：十六进制为纯 ASCII，既**字符集免疫**（不被连接转码破坏），又**自描述**（读取端凭 `0x` 前缀识别）。DEL 与 SQL 两种文本格式都采用同一 `0x` 表示。可用 `--hex-blob` 强制开启、`--no-hex-blob` 强制关闭（非 utf8mb4 关闭时会打印告警，提示原始字节可能被转码损坏）。默认（utf8mb4、hex 关）下输出与旧行为逐字节一致。
+一旦 `--default-charset` 不是 `utf8mb4`，**二进制列（BLOB/BINARY/VARBINARY/BIT 等）自动以 `0x` 十六进制字面量写出**（等价 mysqldump `--hex-blob`，即本工具 `--blob-encoding hex`）：十六进制为纯 ASCII，既**字符集免疫**（不被连接转码破坏），又**自描述**（读取端凭 `0x` 前缀识别）。DEL 与 SQL 两种文本格式都采用同一 `0x` 表示。二进制列的编码由**单个** `--blob-encoding` 控制：`auto`（默认，由引擎与字符集判定）、`hex`（强制开启）、`raw`（强制原始透传，非 utf8mb4 下会打印告警，提示原始字节可能被转码损坏）。默认（utf8mb4、auto）下输出与旧行为逐字节一致。
 
 导入侧会把 `0x` 还原成字节，但判定条件不同：**SQL** 格式中字符串一律带引号，因此只有**不带引号**的 `0x…` 令牌才被解码（引号内是普通文本）；**DEL** 格式多一层歧义（`--no-char-del` 时全是裸字段），因此要求**同时满足**「该字段无引号 + 目标列是二进制类型（导入前用 `information_schema` 查得）+ 令牌是合法偶数长度十六进制」。任一条件不满足就按原文处理——例如写入 varchar 列的 `"0xdead"` 仍是这 6 个字符。孤立 `0x` 解码为**空字节串**（与 NULL 区分）。
 
@@ -277,8 +277,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--batch-size` | | 读→写交接每批的行数（仅单线程导出流水线；与 `--threads>1` 同时显式给出即用法错误，退出码 2） | `1000` |
 | `--pipeline-buffer` | | 读→写交接队列深度（批数；0=同步交接；仅单线程导出，与 `--threads>1` 同时显式给出即用法错误，退出码 2） | `10` |
 | `--default-charset` | | 连接与输出文件字符集（见上方说明；utf8mb4/utf8/latin1/ascii/gbk/gb18030。`--engine pg` 时它映射为 `client_encoding`，只认五个名字，见「PostgreSQL 引擎」；`--engine dm` 时它只管产物文件的文本编码，连接串里没有对应参数，见「达梦引擎」） | `utf8mb4` |
-| `--hex-blob` | | 二进制列强制写为 `0x` 十六进制字面量（非 utf8mb4 时自动开启）；仅 DEL/SQL 文本格式，`--format parquet` 下传入报错 | `false` |
-| `--no-hex-blob` | | 强制二进制列原样透传（非 utf8mb4 下可能损坏，会打印告警）；与 `--hex-blob` 互斥；`--format parquet` 下传入报错 | `false` |
+| `--blob-encoding` | | 二进制列编码：`auto`（默认，由引擎与字符集判定）、`hex`（强制 `0x` 十六进制字面量）、`raw`（强制原始透传，非 utf8mb4 下可能损坏并打印告警）；仅 DEL/SQL 文本格式，`--format parquet` 下显式传入报错 | `auto` |
 | `--parquet-compression` | | Parquet 页压缩算法（none/snappy/zstd）；仅 `--format parquet`，其它格式下传入报错（退出码 2）。导入无需指定：编解码器记录在文件 footer 里 | `none` |
 
 > Parquet 压缩取舍（30 万行实测）：`snappy` 导出耗时约 +4%，文本类数据体积约为原来的 1/10；`zstd` 更小（同一份数据约为 1/58）但耗 CPU 与内存明显更多，**不可压缩数据**（已随机的二进制）三者体积接近，压缩纯属浪费。导入侧三种编码耗时与内存几乎一样（编解码器从 footer 读，无需选项）。
@@ -297,13 +296,14 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--timestamp-fmt` | 时间戳格式（作用于 DATETIME/TIMESTAMP 列） | `yyyy-MM-dd HH:mm:ss` |
 | `--date-fmt` | 日期格式（作用于 DATE 列） | `yyyy-MM-dd` |
 | `--no-char-del` | 不使用字符串定界符（裸字段不转义：数据含列/行分隔符时导出报错） | `false` |
-| `--no-col-names` | 不输出列名 | `false` |
+| `--header` | 表头行开关：`on`（默认）输出列名首行、`off` 不输出 | `on` |
 
 **全局选项：**
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
 | `--log-level` | 日志级别（debug/info/warn/error） | `info` |
+| `--log-format` | 日志布局 `console`/`text`（亦 `IMEX_LOG_FORMAT`）；与 `--log-level` 同层同处 | `console` |
 | `--error-stack` | 失败时打印完整调用堆栈（可用 `IMEX_ERROR_STACK=1`） | `false` |
 | `--echo-sql-values` | 失败 SQL 回显内联真实数据值（默认脱敏，可用 `IMEX_ECHO_SQL_VALUES=1`） | `false` |
 | `--no-sql-tag` | 不在工具主动执行的语句前加 `/* imex:<commit> */` 归因注释（默认加，可用 `IMEX_NO_SQL_TAG=1`） | `false` |
@@ -378,13 +378,14 @@ imex import [连接选项] [导入选项] [修饰选项]
 | `--row-count` | 最多导入 n 行 | `0`（无限制） |
 | `--commit-count` | 每 n 行提交一次事务 | `1000` |
 | `--no-char-del` | 不使用字符串定界符（裸字段不转义：数据含列/行分隔符时导出报错） | `false` |
-| `--no-col-names` | 输入文件第一行不是列名。无表头时必须同时用 `-c/--columns` 指定目标列，否则报清晰错误；反过来，只给 `-c` 而不给 `--no-col-names` 时第一行仍按列名行处理并被丢弃（文件本身无法区分两种情况），此时若这些字段与目标表列名全不匹配，工具会发出 `the first record of the input file was treated as the column header and not imported` 的 WARN 日志（`--messages` 打开时同样进该文件），提示补上 `--no-col-names` | `false` |
+| `--header` | 输入文件第一行不是列名。无表头时必须同时用 `-c/--columns` 指定目标列，否则报清晰错误；反过来，只给 `-c` 而不给 `--header=off` 时第一行仍按列名行处理并被丢弃（文件本身无法区分两种情况），此时若这些字段与目标表列名全不匹配，工具会发出 `the first record of the input file was treated as the column header and not imported` 的 WARN 日志（`--messages` 打开时同样进该文件），提示补上 `--header=off` | `on` |
 
 **全局选项：**
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
 | `--log-level` | 日志级别（debug/info/warn/error） | `info` |
+| `--log-format` | 日志布局 `console`/`text`（亦 `IMEX_LOG_FORMAT`）；与 `--log-level` 同层同处 | `console` |
 | `--error-stack` | 失败时打印完整调用堆栈（可用 `IMEX_ERROR_STACK=1`） | `false` |
 | `--echo-sql-values` | 失败 SQL 回显内联真实数据值（默认脱敏，可用 `IMEX_ECHO_SQL_VALUES=1`） | `false` |
 | `--no-sql-tag` | 不在工具主动执行的语句前加 `/* imex:<commit> */` 归因注释（默认加，可用 `IMEX_NO_SQL_TAG=1`） | `false` |
@@ -427,7 +428,7 @@ imex list <object|缩写> [连接选项] [查询选项]
 
 | 选项 | 说明 | 默认值 |
 |------|------|--------|
-| `--no-col-names` | 不打印表头行 | `false` |
+| `--header` | `off` 不打印表头行 | `on` |
 | `--pattern` | 名称列 `LIKE` 过滤 | 空 |
 | `--all` | 不给 `-D` 时也包含系统库 | `false` |
 | `--type` | `tables` 选 `base`/`view`/`all`；`routines` 选 `procedure`/`function`/`all` | `base` / `all` |
@@ -487,12 +488,14 @@ imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 
 对象名可以自带库限定（`mydb.users`、`` `mydb`.`users` ``），此时不需要 `-D`；否则必须给 `-D`，两者都没有是用法错误退出码 `2`。引号内的双写反引号是转义，所以 `` `a.b`.`c` `` 只在第二个点处切分。输出通道与 `list` 完全同一张表（含 `--output`/`--no-overwrite`/`--messages` 与同路径拒绝）。
 
+`show` 与其它四个命令一样接受 `--header=on/off`（默认 `on`，非法值退出码 2），但它写的是单条 CREATE 定义文本而不是表格，没有表头行，因此取值只做校验、不改变产物；旧的 `--no-col-names` 已删除且不留别名。
+
 ```bash
 imex show tab users -D mydb                     # 打到 stdout
 imex show vws v_orders -D mydb -o /backup/v_orders.sql
 imex show prc build_etl -D mydb -o /backup/etl.sql
 imex show tab mydb.users                        # 名字自带库，不需要 -D
-imex list tab -D mydb --no-col-names | awk '{print $2}' | while read -r t; do
+imex list tab -D mydb --header=off | awk '{print $2}' | while read -r t; do
   imex show tab "$t" -D mydb -o "/backup/ddl/$t.sql" -m /backup/ddl/run.log
 done
 ```
@@ -514,7 +517,7 @@ SQL 来源三选一，互斥：位置参数给一条、`-f` 指定脚本、或�
 | `-f, --file` | 从该文件读 SQL（与位置参数、stdin 互斥） |
 | `-D, --database` | 语句运行的默认库（亦 `IMEX_DATABASE`） |
 | `--engine` | `mysql`／`pg`／`dm`，决定顶层 `;` 的切分规则 |
-| `--no-col-names` | 结果集不打表头行 |
+| `--header` | `off` 令结果集不打表头行 | `on` |
 | `-o`/`-m`/`--no-overwrite` | 与 `list`/`show` 完全同一套输出通道 |
 
 ```bash
@@ -627,7 +630,7 @@ imex list --engine pg -h 127.0.0.1 -u pgprobe -p pass -D pgprobe tables
 |-------------|----------|
 | `show evt` | PostgreSQL 没有事件调度器，没有可打印的事件定义；定时作业在 `cron` 或 `pgAgent` 里 |
 | `list evt` | PostgreSQL 没有事件调度器，定时作业在 `cron` 或 `pgAgent` 里 |
-| `export --no-hex-blob` | `bytea` 走文本协议时裸 NUL 报 `SQLSTATE 22021`，pg 侧恒用 `0x` 十六进制，关不掉 |
+| `export --blob-encoding raw` | `bytea` 走文本协议时裸 NUL 报 `SQLSTATE 22021`，pg 侧恒用 `0x` 十六进制，关不掉 |
 
 曾经被拒、现已放行的：`export --threads > 1` 的并行分片导出——分片元数据改读 `pg_catalog`（主键／唯一键／列类型／行数估计）、标识符用双引号、占位符用 `$n`、边界采样与 `MIN/MAX` 也按 pg 方言，每个 worker 各自开 `BEGIN ISOLATION LEVEL REPEATABLE READ`；产物与 `--threads 1` 逐字节一致（含 `BOOL`／`DATE`／`TIMESTAMP`／`FLOAT` 的文本改写），**PG 15／16／17 真库实测通过**；`-f sql` 随 `--sql-dialect` 增量打通（导出按 pg 方言写、导入由方言无关读取器解析后重新绑定，不再整体拒绝）；`--session-var` 与 MySQL 同一口径生效（每条新物理连接执行 `SET`，见上「会话变量」）；`--mode create` 则不是引擎级拒绝，而是从三个引擎整体移除的非法值（任何引擎传入都 `invalid --mode "create"`、退出 2）。
 
@@ -675,7 +678,7 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 | `list events` | DM8 Oracle 模式没有事件调度器，没有可列的事件；定时任务在 DM 的 job 包里。其余八个对象都可用（`views`／`triggers`／`routines` 读 `ALL_*`，见上） |
 | `--mode insert_update` | 方言层的 upsert 在达梦上根本没实现，绕过 CLI 直接调库的调用方同样失败 |
 | `--session-var` | `SET <name>=<value>` 是 MySQL 会话语法，本工具不翻译，请写进服务器或角色的配置 |
-| `--no-hex-blob` | 达梦拒绝文本值里出现 NUL 字节，二进制列恒以 `0x` 十六进制写出，关不掉 |
+| `--blob-encoding raw` | 达梦拒绝文本值里出现 NUL 字节，二进制列恒以 `0x` 十六进制写出，关不掉 |
 
 > `--mode create` 不在上表：它不是达梦级拒绝，而是从三个引擎整体移除的非法值（任何引擎传入都 `invalid --mode "create"`、退出 2）。`--session-var` 在 pg 侧已随本版本放行，达梦侧仍未翻译、保持拒绝。
 
@@ -683,11 +686,11 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 
 **导回达梦时的偏移量写法**：带时区的三个时间戳类型（`TIMESTAMP WITH TIME ZONE`、`DATETIME WITH TIME ZONE`、`TIMESTAMP WITH LOCAL TIME ZONE`）在导入侧会被补一个空格再发出去——文件里是 `…:09.123456+08:00`，绑进语句的是 `…:09.123456 +08:00`。达梦 Oracle 模式的字面量解析只认后者，前者一律 `Error 6015: Invalid datetime type format`、整批一行不进（141 轮实测：`+08:00`、`-07:00`、`+00:00` 三种偏移、0/3/6 位小数、`0001-01-01` 都在加空格后按同一时刻入库；`+0800` 这种没冒号的写法与 `[]byte` 绑定都读不进去，各报 `6015` 与 `6007`）。这条改写只认「偏移量直接贴在秒后面」的形状，已经带空格的、不带偏移的、以及 varchar 里恰好长成这样的值都原样发出；它由目标列的类型判定，因此 MySQL 与 PostgreSQL 两侧的行为一字不变，产物文件的字节也不变（同一张 26 列表用修复前后两个二进制各导一次，产物逐字节相同）。`TIME WITH TIME ZONE` 是另一回事：达梦对它的字符串绑定无论加不加空格都报 `Error 6103: Invalid datetime value`，只有 Go 的 `time.Time` 才收，因此这一列的 DEL/parquet 往返在达梦侧走不通，工具不伪造。
 
-**绑进达梦时的取值形状**（142 轮）：达梦驱动会把交给它的**文本**再用 64 位浮点解析一遍，所以 15 位以上的数字会漂、超过 int64 的整数会**静默回绕**、而 `BIT`/`BOOLEAN` 列只认 `"0"`/`"1"`/`"true"`/`"false"` 四个词，别的一律落 `0`。导入侧因此按目标列的类型改绑定形态（不是改文件）：`NUMBER`/`DECIMAL`/`NUMERIC` 走驱动的精确小数（实测 `899999999999999.99999` 原样落库，旧二进制落 `900000000000000`；`99999999999999999999` 进 BIGINT 现在是服务器的 `Error -6102: Digital overflow`，旧二进制悄悄存成 `7766279631452241920`），`TINYINT`/`SMALLINT`/`INT`/`BIGINT` 先按四舍五入远离零取整再精确绑定（与今天文本路的落点一致，只把越界的那些从回绕换成报错），`BIT`/`BOOLEAN` 归一到「非零即 1」，parquet 与 `--hex-blob` 转储里的原始字节进数值列时先变成它承载的无符号整数文本（`0xaa`→170，旧二进制整批 `Error 6007: Data convertion error`）。MySQL 与 PostgreSQL 一侧什么都不改：两侧对每一列都交回「原样绑定」，同一份夹具导进 MySQL 的 `DECIMAL(20,5)` 在修复前后逐字节同值。
+**绑进达梦时的取值形状**（142 轮）：达梦驱动会把交给它的**文本**再用 64 位浮点解析一遍，所以 15 位以上的数字会漂、超过 int64 的整数会**静默回绕**、而 `BIT`/`BOOLEAN` 列只认 `"0"`/`"1"`/`"true"`/`"false"` 四个词，别的一律落 `0`。导入侧因此按目标列的类型改绑定形态（不是改文件）：`NUMBER`/`DECIMAL`/`NUMERIC` 走驱动的精确小数（实测 `899999999999999.99999` 原样落库，旧二进制落 `900000000000000`；`99999999999999999999` 进 BIGINT 现在是服务器的 `Error -6102: Digital overflow`，旧二进制悄悄存成 `7766279631452241920`），`TINYINT`/`SMALLINT`/`INT`/`BIGINT` 先按四舍五入远离零取整再精确绑定（与今天文本路的落点一致，只把越界的那些从回绕换成报错），`BIT`/`BOOLEAN` 归一到「非零即 1」，parquet 与 `--blob-encoding hex` 转储里的原始字节进数值列时先变成它承载的无符号整数文本（`0xaa`→170，旧二进制整批 `Error 6007: Data convertion error`）。MySQL 与 PostgreSQL 一侧什么都不改：两侧对每一列都交回「原样绑定」，同一份夹具导进 MySQL 的 `DECIMAL(20,5)` 在修复前后逐字节同值。
 
-**跨引擎导入达梦时，二进制与 `BIT` 列请用 `--hex-blob` 或 parquet**：MySQL 的 DEL 转储默认把 `BIT`/`BLOB` 的存储字节**原样写在字段的引号里**（只有字符集装不下这些字节时才强制 `0x…`），那种串到读取器手里已经是文本、没法和真正的列内容区分。工具只把「不含任何可打印字节」的短串（≤ 8 字节）按载荷处理——`BIT(1)` 的 `0x01`/`0x00` 因此能正确落 `1`/`0`；而像 `BIT(8)` = `0x41`（恰是字符 `A`）这种含可打印字节的载荷**故意不猜**，它仍按文本走，结果是 BIT 目标落 `0`、数值目标报 `6007`。要可靠地搬这些列，导出时加 `--hex-blob`（`0x…` 记法），或改用 `-f parquet`（按文件自己的 schema 认字节）：实测这两种写法在达梦的 `BIT`/`BOOLEAN`/`INT`/`NUMBER`/`FLOAT` 五类目标上逐格正确落库。
+**跨引擎导入达梦时，二进制与 `BIT` 列请用 `--blob-encoding hex` 或 parquet**：MySQL 的 DEL 转储默认把 `BIT`/`BLOB` 的存储字节**原样写在字段的引号里**（只有字符集装不下这些字节时才强制 `0x…`），那种串到读取器手里已经是文本、没法和真正的列内容区分。工具只把「不含任何可打印字节」的短串（≤ 8 字节）按载荷处理——`BIT(1)` 的 `0x01`/`0x00` 因此能正确落 `1`/`0`；而像 `BIT(8)` = `0x41`（恰是字符 `A`）这种含可打印字节的载荷**故意不猜**，它仍按文本走，结果是 BIT 目标落 `0`、数值目标报 `6007`。要可靠地搬这些列，导出时加 `--blob-encoding hex`（`0x…` 记法），或改用 `-f parquet`（按文件自己的 schema 认字节）：实测这两种写法在达梦的 `BIT`/`BOOLEAN`/`INT`/`NUMBER`/`FLOAT` 五类目标上逐格正确落库。
 
-**把这份文件导进 MySQL/PostgreSQL 时怎么建列**（现测，MariaDB 10.6.23 严格模式与 PostgreSQL 14.24）：`DATE`/`TIMESTAMP`/`DATETIME` → `DATETIME`/`DATETIME(6)`（pg `timestamp`），**不要**建 `DATE`——那一列会把时分秒静默截掉，导入退出码仍是 `0`；带 `WITH TIME ZONE` 的列 pg 建 `timestamptz` 直接可用，MySQL 没有任何日期时间列能接 `'…+08:00'`（一律 `Error 1292`），要么建 `VARCHAR`/`TEXT`，要么在导出语句里由服务端先剥掉偏移；`BIT`/`BOOLEAN` → MySQL 建 `TINYINT(1)` 总可用；`BIT(1)` 自 `v0.23.0` 起也能直收 DEL 里的对端布尔文本 `'1'`/`'0'`（旧的 `Error 1406` 在 DEL 路径已消除，见变更记录 144），惟 parquet 的 BIT 载荷仍建议 `TINYINT(1)` 或按上一条加 `--hex-blob`；pg 的 `bit(1)`/`boolean`/`smallint` 都可用；`FLOAT`/`DOUBLE` 若可能存 `±Inf`/`NaN`，MySQL 侧建 `TEXT`/`VARCHAR`（`DOUBLE` 报 `Error 1366`），pg 侧 `double precision` 认这三种拼法；零值时间 `0001-01-01 00:00:00` 超出 MySQL `TIMESTAMP` 的范围，用 `DATETIME`；`VARCHAR2` 里的长数字串照字符落库，别默认建 `BIGINT`（26 位就 `Error 1264`）。逐列细节见 `docs/requirements.md` 的 2.1.12 与 11.2。
+**把这份文件导进 MySQL/PostgreSQL 时怎么建列**（现测，MariaDB 10.6.23 严格模式与 PostgreSQL 14.24）：`DATE`/`TIMESTAMP`/`DATETIME` → `DATETIME`/`DATETIME(6)`（pg `timestamp`），**不要**建 `DATE`——那一列会把时分秒静默截掉，导入退出码仍是 `0`；带 `WITH TIME ZONE` 的列 pg 建 `timestamptz` 直接可用，MySQL 没有任何日期时间列能接 `'…+08:00'`（一律 `Error 1292`），要么建 `VARCHAR`/`TEXT`，要么在导出语句里由服务端先剥掉偏移；`BIT`/`BOOLEAN` → MySQL 建 `TINYINT(1)` 总可用；`BIT(1)` 自 `v0.23.0` 起也能直收 DEL 里的对端布尔文本 `'1'`/`'0'`（旧的 `Error 1406` 在 DEL 路径已消除，见变更记录 144），惟 parquet 的 BIT 载荷仍建议 `TINYINT(1)` 或按上一条加 `--blob-encoding hex`；pg 的 `bit(1)`/`boolean`/`smallint` 都可用；`FLOAT`/`DOUBLE` 若可能存 `±Inf`/`NaN`，MySQL 侧建 `TEXT`/`VARCHAR`（`DOUBLE` 报 `Error 1366`），pg 侧 `double precision` 认这三种拼法；零值时间 `0001-01-01 00:00:00` 超出 MySQL `TIMESTAMP` 的范围，用 `DATETIME`；`VARCHAR2` 里的长数字串照字符落库，别默认建 `BIGINT`（26 位就 `Error 1264`）。逐列细节见 `docs/requirements.md` 的 2.1.12 与 11.2。
 
 **批次与超时**：占位符是位置 `?`，与 MySQL 同形，攒批 INSERT 每行重复 `(?,?)`；单条语句参数上限 65535。批次字节预算这一维在达梦没有可证的等价物（Oracle 模式没有 `max_allowed_packet` 那种会话可见的语句字节上限），因此取刻意保守的 **4 MiB** 回退值，日志直说按 4 MiB 估——宁可批次小，也不赌服务端会收下更大的语句。超时按驱动自己的单位换算：`--connect-timeout` 进 `connectTimeout`（**毫秒**），`--socket-read-timeout` 向上进位进 `socketTimeout`（**秒**）；`--socket-write-timeout` 在驱动侧没有对应参数，它不改变达梦连接的写超时。
 
@@ -806,7 +809,7 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 imex import -h 127.0.0.1 -u root -p password -D mydb \
   -i /backup/data.del \
   --columns "name,age,email" \
-  --no-col-names \
+  --header=off \
   -t users
 
 # 方式2：名称映射（显式指定文件列到表列的映射）
@@ -872,15 +875,15 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 | `--log-format` / `IMEX_LOG_FORMAT` | `console`（默认）/ `text`；**两者同时给出时由 env 覆盖**（与其余 `IMEX_*` 开关一致：env 是覆盖，不是补默认值） | `invalid --log-format`，退出码 2（此前非法取值静默回落默认布局） |
 | `--format` / `--mode` | 各自枚举白名单 | 退出码 2 |
 | `--default-charset` | 字符集白名单；非 `utf8mb4` 不可用于 `parquet`；`gbk`/`gb18030` 不可用于 `sql`（按字节转义不安全） | `invalid --default-charset` / 格式冲突，退出码 2 |
-| `--hex-blob` + `--no-hex-blob` | 二者互斥 | `mutually exclusive`，退出码 2 |
-| `--char-del` `--col-del` `--row-del` `--escape` `--no-escape` `--timestamp-fmt` `--date-fmt` `--no-char-del` `--no-col-names` | 仅 `--format del` 生效（SQL/Parquet 写端不使用这些修饰） | `--xxx can only be used with --format del`，退出码 2 |
+| `--blob-encoding` 非法值 | 只接受 `auto`/`hex`/`raw` 三值（原两个互斥开关已合并为单选项，不再有互斥错误） | `invalid --blob-encoding "x": must be one of auto/hex/raw`，退出码 2 |
+| `--char-del` `--col-del` `--row-del` `--escape` `--no-escape` `--timestamp-fmt` `--date-fmt` `--no-char-del` `--header` | 仅 `--format del` 生效（SQL/Parquet 写端不使用这些修饰） | `--xxx can only be used with --format del`，退出码 2 |
 | DEL 分隔符两两同值（`--col-del`/`--row-del`/`--char-del`/`--escape`）| 五对组合必须互不相同：列=行、字符=列、字符=行、转义=列、转义=行；`--escape` 与 `--char-del` 同值**合法**（默认 `"` 即双写转义），`--no-char-del` 免除字符相关项、`--no-escape` 免除转义相关项；判定按固定顺序（char、col、row、escape）取第一条冲突 | `invalid --col-del ",": it is the same as --row-del, which makes the file layout ambiguous`，退出码 2。此前这类组合被接受：实测 200 行导出用 `--col-del , --row-del ,` 得到 14,501 B、**0 个行分隔符**、402 个逗号的文件，用同样参数回读时读出 401 行、**落库 0 行**（全部失败）却只报 `import aborted`|
 | `--shard-key`（导出）指向的列 | 显式给出的分片键必须存在于目标表，但**校验只发生在并行路径**；自动检测失败仍回落单线程。`--threads 1` 或并行请求回落到单线程时，这个值既不被读取也不被校验，运行改记 `warn`（`single-threaded export ignores --shard-key`，带 `shard_key`/`threads`/`fallback`/`hint`），配置记录在写时就已确定用不上的场合（`--threads 1`）追加 `shard_key_ignored=true`；退出码仍为 0，产物与不带该选项逐字节一致 | `invalid --shard-key "nosuchcol" for table "t": <原因>`，退出码 2（并行路径；此前只记一条 `warn` 并按单线程跑完、报告成功）|
-| `--hex-blob` / `--no-hex-blob` + `--format parquet` | Parquet 二进制列原生按 `binary` 存储，两个开关都不改变输出 | `--hex-blob cannot be used with --format parquet`，退出码 2 |
+| `--blob-encoding` + `--format parquet` | Parquet 二进制列原生按 `binary` 存储，该选项不改变输出 | `--blob-encoding cannot be used with --format parquet`，退出码 2 |
 | `--parquet-compression` | `none`/`snappy`/`zstd` 三选一；仅 `--format parquet` 生效 | 非法值 `invalid --parquet-compression "gzip": must be one of none/snappy/zstd`、格式越界 `--parquet-compression can only be used with --format parquet`，均退出码 2 |
 | `encrypt` 的位置参数 | 恰好 1 个（密码明文） | `imex encrypt accepts 1 argument(s), received N`，退出码 2 |
 
-关联校验：`--statement-size`/`--extended-insert` 仅对 `--format sql` 生效（`--create`/`--no-data` 已随「SQL 导出只导数据」一并删除，不再登记，传入即为未知选项）（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--no-col-names` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--hex-blob`/`--no-hex-blob` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，开关无意义）；`--mode` 的三个合法值为 `insert`/`insert_update`/`replace`（历史上的 `create` 已整体移除，传入即 `invalid --mode "create"`，退出 2）；导出侧 `-q` 必填，`-q @文件` 从文件读取 SQL（文件不存在、内容为空或 `@` 后缺路径均为用法错误，退出码 2）。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。另有一类**按执行路径判定**的越界：`export --threads>1` 时显式给出 `--batch-size` 或 `--pipeline-buffer` 即为用法错误（退出码 2），因为它对分片流式路径不改变任何输出；该校验排在 `--threads`→`--batch-size`→`--pipeline-buffer` 的顺序里，因此非法的 `--threads` 或非法的选项值仍先于冲突报出。另有两类**跨选项 / 跨服务器**的判定：DEL 的四个文本修饰 `--char-del`/`--col-del`/`--row-del`/`--escape` 之间必须互不相同（例外只有 `--escape` 与 `--char-del` 同值，即默认的双写转义；`--no-char-del`、`--no-escape` 各自免除相关项），同值写出的文件无法回读，因此按 char→col→row→escape 的固定顺序取第一条冲突报用法错误（退出码 2），同一条组合在导出与导入两侧判定一致；`--threads` 与目标库 `@@max_connections`、并行导入重放缓冲总量的关系则不是范围能表达的，连上库之后各记一条 `warn`（见上表）。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--hex-blob`（非 utf8mb4 自动开启）保证（见上文"字符集与二进制编码"）。
+关联校验：`--statement-size`/`--extended-insert` 仅对 `--format sql` 生效（`--create`/`--no-data` 已随「SQL 导出只导数据」一并删除，不再登记，传入即为未知选项）（这一串是导出侧的 SQL 专属校验；导入侧的 `--statement-size` 与格式无关，DEL/SQL/Parquet 三种输入都生效），`--char-del`/`--col-del`/`--row-del`/`--escape`/`--no-escape`/`--timestamp-fmt`/`--date-fmt`/`--no-char-del`/`--header` 仅对 `--format del` 生效，显式传入且格式不符时一律报错而非静默忽略；`--blob-encoding` 对 SQL 与 DEL 有效，与 `--format parquet` 组合时同样报错（Parquet 二进制列已是原生 binary，该选项无意义）；`--mode` 的三个合法值为 `insert`/`insert_update`/`replace`（历史上的 `create` 已整体移除，传入即 `invalid --mode "create"`，退出 2）；导出侧 `-q` 必填，`-q @文件` 从文件读取 SQL（文件不存在、内容为空或 `@` 后缺路径均为用法错误，退出码 2）。这三类判据、报错文案、`--help` 里追加的范围标记（`(only with --format del)` / `(only with --format sql)` / `(not with --format parquet)`）以及配置回显要打印的字段集合，全部由 `internal/config/formatscope.go` 这一张登记表产出，因此不会出现帮助文本说能用、运行时却报错，或反过来回显了一堆被忽略的字段的读感；新增一个格式专属选项只需在表里加一行。另有一类**按执行路径判定**的越界：`export --threads>1` 时显式给出 `--batch-size` 或 `--pipeline-buffer` 即为用法错误（退出码 2），因为它对分片流式路径不改变任何输出；该校验排在 `--threads`→`--batch-size`→`--pipeline-buffer` 的顺序里，因此非法的 `--threads` 或非法的选项值仍先于冲突报出。另有两类**跨选项 / 跨服务器**的判定：DEL 的四个文本修饰 `--char-del`/`--col-del`/`--row-del`/`--escape` 之间必须互不相同（例外只有 `--escape` 与 `--char-del` 同值，即默认的双写转义；`--no-char-del`、`--no-escape` 各自免除相关项），同值写出的文件无法回读，因此按 char→col→row→escape 的固定顺序取第一条冲突报用法错误（退出码 2），同一条组合在导出与导入两侧判定一致；`--threads` 与目标库 `@@max_connections`、并行导入重放缓冲总量的关系则不是范围能表达的，连上库之后各记一条 `warn`（见上表）。SSL/TLS 选项已移除，`--ssl-*` 现为未知选项（退出码 2）。OceanBase 租户选项 `--tenant` 已移除（见下节）；`--strip-lzeros` 与 `--dec-pt`（数值列始终输出 MySQL wire text，小数点恒为 `.`）亦已移除。早期的 `--codepage` 已移除——它只描述文件码页且对二进制列有损；连接/文件字符集改由 mysqldump 惯用法的 `--default-charset` 掌管，二进制列的字符集安全由 `--blob-encoding`（`auto` 在非 utf8mb4 下自动开启 hex）保证（见上文"字符集与二进制编码"）。
 
 ### OceanBase 租户连接
 
@@ -936,9 +939,9 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
 
 三个阈值告警只在异常时出现，健康运行一行都不多：`export scan stalled`（扫描连续 **10 秒**取不到行，每 64 行读一次时钟；实测把 `SLEEP(12)` 夹在第 500 行得到 `gap=12.000s` 且这 12 秒记为 `write` 而不是 `first_row`）、`slow insert batch`（**单批**超过 **5 秒**，带 `rows`/`bytes`/`duration`；实测触发器每行 `SLEEP(0.002)`、`--batch-size 5000` 记 `duration=10.430s`，而同样的数据用默认 `--batch-size 1000` 分成 5 批各约 2 秒就不告警）、`slow commit`（单次提交超过 **5 秒**，带 `session`/`rows`/`duration`）。
 
-版本横幅（`imex starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后是配置参数快照（`export/import config`，由 `NewExporter`/`NewImporter` 在**建立连接之前**打印，因此连不上服务端时也看得到参数；原先重复它的 `export started`/`import started` 已删除）。快照只打印**所选 `--format` 真正读取的字段**，判据与用法错误的拒绝逻辑、`--help` 里的范围标记同出自一张登记表 `internal/config/formatscope.go`：`-f sql` 不再打印 `char_del`/`col_del`/`row_del`/`escape`/`timestamp_fmt` 这些被忽略的 DEL 布局，`-f del` 不再打印 `statement_size`/`no_create`/`extended_insert`，`-f parquet` 两类都不打印（实测：`export` 的回显改动前对三种格式是**逐字节相同**的同一套 26 项，现在分别是 25/20/15；`import` 现在是 29/20/20）。字段按「连接 → 输入输出 → 并行与流水线 → 字符集 → 该格式的专属布局 → 日志」排列，且补齐了 DEL 写入器一直在读、快照却从未打印的 `date_fmt`、`no_escape`、`no_char_del` 三项；`hex_blob` 打印的是**生效值**（`--hex-blob`/`--no-hex-blob` 都没给时由字符集决定），与写入器用的是同一个判定函数；唯一例外是 `imex version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `imex version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**：主要事件词是 `config`/`progress`/`completed`/`aborted`/`failed`（`started` 只出现在版本横幅 `imex starting` 里；如 `export config`、`shard export completed`、`insert batch failed`、`worker completed`），另有 `retrying`/`executing`/`applied`/`derived` 等状态词与交互 SQL 记录 `db interaction`（见「SQL 交互回显」），诊断告警则以 `slow` 开头（`slow insert batch`、`slow commit`）或以 `stalled` 结尾（`export scan stalled`），大小写敏感的一条 grep 就能覆盖全链路；配置、进度、完成、中止每次运行至多一条，慢批、扫描停顿与交互 SQL 按发生次数各一条。默认 `console` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。进度记录随 `--progress-interval` 定时打印，没有关闭开关；带 `--messages` 时进度同样写进文件。
+版本横幅（`imex starting`，含 version/build_time/git_commit/go_version/command）始终作为运行的**首行**日志输出，随后是配置参数快照（`export/import config`，由 `NewExporter`/`NewImporter` 在**建立连接之前**打印，因此连不上服务端时也看得到参数；原先重复它的 `export started`/`import started` 已删除）。快照只打印**所选 `--format` 真正读取的字段**，判据与用法错误的拒绝逻辑、`--help` 里的范围标记同出自一张登记表 `internal/config/formatscope.go`：`-f sql` 不再打印 `char_del`/`col_del`/`row_del`/`escape`/`timestamp_fmt` 这些被忽略的 DEL 布局，`-f del` 不再打印 `statement_size`/`no_create`/`extended_insert`，`-f parquet` 两类都不打印（实测：`export` 的回显改动前对三种格式是**逐字节相同**的同一套 26 项，现在分别是 25/20/15；`import` 现在是 29/20/20）。字段按「连接 → 输入输出 → 并行与流水线 → 字符集 → 该格式的专属布局 → 日志」排列，且补齐了 DEL 写入器一直在读、快照却从未打印的 `date_fmt`、`no_escape`、`no_char_del` 三项；`hex_blob` 打印的是**生效值**（`--blob-encoding auto` 时由引擎与字符集决定），与写入器用的是同一个判定函数；唯一例外是 `imex version` 子命令——它只往标准输出打印版本、Git commit、构建时间与 Go 版本四行，不产生任何日志记录（这些字段与横幅完全重复），因此可以安全地 `imex version | grep ...`。所有记录的消息统一为**小写、单行的 `<对象> <事件>`**：主要事件词是 `config`/`progress`/`completed`/`aborted`/`failed`（`started` 只出现在版本横幅 `imex starting` 里；如 `export config`、`shard export completed`、`insert batch failed`、`worker completed`），另有 `retrying`/`executing`/`applied`/`derived` 等状态词与交互 SQL 记录 `db interaction`（见「SQL 交互回显」），诊断告警则以 `slow` 开头（`slow insert batch`、`slow commit`）或以 `stalled` 结尾（`export scan stalled`），大小写敏感的一条 grep 就能覆盖全链路；配置、进度、完成、中止每次运行至多一条，慢批、扫描停顿与交互 SQL 按发生次数各一条。默认 `console` 布局与 `text` 布局都保证**一条记录 = 一个物理行**：值为空或含空白/控制字符/`"`/`\`/`=` 时按 slog 规则加引号转义（`row_del="\n"`、`char_del="\""`、`shard_key=""`），因此打印 DEL 定界符的配置行不会被真实换行拆开，切换 `--log-format` 也不改变字段切分；`--log-format` 只换布局、不改 `--log-level`。进度记录随 `--progress-interval` 定时打印，没有关闭开关；带 `--messages` 时进度同样写进文件。
 
-`--messages` / `-m` 把命令行日志**追加**到该文件（与 DB2 的 `MESSAGES` 一致），文件是这次运行日志的唯一目的地：一条记录一个物理行，本次运行的第一条记录一定是版本横幅（文件在根命令打印横幅之前打开，所以它紧接在已有内容之后，而不是文件的绝对首行），`export/import config`（建连接之前）、定时进度、WARN 告警、`completed` 统计与收尾的 `command failed` 都在里面，stdout 与 stderr 一行也不打印；`--log-level`、`--log-format` 一样作用于文件，退出码不受影响（0 成功、1 运行时错误、2 用法错误），脚本照样能判断成败。已有内容不会被删除，多次运行按各自的横幅分段；工具不做截断、轮转或清理，需要每次独立文件请换路径或先自行删除。实测同一条注定失败的导出：**新文件**下带 `-m` 时 stdout/stderr 均 0 字节、文件 5 条记录、退出 1，而不带 `-m` 那次的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同；先写入 `previous run` 再跑同一命令，旧行仍在，新记录从横幅开始追加。两类例外：未知选项在文件打开前就失败，错误只上 stderr 且不建文件；`-m` 路径无法创建时 `failed to create message file <path>: ...` 也只上 stderr。`--help` 与 `-m` 同时给不产生文件。`list`、`show` 与 `exec` 在这一点上更严格：`--messages` 只装日志与错误，**结果不被它接管**——没有 `--output` 时结果仍去 stdout（屏幕依然全静，因为日志进了文件），有 `--output` 时结果去该文件；`--output` 与 `--messages` 同路径是用法错误退出 2，此时文件已由日志打开过，因此文件里只有记录与那句拒绝。早期版本按 DB2 LOAD/EXPORT 风格另写一份 `SQL3104N/3105N/3107N/3109N/3110N` 报告，那份重复的记录与 `MessageWriter` 已整体删除，告警与失败只保留一条日志记录。会出现 WARN 的场景：导出侧 `--no-hex-blob` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调、无表头文件被当作表头丢弃首行、`insert_update` 命中无唯一键的表；另有三个诊断阈值告警：扫描 10 秒取不到行（`export scan stalled`）、单批 INSERT 超过 5 秒（`slow insert batch`）、单次 COMMIT 超过 5 秒（`slow commit`）。
+`--messages` / `-m` 把命令行日志**追加**到该文件（与 DB2 的 `MESSAGES` 一致），文件是这次运行日志的唯一目的地：一条记录一个物理行，本次运行的第一条记录一定是版本横幅（文件在根命令打印横幅之前打开，所以它紧接在已有内容之后，而不是文件的绝对首行），`export/import config`（建连接之前）、定时进度、WARN 告警、`completed` 统计与收尾的 `command failed` 都在里面，stdout 与 stderr 一行也不打印；`--log-level`、`--log-format` 一样作用于文件，退出码不受影响（0 成功、1 运行时错误、2 用法错误），脚本照样能判断成败。已有内容不会被删除，多次运行按各自的横幅分段；工具不做截断、轮转或清理，需要每次独立文件请换路径或先自行删除。实测同一条注定失败的导出：**新文件**下带 `-m` 时 stdout/stderr 均 0 字节、文件 5 条记录、退出 1，而不带 `-m` 那次的 stderr 与该文件去掉时间戳/PID 前缀后 `diff` 逐行相同；先写入 `previous run` 再跑同一命令，旧行仍在，新记录从横幅开始追加。两类例外：未知选项在文件打开前就失败，错误只上 stderr 且不建文件；`-m` 路径无法创建时 `failed to create message file <path>: ...` 也只上 stderr。`--help` 与 `-m` 同时给不产生文件。`list`、`show` 与 `exec` 在这一点上更严格：`--messages` 只装日志与错误，**结果不被它接管**——没有 `--output` 时结果仍去 stdout（屏幕依然全静，因为日志进了文件），有 `--output` 时结果去该文件；`--output` 与 `--messages` 同路径是用法错误退出 2，此时文件已由日志打开过，因此文件里只有记录与那句拒绝。早期版本按 DB2 LOAD/EXPORT 风格另写一份 `SQL3104N/3105N/3107N/3109N/3110N` 报告，那份重复的记录与 `MessageWriter` 已整体删除，告警与失败只保留一条日志记录。会出现 WARN 的场景：导出侧 `--blob-encoding raw` 搭配非 utf8mb4 字符集、单行 INSERT 超过 `--statement-size`；导入侧读不到 `max_allowed_packet`（按保守值分批）、`--batch-size` 被 65535 占位符上限下调、无表头文件被当作表头丢弃首行、`insert_update` 命中无唯一键的表；另有三个诊断阈值告警：扫描 10 秒取不到行（`export scan stalled`）、单批 INSERT 超过 5 秒（`slow insert batch`）、单次 COMMIT 超过 5 秒（`slow commit`）。
 
 ### 错误堆栈开关
 
@@ -1114,7 +1117,7 @@ SQL 文件的默认布局是**每行一条 INSERT**（mysqldump `--skip-extended
 
 - **`YEAR` 零值**：MySQL/MariaDB 文本协议把 `YEAR(0000)` 发回裸字符串 `0`，直接回导会被服务端两位 YEAR 规则解释成 2000。导出时识别 YEAR 列并统一写成 `0000`，DEL/SQL/Parquet 一致（实测 `--format del` 得 `"1","0000",`，`--format sql` 得 `'0000'`）。
 - **NULL 与空字符串**：DEL 默认模式下 NULL 是不加定界符的空字段、空串是 `""`，可区分；`--no-char-del` 下两者形态相同，回读一律按 NULL。SQL 用 `NULL` 与 `''` 区分。Parquet 用列式 NULL 区分。
-- **二进制列**：DEL/SQL 在 `--hex-blob` 生效时写 `0x…`，空值写 `0x`；Parquet 存原始 BYTE_ARRAY，不做 UTF-8 标注。
+- **二进制列**：DEL/SQL 在 hex 生效（`--blob-encoding hex`，或 `auto` 判定为 hex）时写 `0x…`，空值写 `0x`；Parquet 存原始 BYTE_ARRAY，不做 UTF-8 标注。
 - **日期与时间戳**：`--date-fmt`/`--timestamp-fmt` 仅作用于 DATE 与 DATETIME/TIMESTAMP 列，其余列不受影响。
 
 ## 历史版本记录
@@ -1205,8 +1208,8 @@ imex/
 │   │   ├── password.go          # 密码加密/解密（PBKDF2-HMAC-SHA256 派生 + AES-256-GCM）
 │   │   └── detect.go            # 服务端 max_connections 读取（并行 worker 上限告警）
 │   ├── export/
-│   │   ├── exporter.go          # 导出调度器（单线程流水线、并行分片与合并、hex-blob 判定）
-│   │   ├── configlog.go         # 配置回显（按 --format 过滤字段、hex-blob 取生效值）
+│   │   ├── exporter.go          # 导出调度器（单线程流水线、并行分片与合并、blob-encoding 判定）
+│   │   ├── configlog.go         # 配置回显（按 --format 过滤字段、blob-encoding 取生效值）
 │   │   ├── del_writer.go        # DEL 格式写入器（双写/反斜杠转义、字段缓存优化）
 │   │   ├── sql_writer.go        # SQL 格式写入器（默认每行一条 INSERT、`--extended-insert` 才按字节攒批、快速路径优化）
 │   │   ├── parquet_writer.go    # Parquet 格式写入器（列式存储）

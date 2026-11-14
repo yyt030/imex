@@ -13,7 +13,7 @@ func TestValidatePositionalColumns(t *testing.T) {
 	if err := validatePositionalColumns([]string{"a", "b"}, []string{"x", "y"}); err != nil {
 		t.Errorf("matching counts: err = %v", err)
 	}
-	// Header unknown (--no-col-names): only the names are checked.
+	// Header unknown (--header=off): only the names are checked.
 	if err := validatePositionalColumns([]string{"a", "b"}, nil); err != nil {
 		t.Errorf("no file header: err = %v", err)
 	}

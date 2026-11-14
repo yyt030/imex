@@ -67,7 +67,7 @@ func importConfigFields(cfg *config.ImportConfig) []interface{} {
 		{"no-char-del", "no_char_del", cfg.DelModifier.NoCharDel},
 		{"timestamp-fmt", "timestamp_fmt", cfg.DelModifier.TimestampFmt},
 		{"date-fmt", "date_fmt", cfg.DelModifier.DateFmt},
-		{"no-col-names", "no_col_names", cfg.DelModifier.NoColNames},
+		{"header", "no_col_names", cfg.DelModifier.NoColNames},
 
 		// Logging
 		{"log-level", "log_level", cfg.LogLevel},

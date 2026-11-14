@@ -263,7 +263,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 			if imp.cfg.Format == "del" && !imp.cfg.DelModifier.NoColNames && len(fileColumns) > 0 {
 				// Positional --columns consumes the first record as a header. That is
 				// right for a normal dump and silently drops a row for a
-				// --no-col-names one, and the file alone cannot tell the two apart.
+				// --header=off one, and the file alone cannot tell the two apart.
 				// The one decisive signal is the target table: if none of the consumed
 				// fields is one of its columns, the "header" is probably data, so the
 				// user has to be told which record was dropped and how to keep it.
@@ -271,7 +271,7 @@ func (imp *Importer) Import(ctx context.Context) error {
 					common.Logger.Warn("header check failed", "error", err)
 				} else if ambiguous {
 					warn := fmt.Sprintf("the first record of the input file was treated as the column header and not imported (fields: %s); "+
-						"none of them is a column of table %q, so if the file was exported with --no-col-names add --no-col-names to the import "+
+						"none of them is a column of table %q, so if the file was exported with --header=off add --header=off to the import "+
 						"to load that record as data", strings.Join(fileColumns, ", "), imp.cfg.Table)
 					common.Logger.Warn(warn, "columns", imp.cfg.Columns)
 				}
@@ -458,7 +458,7 @@ func (imp *Importer) finishNoData(startTime time.Time, note string) error {
 
 // validatePositionalColumns checks the positional --columns form ("a,b,c"):
 // mapping happens by position, so the list must have one non-empty name per
-// file column. With --no-col-names the file header is unknown, so only the
+// file column. With --header=off the file header is unknown, so only the
 // names themselves are checked.
 func validatePositionalColumns(targetColumns, fileColumns []string) error {
 	seen := make(map[string]int, len(targetColumns))
@@ -672,7 +672,7 @@ func (imp *Importer) resolveUpsertTarget(ctx context.Context) error {
 // headerLooksLikeData reports whether the fields ReadHeader consumed as a
 // column header are more likely to be a data row. A header written by the tool
 // carries the table's own column names, so when none of the consumed fields is a
-// column of the target table the record is probably data: a --no-col-names dump
+// column of the target table the record is probably data: a --header=off dump
 // imported with positional --columns lands exactly there. An unknown table or an
 // empty column list is not evidence of anything, so it reports false and leaves
 // the import alone.

@@ -71,7 +71,8 @@ func registerExecFlags(cmd *cobra.Command, cfg *config.ExecConfig) {
 	})
 
 	f.StringVarP(&cfg.File, "file", "f", "", "Read the SQL to run from this file")
-	f.BoolVar(&cfg.NoColNames, "no-col-names", false, "Do not print the header row of a result set")
+	f.StringVar(&cfg.Header, "header", string(config.HeaderOn),
+		"Include the header row (on/off)")
 }
 
 func runExec(cmd *cobra.Command, cfg *config.ExecConfig, args []string) error {
@@ -174,6 +175,9 @@ func resolveExecSQL(cfg *config.ExecConfig, args []string) (string, error) {
 }
 
 func validateExecConfig(cfg *config.ExecConfig) error {
+	if err := applyHeader(cfg.Header, &cfg.NoColNames); err != nil {
+		return err
+	}
 	// The engine is resolved here as well as in runExec: the charset check below is
 	// validation, and a caller that builds an ExecConfig by hand must hit the same
 	// refusal as one that came through the command line. runExec needs it anyway to

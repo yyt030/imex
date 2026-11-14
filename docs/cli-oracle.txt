@@ -507,6 +507,34 @@
 # lists are now generated from backend.Engines() and config's registries,
 # which is why the visible strings did not move. See requirements.md 173.
 
+# Re-baselined note 32 (2026-11-14): the --blob-encoding round rewrote exactly
+# one frozen body, `## export`. The two mutually exclusive booleans --hex-blob
+# and --no-hex-blob became one three-way string option --blob-encoding with the
+# values auto (default), hex and raw; the two old flag rows disappear and one
+# `--blob-encoding string` row takes their place, carrying the same
+# "(not with --format parquet)" scope marker plus `(default "auto")`. The other
+# 21 bodies are byte-for-byte unchanged and `## version` remains the 4934dd2
+# snapshot. This is a Y-tier CLI change (faces 1 and 3), not a Z-tier text-only
+# convergence: help, the option set and the exit-text contract all moved, while
+# the DEL/SQL product, the config record and the issued SQL did not (live MySQL
+# probe: --blob-encoding auto/hex/raw produce byte-identical files to the old
+# default/--hex-blob/--no-hex-blob runs). See requirements.md 175.
+
+# Re-baselined note 33 (2026-11-14): the log-layer and header convergence round
+# rewrote all 21 live bodies (every section except `## version`, which stays the
+# 4934dd2 snapshot). --log-format moved from a root persistent flag into
+# registerConnFlags, so it now sits beside --log-level in each leaf's `Flags:`
+# block instead of `Global Flags:`; root's `Flags:` block loses that one row and
+# the inherited block loses it on every command. Its help line shed
+# "(slog key=value)" to stay under the 118-byte guard in the deeper leaf column.
+# --no-col-names became --header=on/off on export, import, list and exec, and show
+# gained the same option (a definition has no header row, so its bytes do not
+# change); the two old spellings are gone with no aliases. The DEL/SQL product,
+# the `export config` / `import config` records and the issued SQL are unchanged:
+# the effective NoColNames bool still comes from the same value, verified against
+# v0.38.2 with six config-record pairs. All 22 bodies were diffed against the
+# rebuilt binary and every generated line is <= 118 bytes. See requirements.md 176.
+
 ## export
 Export data from a MySQL, PostgreSQL or Dameng database to a DEL
 (delimited ASCII), SQL, or Parquet format file.
@@ -548,6 +576,7 @@ Aliases:
 
 Flags:
       --batch-size int                  Rows per hand-off batch; with --threads>1 it is a usage error (default 1000)
+      --blob-encoding string            Binary encoding (auto/hex/raw) (not with --format parquet) (default "auto")
       --char-del string                 String delimiter (only with --format del) (default "\"")
       --col-del string                  Column delimiter (only with --format del) (default ",")
       --connect-timeout duration        TCP connect timeout (default 5s)
@@ -558,15 +587,14 @@ Flags:
       --escape string                   Escape character (only with --format del) (default "\"")
       --extended-insert                 Merge rows into multi-row INSERTs (only with --format sql)
   -f, --format string                   Output file format (del/sql/parquet) (default "del")
+      --header string                   Include the header row (on/off) (only with --format del) (default "on")
   -?, --help                            help for export
-      --hex-blob                        Binary columns as 0x hex literals (not with --format parquet)
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
       --no-char-del                     Do not use string delimiter (only with --format del)
-      --no-col-names                    Do not output column names (only with --format del)
       --no-escape                       Disable escaping (only with --format del)
-      --no-hex-blob                     Force raw binary passthrough (may corrupt data) (not with --format parquet)
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Output file path (required)
       --parquet-compression string      Compression: none, snappy, zstd (only with --format parquet) (default "none")
@@ -587,10 +615,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## import
 Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
 MySQL, PostgreSQL or Dameng database.
@@ -632,14 +660,15 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --escape string                   Escape character (only with --format del) (default "\"")
   -f, --format string                   Input file format (del/sql/parquet) (default "del")
+      --header string                   Include the header row (on/off) (only with --format del) (default "on")
   -?, --help                            help for import
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
   -i, --input string                    Input file path (required)
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
   -M, --mode string                     insert, insert_update, replace (clears the table) (default "insert")
       --no-char-del                     Do not use string delimiter (only with --format del)
-      --no-col-names                    First line is not column names (only with --format del)
       --no-escape                       Disable escaping (only with --format del)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pipeline-buffer int             Hand-off queue depth in batches (0 = synchronous) (default 10)
@@ -658,10 +687,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## list
 List databases, schemas, tables, views, columns, indexes, triggers, routines or events.
 
@@ -695,12 +724,12 @@ Flags:
   -h, --help   help for list
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
 
 Use "imex list [command] --help" for more information about a command.
+
 ## list databases
 List databases
 
@@ -715,11 +744,12 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list dbs
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -730,10 +760,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## list schemas
 List schemas
 
@@ -749,11 +779,12 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list sch
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -764,10 +795,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## list tables
 List tables
 
@@ -783,11 +814,12 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list tab
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -799,10 +831,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## list views
 List views
 
@@ -818,11 +850,12 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list vws
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -833,10 +866,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## list columns
 List columns of a table
 
@@ -851,11 +884,12 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list col
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -867,10 +901,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## list indexes
 List indexes of a table
 
@@ -885,11 +919,12 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list idx
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -901,10 +936,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## list triggers
 List triggers
 
@@ -920,11 +955,12 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list trg
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -936,10 +972,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## list routines
 List stored procedures and functions
 
@@ -955,11 +991,12 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list rtn
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -971,10 +1008,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## list events
 List scheduled events
 
@@ -990,11 +1027,12 @@ Flags:
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list evt
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -1005,10 +1043,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## show
 Show the CREATE statement the server holds for one schema, table, view,
 trigger, event, procedure or function.
@@ -1043,12 +1081,12 @@ Flags:
   -h, --help   help for show
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
 
 Use "imex show [command] --help" for more information about a command.
+
 ## show sch
 Show the definition of one schema
 
@@ -1063,8 +1101,10 @@ Flags:
   -D, --database string                 Optional for schema: the name is the schema (also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show sch
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
@@ -1076,10 +1116,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## show tab
 Show the definition of one table
 
@@ -1094,8 +1134,10 @@ Flags:
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show tab
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
@@ -1107,10 +1149,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## show vws
 Show the definition of one view
 
@@ -1125,8 +1167,10 @@ Flags:
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show vws
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
@@ -1138,10 +1182,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## show trg
 Show the definition of one trigger
 
@@ -1156,8 +1200,10 @@ Flags:
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show trg
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
@@ -1169,10 +1215,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## show evt
 Show the definition of one event
 
@@ -1187,8 +1233,10 @@ Flags:
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show evt
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
@@ -1200,10 +1248,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## show prc
 Show the definition of one procedure
 
@@ -1218,8 +1266,10 @@ Flags:
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show prc
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
@@ -1231,10 +1281,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## show fcn
 Show the definition of one function
 
@@ -1249,8 +1299,10 @@ Flags:
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
+      --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show fcn
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
@@ -1262,10 +1314,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## exec
 Execute one or more SQL statements against the target and print what each did.
 
@@ -1294,11 +1346,12 @@ Flags:
       --default-charset string          Connection charset (default "utf8mb4")
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
   -f, --file string                     Read the SQL to run from this file
+      --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for exec
   -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+      --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
-      --no-col-names                    Do not print the header row of a result set
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
@@ -1308,10 +1361,10 @@ Flags:
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+
 ## root
 imex is a table-level logical import/export tool.
 
@@ -1347,13 +1400,13 @@ Available Commands:
   version     Print version information
 
 Flags:
-      --echo-sql-values     Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
-      --error-stack         Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
-  -h, --help                help for imex
-      --log-format string   Log layout: console or text (slog key=value); also IMEX_LOG_FORMAT (default "console")
-      --no-sql-tag          Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
+      --echo-sql-values   Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)
+      --error-stack       Print full error call stack on failure (also enabled via IMEX_ERROR_STACK=1)
+  -h, --help              help for imex
+      --no-sql-tag        Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)
 
 Use "imex [command] --help" for more information about a command.
+
 ## version
 imex version 0.1.0
 Git commit: 4934dd2

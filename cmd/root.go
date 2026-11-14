@@ -17,7 +17,9 @@ var (
 	GitCommit = "unknown"
 )
 
-// Persistent flag variables (shared across all subcommands).
+// Global flag variables. The first three are bound to root persistent flags;
+// logFormat is bound to the per-command --log-format declared in
+// registerConnFlags, and read here so the root hook can apply it before RunE.
 var (
 	errorStack    bool
 	echoSQLValues bool
@@ -89,9 +91,6 @@ func init() {
 
 	rootCmd.PersistentFlags().BoolVar(&echoSQLValues, "echo-sql-values", false,
 		"Echo real row values in failed SQL, not redacted tags (also IMEX_ECHO_SQL_VALUES=1)")
-
-	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "console",
-		"Log layout: "+strings.Join(common.LogFormats(), " or ")+" (slog key=value); also IMEX_LOG_FORMAT")
 
 	rootCmd.PersistentFlags().BoolVar(&noSQLTag, "no-sql-tag", false,
 		"Do not prepend the /* imex:<commit> */ comment to statements (also IMEX_NO_SQL_TAG=1)")

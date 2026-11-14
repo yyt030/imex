@@ -87,6 +87,12 @@ func registerShowFlags(cmd *cobra.Command, cfg *config.ShowConfig) {
 		NoOverwriteTarget: &cfg.NoOverwrite,
 		OutputUsage:       "Write the result to this file (default: stdout)",
 	})
+
+	// show writes one definition, not a table, so there is no header row to
+	// print: the option is accepted for a uniform command surface and its value
+	// is still validated, but it cannot change the bytes this command emits.
+	f.StringVar(&cfg.Header, "header", string(config.HeaderOn),
+		"Include the header row (on/off); a definition has none")
 }
 
 func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref string) error {
@@ -170,6 +176,11 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 }
 
 func validateShowConfig(cfg *config.ShowConfig, kind show.Kind) error {
+	// show prints a definition, not a table, so the value is validated but not
+	// folded into a writer setting: there is no header row to suppress.
+	if err := validateHeader(cfg.Header); err != nil {
+		return err
+	}
 	// Resolved here for the same reason list does it: runShow needs the engine to
 	// dial, the validator needs it to reject a charset PostgreSQL cannot name.
 	e, err := parseEngine(cfg.Engine)

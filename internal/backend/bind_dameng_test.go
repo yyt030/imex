@@ -199,7 +199,7 @@ func TestDamengBindBit(t *testing.T) {
 		{false, "0"},
 		{int64(0), "0"},
 		{int64(7), "1"},
-		// A MySQL DEL dump written without --hex-blob carries the BIT column's
+		// A MySQL DEL dump written without --blob-encoding hex carries the BIT column's
 		// stored bytes inside the field's quotes, so the adapter is handed a
 		// string of them. No printable byte in the run means it is not a word.
 		{"\x01", "1"},

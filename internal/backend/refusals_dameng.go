@@ -36,7 +36,7 @@ func (damengBackend) Refusals(c Command) []Refusal {
 	case CmdExport:
 		return []Refusal{
 			{
-				Option:  static("--no-hex-blob"),
+				Option:  static("--blob-encoding raw"),
 				Reason:  "Dameng rejects a NUL byte inside a text value, so binary columns must go out as 0x hex; imex always does it on this engine",
 				Applies: func(o RunOptions) bool { return o.NoHexBlob },
 			},

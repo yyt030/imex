@@ -54,7 +54,8 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.StringVar(&exportCfg.DelModifier.TimestampFmt, "timestamp-fmt", "yyyy-MM-dd HH:mm:ss", "Timestamp format")
 	f.StringVar(&exportCfg.DelModifier.DateFmt, "date-fmt", "yyyy-MM-dd", "Date format")
 	f.BoolVar(&exportCfg.DelModifier.NoCharDel, "no-char-del", false, "Do not use string delimiter")
-	f.BoolVar(&exportCfg.DelModifier.NoColNames, "no-col-names", false, "Do not output column names")
+	f.StringVar(&exportCfg.DelModifier.Header, "header", string(config.HeaderOn),
+		"Include the header row (on/off)")
 
 	// SQL format modifiers
 	f.IntVar(&exportCfg.StatementSize, "statement-size", config.DefaultStatementSize, "Max bytes per merged INSERT")
@@ -66,9 +67,11 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.StringVar(&exportCfg.ParquetCompression, "parquet-compression", config.ParquetCompressionNone,
 		"Compression: "+strings.Join(config.ParquetCompressions(), ", "))
 
-	// Binary column encoding
-	f.BoolVar(&exportCfg.HexBlob, "hex-blob", false, "Binary columns as 0x hex literals")
-	f.BoolVar(&exportCfg.NoHexBlob, "no-hex-blob", false, "Force raw binary passthrough (may corrupt data)")
+	// Binary column encoding: one three-way choice replaces the old mutually
+	// exclusive --hex-blob / --no-hex-blob boolean pair. The value list comes
+	// from the same registry the validator and the invalid-value error read.
+	f.StringVar(&exportCfg.BlobEncoding, "blob-encoding", string(config.BlobEncodingAuto),
+		"Binary encoding ("+enumNames(config.BlobEncodings())+")")
 
 	// Pipeline hand-off controls. Both are read only by the single-threaded path;
 	// a parallel shard sizes its look-ahead from a fixed byte budget divided

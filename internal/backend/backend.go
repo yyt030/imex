@@ -304,8 +304,8 @@ type Backend interface {
 	// charset decides, which is the rule config.HexBlobForCharset implements.
 	// PostgreSQL answers true (measured: `invalid byte sequence for encoding
 	// "UTF8": 0x00`, SQLSTATE 22021, on the first raw bytea row of a utf8mb4
-	// dump), and cmd refuses --no-hex-blob on that engine instead of silently
-	// overriding what the operator asked for.
+	// dump), and cmd refuses --blob-encoding raw on that engine instead of
+	// silently overriding what the operator asked for.
 	HexBlobMandatory() bool
 
 	// DefaultPort is the port the engine listens on when neither --port nor

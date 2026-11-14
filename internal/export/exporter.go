@@ -269,8 +269,8 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 	}
 
 	// Compute effective hex-blob setting and log the decision.
-	// HexBlob forces on; NoHexBlob forces off; both false means automatic
-	// (hex enabled when charset is not byte-safe, i.e. not utf8mb4/utf8).
+	// --blob-encoding hex forces on, raw forces off; auto (the default, and an
+	// empty value from a library caller) lets the engine and charset decide.
 	// Cell fixups rewrite the values the driver hands back into the text this
 	// engine's dump format is defined to carry. MySQL needs none (its text
 	// protocol already sends the stored bytes), so the slice is all nils there and
@@ -279,12 +279,13 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 
 	binaryFlags := e.backend().BinaryFlags(colTypes)
 	hex := effectiveHexBlob(e.config)
-	if hex && !e.config.HexBlob && !e.config.NoHexBlob {
+	enc := config.BlobEncoding(e.config.BlobEncoding)
+	if hex && enc != config.BlobEncodingHex && enc != config.BlobEncodingRaw {
 		// Auto-enabled by charset: log info
 		common.Logger.Info("hex-blob auto-enabled by charset", "charset", e.config.DefaultCharset)
 	}
-	if e.config.NoHexBlob && config.HexBlobForCharset(e.config.DefaultCharset) {
-		// Explicit --no-hex-blob with non-utf8mb4 charset: warn about potential corruption
+	if enc == config.BlobEncodingRaw && config.HexBlobForCharset(e.config.DefaultCharset) {
+		// Explicit raw with non-utf8mb4 charset: warn about potential corruption
 		common.Logger.Warn("hex-blob explicitly disabled with non-utf8mb4 charset; raw binary bytes may be corrupted by charset conversion", "charset", e.config.DefaultCharset)
 	}
 

@@ -51,3 +51,34 @@ func TestConfigsDefaultToTheProgressInterval(t *testing.T) {
 		t.Errorf("import default ProgressInterval = %v, want %v", got, DefaultProgressInterval)
 	}
 }
+
+// TestHeaderEnabledMatchesFormerBool pins the rename from --no-col-names to
+// --header=on/off: off resolves to exactly the old true, and a value a library
+// caller left unset resolves to exactly the old false, so the writers and the
+// configuration record keep reading the same bool.
+func TestHeaderEnabledMatchesFormerBool(t *testing.T) {
+	for _, tc := range []struct {
+		mode           string
+		wantNoColNames bool
+	}{
+		{"on", false}, {"off", true}, {"", false},
+	} {
+		if got := !HeaderEnabled(tc.mode); got != tc.wantNoColNames {
+			t.Errorf("HeaderEnabled(%q) -> NoColNames=%v, want %v", tc.mode, got, tc.wantNoColNames)
+		}
+	}
+	if !ValidHeaderMode("on") || !ValidHeaderMode("off") || ValidHeaderMode("yes") || ValidHeaderMode("") {
+		t.Errorf("ValidHeaderMode does not match the shipped values: %v", HeaderModes())
+	}
+	for name, got := range map[string]string{
+		"export": NewExportConfig().DelModifier.Header,
+		"import": NewImportConfig().DelModifier.Header,
+		"list":   NewListConfig().Header,
+		"show":   NewShowConfig().Header,
+		"exec":   NewExecConfig().Header,
+	} {
+		if got != string(HeaderOn) {
+			t.Errorf("%s default --header = %q, want on", name, got)
+		}
+	}
+}

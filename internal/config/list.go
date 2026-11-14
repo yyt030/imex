@@ -15,7 +15,8 @@ type ListConfig struct {
 	Type    string // --type: base/view/all for tables, procedure/function/all for routines
 	All     bool   // --all: include system schemas when --database is not given
 
-	NoColNames bool // do not print the header row
+	NoColNames bool   // do not print the header row (effective --header value)
+	Header     string // --header: on or off; folded into NoColNames by cmd
 
 	Output      string // --output file path, empty when the result has no file
 	NoOverwrite bool   // refuse to truncate an existing --output file
@@ -23,5 +24,5 @@ type ListConfig struct {
 
 // NewListConfig returns a ListConfig with the shipped defaults.
 func NewListConfig() *ListConfig {
-	return &ListConfig{Config: defaultConfig()}
+	return &ListConfig{Config: defaultConfig(), Header: string(HeaderOn)}
 }

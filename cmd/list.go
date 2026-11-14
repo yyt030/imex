@@ -117,7 +117,8 @@ func registerListFlags(cmd *cobra.Command, cfg *config.ListConfig) {
 	})
 
 	f.StringVar(&cfg.Pattern, "pattern", "", "LIKE pattern for object names (% and _ are wildcards)")
-	f.BoolVar(&cfg.NoColNames, "no-col-names", false, "Do not print the header row")
+	f.StringVar(&cfg.Header, "header", string(config.HeaderOn),
+		"Include the header row (on/off)")
 }
 
 func runList(cmd *cobra.Command, cfg *config.ListConfig, object string) error {
@@ -209,6 +210,9 @@ func connConfigFor(e backend.Engine, object string, cfg *config.ListConfig) conf
 }
 
 func validateListConfig(cfg *config.ListConfig) error {
+	if err := applyHeader(cfg.Header, &cfg.NoColNames); err != nil {
+		return err
+	}
 	// The engine is resolved here as well as in runList: the option checks below
 	// are validation, and a caller that builds a ListConfig by hand must hit the
 	// same refusal as one that came through the command line. runList needs the
