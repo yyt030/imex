@@ -198,6 +198,12 @@ func validateExecConfig(cfg *config.ExecConfig) error {
 	if cfg.Password == "" {
 		return common.Usagef("--password is required (or set IMEX_PASSWORD)")
 	}
+	// Fold --host/--port (or IMEX_HOST/IMEX_PORT) into the endpoint list.
+	// A single address is a no-op here, so this line cannot change the
+	// order or wording of any other validation error.
+	if err := resolveConnectionAddrs(&cfg.Config); err != nil {
+		return err
+	}
 	if err := validatePort(cfg.Port); err != nil {
 		return err
 	}

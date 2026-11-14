@@ -205,7 +205,7 @@ func openDatabase(e backend.Engine, cfg *config.Config) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := be.Open(cfg)
+	db, err := backend.OpenWithFailover(be, cfg)
 	if err != nil {
 		return nil, err
 	}

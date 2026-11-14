@@ -64,11 +64,21 @@ func applyConnEnv(f *pflag.FlagSet, c *config.Config) (connEnvReport, error) {
 		case "host":
 			c.Host = value
 		case "port":
-			n, err := strconv.Atoi(value)
-			if err != nil || n < 1 || n > 65535 {
-				return rep, common.Usagef("invalid IMEX_PORT %q: must be a port number between 1 and 65535", value)
+			// A comma-separated IMEX_PORT is the multi-address form; it is kept
+			// raw for resolveConnectionAddrs, which pairs it with IMEX_HOST and
+			// reports the same usage errors as --port. A single plain number
+			// keeps the original range check (and its exact error message) here
+			// so a one-address run is unchanged.
+			if strings.Contains(value, ",") {
+				c.PortSpec = value
+			} else {
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 || n > 65535 {
+					return rep, common.Usagef("invalid IMEX_PORT %q: must be a port number between 1 and 65535", value)
+				}
+				c.Port = n
+				c.PortSpec = ""
 			}
-			c.Port = n
 		case "user":
 			c.User = value
 		case "password":

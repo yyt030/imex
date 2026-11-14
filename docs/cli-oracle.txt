@@ -535,6 +535,24 @@
 # v0.38.2 with six config-record pairs. All 22 bodies were diffed against the
 # rebuilt binary and every generated line is <= 118 bytes. See requirements.md 176.
 
+# Re-baselined note 34 (2026-11-15): the multi-address round changed exactly
+# two help rows on each of the 19 commands that own a connection -- the -h and
+# -P usage strings, which now name comma-separated host lists and the
+# "1 or one per host" port rule. --port is registered through a pflag.Value
+# whose Type() still reads "int" with an unquoted (default 3306), so the flag
+# column, the short name, the default and every other row are byte-identical.
+# A single-address run is untouched: the resolved address list stays nil and
+# backend.OpenWithFailover passes straight to the engine's ordinary Open, so
+# the DSN, the `export config` / `import config` records, the pre-existing
+# usage errors and the issued SQL are unchanged (verified against the v0.39.0
+# binary). The one new wording is a non-numeric -P value: pflag no longer
+# parses the flag, so it reports the CLI's own one-line usage error instead of
+# a strconv.ParseInt message. Multi-address runs add an `endpoints` key to
+# those two records and pick one endpoint per connection round-robin, failing
+# over to the next on a dial or login error. All 22 live bodies were diffed
+# against the rebuilt binary and every generated line is <= 118 bytes.
+# See requirements.md 178.
+
 ## export
 Export data from a MySQL, PostgreSQL or Dameng database to a DEL
 (delimited ASCII), SQL, or Parquet format file.
@@ -589,7 +607,7 @@ Flags:
   -f, --format string                   Output file format (del/sql/parquet) (default "del")
       --header string                   Include the header row (on/off) (only with --format del) (default "on")
   -?, --help                            help for export
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
@@ -600,7 +618,7 @@ Flags:
       --parquet-compression string      Compression: none, snappy, zstd (only with --format parquet) (default "none")
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pipeline-buffer int             Hand-off queue depth in batches; --threads>1 is a usage error (default 10)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --progress-interval duration      Periodic progress log interval (min 100ms) (default 5s)
   -q, --query string                    SQL SELECT statement, or @file to read it from a file
       --row-del string                  Row delimiter (only with --format del) (default "\n")
@@ -662,7 +680,7 @@ Flags:
   -f, --format string                   Input file format (del/sql/parquet) (default "del")
       --header string                   Include the header row (on/off) (only with --format del) (default "on")
   -?, --help                            help for import
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
   -i, --input string                    Input file path (required)
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
@@ -672,7 +690,7 @@ Flags:
       --no-escape                       Disable escaping (only with --format del)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pipeline-buffer int             Hand-off queue depth in batches (0 = synchronous) (default 10)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --progress-interval duration      Periodic progress log interval (min 100ms) (default 5s)
       --row-count int                   Import at most n rows (0=unlimited)
       --row-del string                  Row delimiter (only with --format del) (default "\n")
@@ -746,7 +764,7 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list dbs
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -754,7 +772,7 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -781,7 +799,7 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list sch
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -789,7 +807,7 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -816,7 +834,7 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list tab
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -824,7 +842,7 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --type string                     Object type: base, view or all (default "base")
@@ -852,7 +870,7 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list vws
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -860,7 +878,7 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -886,7 +904,7 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list col
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -894,7 +912,7 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -t, --table string                    Table to inspect (required)
@@ -921,7 +939,7 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list idx
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -929,7 +947,7 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -t, --table string                    Table to inspect (required)
@@ -957,7 +975,7 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list trg
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -965,7 +983,7 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -t, --table string                    Only list triggers of this table
@@ -993,7 +1011,7 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list rtn
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -1001,7 +1019,7 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --type string                     Routine type: procedure, function or all (default "all")
@@ -1029,7 +1047,7 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list evt
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
@@ -1037,7 +1055,7 @@ Flags:
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pattern string                  LIKE pattern for object names (% and _ are wildcards)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1103,14 +1121,14 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show sch
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1136,14 +1154,14 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show tab
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1169,14 +1187,14 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show vws
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1202,14 +1220,14 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show trg
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1235,14 +1253,14 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show evt
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1268,14 +1286,14 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show prc
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1301,14 +1319,14 @@ Flags:
       --engine string                   Database engine: mysql, pg, dm (default "mysql")
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show fcn
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")
@@ -1348,14 +1366,14 @@ Flags:
   -f, --file string                     Read the SQL to run from this file
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for exec
-  -h, --host string                     Database host address (also IMEX_HOST) (default "127.0.0.1")
+  -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Log/error file; result still goes to stdout or --output; nothing on screen
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Write the result to this file (default: stdout)
   -p, --password string                 Database password (also IMEX_PASSWORD)
-  -P, --port int                        TCP/IP port (also IMEX_PORT) (default 3306)
+  -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
   -u, --user string                     Database username (also IMEX_USER) (default "root")

@@ -2,7 +2,7 @@
 
 名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度逻辑导入导出工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，通过 `--engine` 支持 MySQL（含 MariaDB 与 OceanBase MySQL 模式）、PostgreSQL 与达梦 DM8（Oracle 兼容模式）。
 
-> **当前版本 `v0.39.0`**（2026-11-15，**Y 档选项收敛轮**：一次结清 175／176 两笔挂账——`--hex-blob`／`--no-hex-blob` 合为 `--blob-encoding=auto/hex/raw`；`--log-format` 下沉与 `--log-level` 同层同处；`--no-col-names` 统一为 `--header=on/off` 并给 `show` 补上同名选项。**破坏性变更**：三个旧 flag 全部删除且不留别名，脚本需改用 `--blob-encoding hex`／`raw` 与 `--header=off`；`version`／`encrypt`／裸 `list`／`show` 不再接受 `--log-format`）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——本轮虽为 Y 档，但改的是既有选项的合并／层级／命名（非新增功能或缺陷修复），按纪律 12「单一事实源、不长段复述」不在 22 节历史存档与摘要表新增节，本轮内容见 `docs/requirements.md` 变更记录 **175**／**176**／**177**（发版）。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
+> **当前版本 `v0.40.0`**（2026-11-15，**Y 档新增能力轮**：支持多地址连接级轮询＋故障自动切换——`-h 1.1.1.1,2.2.2.2 -P 3306` 表示两个主机共用 3306，`-P 3306,3307` 表示 `1.1.1.1:3306` 与 `2.2.2.2:3307` 一一对应；`IMEX_HOST`／`IMEX_PORT` 同样接受逗号分隔多值，端口数与主机数不符、空地址、非法端口退 2。**单地址路径逐字不变**：DSN、`export/import config` 记录、既有用法错误、连库失败错误、下发 SQL 与 v0.39.0 全等；唯一单地址差异是非数字 `-P abc` 由 pflag 的 `strconv` 文案改为 CLI 自有的一句 `invalid --port "abc": must be a port number between 1 and 65535`。多地址时 `export/import config` 记录追加 `endpoints` 键，按连接轮转选端点、拨号或登录失败自动换址、全失败聚合报错。**无 flag 删除、无需迁移脚本**，与 v0.39.0 三个旧 flag 破坏性删除不同）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177 三轮既定口径，本轮虽为新增能力，其当前行为已由本文「多地址（轮询 + 故障切换）」小节描述、设计与取证由 `docs/requirements.md` 变更记录 **178**／**179**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
 
 ## 目录
 
@@ -45,7 +45,7 @@
 - **单行 SQL 布局**：`--format sql` 默认每行一条 INSERT，文件逐行可切分；攒批统一由导入侧按 `--batch-size` 完成，导出侧的 `--extended-insert` 只用于换取更小的文件体积
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
-- **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值
+- **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值。`IMEX_HOST`／`IMEX_PORT` 同样支持逗号分隔的多地址。
 - **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，导出侧 `--threads 1–256` 并行分片导出（见「PostgreSQL 引擎」），`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；`--blob-encoding raw` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export` 支持 `-f del|sql|parquet`（`--threads 1–256` 并行分片导出，见「达梦引擎」）、`import` 支持 `-f del|sql|parquet` 的 `--mode insert|replace` 与 `--threads`，`list` 给八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`--session-var` 在连库之前退出 `2` 并说明原因。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
@@ -179,8 +179,8 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 | 选项 | 短选项 | 说明 | 环境变量 | 默认值 |
 |------|--------|------|----------|--------|
 | `--engine` | | 数据库引擎：`mysql`（默认）、`pg`（PostgreSQL，经 `jackc/pgx/v5`）或 `dm`（达梦 DM8，经 `gitee.com/chunanyong/dm`，恒以 Oracle 兼容模式连接；`dameng` 是同一个取值的别名），取值不区分大小写、裁两端空白；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节，`dm` 见「达梦引擎」一节 | 无（刻意不设） | `mysql` |
-| `--host` | `-h` | 数据库主机地址 | `IMEX_HOST` | `127.0.0.1` |
-| `--port` | `-P` | TCP/IP 端口（`--engine pg` 时默认 `5432`，`--engine dm` 时默认 `5236`） | `IMEX_PORT` | `3306` |
+| `--host` | `-h` | 数据库主机地址；可逗号分隔给多个（多地址见下方说明） | `IMEX_HOST` | `127.0.0.1` |
+| `--port` | `-P` | TCP/IP 端口；可逗号分隔给多个：1 个广播到所有主机，N 个与 N 个主机一一对应（`--engine pg` 时默认 `5432`，`--engine dm` 时默认 `5236`） | `IMEX_PORT` | `3306` |
 | `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明）；`--engine dm` 时它就是达梦的账号，不能为空，为空在建连之前退出 2 | `IMEX_USER` | `root` |
 | `--password` | `-p` | 数据库密码 | `IMEX_PASSWORD` | 空 |
 | `--database` | `-D` | 数据库名；`--engine dm` 时它是模式名，既写进驱动的 `schema` 参数，也是目录查询过滤的 `OWNER` | `IMEX_DATABASE` | 空 |
@@ -192,6 +192,22 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 `--password` 与 `--database` 没有默认值，任一缺失即是用法错误、退出码 `2`；缺口令时的提示同时点名两个来源（`--password is required (or set IMEX_PASSWORD)`）。`--host` 与 `--user` 有内置默认值（`127.0.0.1`、`root`），只有把它们**显式写成空值**（`-h ""`、`-u ""`）才会被判为缺失并以退出码 `2` 拒绝，此时不会回落到 `IMEX_HOST`/`IMEX_USER`（见「连接信息来自环境变量」）。
 
 由于 `-h` 被 `--host` 占用，帮助短选项为 `-?`。
+
+**多地址（轮询 + 故障切换）：**
+
+`-h`／`-P` 与 `IMEX_HOST`／`IMEX_PORT` 都接受逗号分隔的列表：
+
+```bash
+# 两个地址共用端口 3306
+imex export -h 10.0.0.1,10.0.0.2 -P 3306 -u root -p pass -D mydb \
+  -o /tmp/users.del -q "SELECT * FROM users"
+
+# 一一对应：10.0.0.1:3306 与 10.0.0.2:3307
+imex export -h 10.0.0.1,10.0.0.2 -P 3306,3307 -u root -p pass -D mydb \
+  -o /tmp/users.del -q "SELECT * FROM users"
+```
+
+端口给 **1 个**就广播到所有主机，给 **N 个**必须与 N 个主机一一对应；其余数量、空地址项、非数字或越界端口都是用法错误、退出码 `2`。每次新建连接按轮转顺序取一个地址——主连接、分片导出与并行导入 worker 依次分摊到各节点；拨号或登录失败自动尝试下一个地址，全部失败才报错并列出每个地址的失败原因。单地址输入的产物、config 记录、错误与下发 SQL 与之前逐字一致；多地址运行的 `export config`／`import config` 记录多一个 `endpoints` 键列出全部地址。
 
 **OceanBase 用户名格式支持：**
 
@@ -594,8 +610,8 @@ imex list tab
 
 | 选项 | 环境变量 | 空白取值 | 说明 |
 |------|----------|----------|------|
-| `--host` | `IMEX_HOST` | 按未设置 | 主机地址 |
-| `--port` | `IMEX_PORT` | 按未设置 | 端口；非数字或超出 1–65535 是用法错误、退出码 `2` |
+| `--host` | `IMEX_HOST` | 按未设置 | 主机地址；也可逗号分隔给多个 |
+| `--port` | `IMEX_PORT` | 按未设置 | 端口；也可逗号分隔给多个。非数字或超出 1–65535 是用法错误、退出码 `2` |
 | `--user` | `IMEX_USER` | 按未设置 | 用户名 |
 | `--password` | `IMEX_PASSWORD` | 按未设置 | 口令；`ENC:` 密文照常按 `IMEX_KEY` 解密 |
 | `--database` | `IMEX_DATABASE` | 按未设置 | 数据库名 |
@@ -861,7 +877,7 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 
 | 选项 | 合法范围 | 越界行为 |
 |------|----------|----------|
-| `--port` | `1`–`65535` | `invalid --port`，退出码 2 |
+| `--port` | 每个端口 `1`–`65535`；逗号分隔时端口数只能是 1 或主机数 | `invalid --port`，退出码 2 |
 | `--threads` | `1`–`256`（每任务一条物理连接+协程，防止打爆 FD/`max_connections`） | `invalid --threads`，退出码 2；静态范围之外的代价在连上库之后出声：worker 数 + 1 超过 `@@max_connections` 记 `warn`（`workers exceed the server connection limit…`），并行导入的重放缓冲按 worker 各自计算、总量超过进程预算时记 `warn`（`parallel import replay window scales with threads`），两条都在任何数据移动之前 |
 | `--statement-size`（导出） | `>0` 且 ≤ `268435456`（256MiB，防止 SQL writer 拼接到 OOM） | `invalid --statement-size`，退出码 2 |
 | `--statement-size`（导入） | `0`–`268435456`（`0`=不额外压低，只按 `max_allowed_packet` 预算；该值只能压低预算、不能抬高） | `invalid --statement-size %d: must be between 0 and 268435456 (0 means no extra cap)`，退出码 2；默认预算还按驱动侧 64 MiB 客户端插值上限钳到 `60397977` 字节（`limiting_factor=driver_packet_cap`）——这只在服务端值**大于** 67,108,864 B（64 MiB）时发生，按 OB V4.x 默认 16M 的床上是 `batch_bytes=15099494 limiting_factor=max_allowed_packet`；显式给出更大的数字不改写、只记 `warn` |

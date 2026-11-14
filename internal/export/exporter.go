@@ -61,7 +61,7 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	}
 
 	dialStart := time.Now()
-	db, err := be.Open(&cfg.Config)
+	db, err := backend.OpenWithFailover(be, &cfg.Config)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to connect to database")
 	}
@@ -984,7 +984,7 @@ func (e *Exporter) openShardConn(workerID, shardIdx int) (*sql.DB, error) {
 
 // createShardConnection creates a new database connection for a shard
 func (e *Exporter) createShardConnection(workerID, shardIdx int) (*sql.DB, error) {
-	db, err := e.backend().Open(&e.config.Config)
+	db, err := backend.OpenWithFailover(e.backend(), &e.config.Config)
 	if err != nil {
 		return nil, err
 	}

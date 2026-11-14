@@ -189,8 +189,17 @@ type Config struct {
 	// does with the rest of this struct.
 	Engine string
 
-	Host     string
-	Port     int
+	Host string
+	Port int
+	// PortSpec is the raw --port / IMEX_PORT value. It is a string because the
+	// option accepts a comma-separated list; the resolved first port is Port.
+	// An empty PortSpec means the caller built Config by hand (or IMEX_PORT
+	// supplied one plain number), in which case Port alone is the value.
+	PortSpec string
+	// Addrs is the resolved endpoint list. Nil means a single address: Host and
+	// Port are the whole story, exactly as before multi-address support. See
+	// internal/config/addrs.go and cmd/addrs.go.
+	Addrs    []Addr
 	User     string
 	Password string
 	Database string

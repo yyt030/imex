@@ -372,6 +372,12 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 	if err := validateParallelExportOptions(cmd, cfg.Threads); err != nil {
 		return err
 	}
+	// Fold --host/--port (or IMEX_HOST/IMEX_PORT) into the endpoint list.
+	// A single address is a no-op here, so this line cannot change the
+	// order or wording of any other validation error.
+	if err := resolveConnectionAddrs(&cfg.Config); err != nil {
+		return err
+	}
 	if err := validatePort(cfg.Port); err != nil {
 		return err
 	}
@@ -442,6 +448,12 @@ func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
 		return err
 	}
 	if err := validateImportStatementSize(cfg.StatementSize); err != nil {
+		return err
+	}
+	// Fold --host/--port (or IMEX_HOST/IMEX_PORT) into the endpoint list.
+	// A single address is a no-op here, so this line cannot change the
+	// order or wording of any other validation error.
+	if err := resolveConnectionAddrs(&cfg.Config); err != nil {
 		return err
 	}
 	if err := validatePort(cfg.Port); err != nil {

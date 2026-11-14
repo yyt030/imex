@@ -94,7 +94,7 @@ func NewImporter(cfg *config.ImportConfig) (*Importer, error) {
 	}
 
 	dialStart := time.Now()
-	db, err := be.Open(&cfg.Config)
+	db, err := backend.OpenWithFailover(be, &cfg.Config)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to connect to database")
 	}
@@ -1222,7 +1222,7 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 		go func(threadID int) {
 			defer wg.Done()
 
-			db, err := imp.backend().Open(&imp.cfg.Config)
+			db, err := backend.OpenWithFailover(imp.backend(), &imp.cfg.Config)
 			if err != nil {
 				errCh <- errors.Wrapf(err, "thread %d: failed to connect", threadID)
 				cancel()

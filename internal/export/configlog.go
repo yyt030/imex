@@ -148,5 +148,10 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 			args = append(args, "shard_key_ignored", true)
 		}
 	}
+	// Multi-address runs name every endpoint; a single-address run adds
+	// nothing, so its record stays byte-for-byte what it was.
+	if len(cfg.Addrs) > 1 {
+		args = append(args, "endpoints", config.FormatAddrs(cfg.Addrs))
+	}
 	return args
 }

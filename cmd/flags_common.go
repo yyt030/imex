@@ -68,8 +68,12 @@ func registerConnFlags(f *pflag.FlagSet, cfg *config.Config, o connFlagOpts) {
 	f.BoolP("help", "?", false, o.HelpLabel)
 
 	f.StringVar(&cfg.Engine, "engine", "mysql", engineUsage())
-	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1", "Database host address (also IMEX_HOST)")
-	f.IntVarP(&cfg.Port, "port", "P", 3306, "TCP/IP port (also IMEX_PORT)")
+	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1",
+		"Database host(s), comma-separated (also IMEX_HOST)")
+	// --port is registered through portSpecValue so the help column still says
+	// "int" with an unquoted default 3306 while Set accepts "3306,3307".
+	f.VarP(portSpecValue{cfg}, "port", "P",
+		"TCP/IP port(s): 1 or one per host (also IMEX_PORT)")
 	f.StringVarP(&cfg.User, "user", "u", "root", "Database username (also IMEX_USER)")
 	f.StringVarP(&cfg.Password, "password", "p", "", "Database password (also IMEX_PASSWORD)")
 	f.StringVarP(&cfg.Database, "database", "D", "", o.DatabaseUsage)

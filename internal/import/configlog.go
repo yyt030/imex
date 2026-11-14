@@ -82,5 +82,10 @@ func importConfigFields(cfg *config.ImportConfig) []interface{} {
 		}
 		args = append(args, f.key, f.value)
 	}
+	// Multi-address runs name every endpoint; a single-address run adds
+	// nothing, so its record stays byte-for-byte what it was.
+	if len(cfg.Addrs) > 1 {
+		args = append(args, "endpoints", config.FormatAddrs(cfg.Addrs))
+	}
 	return args
 }
