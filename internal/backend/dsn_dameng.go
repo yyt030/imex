@@ -2,8 +2,11 @@ package backend
 
 // reservedDamengDSNParams are DSN parameter names that the tool itself sets or
 // that the Dameng driver treats as connection settings. A --session-var using
-// one of these names would be silently hijacked at DSN re-parse time, so it is
-// rejected up front.
+// one of these names would be silently hijacked at DSN re-parse time instead of
+// reaching the ALTER SESSION SET statements, so it is rejected up front. DM's
+// own session parameters (SORT_BUF_SIZE, RESULT_SET_LIMIT, …) are a different
+// namespace: they are upper-case ini names and none of them collide with this
+// driver-vocabulary list.
 var reservedDamengDSNParams = map[string]bool{
 	// set by this tool (see buildDamengDSN)
 	"compatibleMode": true,

@@ -96,7 +96,10 @@ func TestEngineRefusalMatrix(t *testing.T) {
 
 		// --engine dm. What the Dameng surface still refuses has to stop here
 		// rather than at the server; --threads > 1 joined the accepted list in
-		// TestDMOptionsAreAccepted once the shard planner learned the catalogue.
+		// TestDMOptionsAreAccepted once the shard planner learned the catalogue,
+		// and --session-var left this table when DM8 got its ALTER SESSION SET
+		// translation (see TestDMOptionsAreAccepted and
+		// TestDMSessionVarReservedNames).
 		{
 			name: "dm_export_engine_dm8",
 			sub:  "export",
@@ -110,22 +113,10 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			want: "--blob-encoding raw is not supported with --engine dm: Dameng rejects a NUL byte inside a text value, so binary columns must go out as 0x hex; imex always does it on this engine",
 		},
 		{
-			name: "dm_export_session_var",
-			sub:  "export",
-			args: dmExportFlags("--session-var", "compatible_mode=oracle"),
-			want: "--session-var is not supported with --engine dm: SET <name>=<value> is MySQL session grammar and imex does not translate it for Dameng; put session settings in the server or role configuration",
-		},
-		{
 			name: "dm_import_mode_insert_update",
 			sub:  "import",
 			args: dmImportFlags("--mode", "insert_update"),
 			want: "--mode insert_update is not supported with --engine dm: the Dameng backend does not implement upsert in this MVP, use --mode insert or --mode replace",
-		},
-		{
-			name: "dm_import_session_var",
-			sub:  "import",
-			args: dmImportFlags("--session-var", "compatible_mode=oracle"),
-			want: "--session-var is not supported with --engine dm: SET <name>=<value> is MySQL session grammar and imex does not translate it for Dameng; put session settings in the server or role configuration",
 		},
 	}
 
@@ -651,9 +642,11 @@ func TestDMOptionsAreAccepted(t *testing.T) {
 		{"export_threads", "export", dmExportFlags("--threads", "4")},
 		{"export_threads_with_sql", "export", dmExportFlags("-f", "sql", "--threads", "4")},
 		{"export_blob_encoding_hex", "export", dmExportFlags("--blob-encoding", "hex")},
+		{"export_session_var", "export", dmExportFlags("--session-var", "SORT_BUF_SIZE=2", "--session-var", "RESULT_SET_LIMIT=100")},
 		{"import_insert", "import", dmImportFlags()},
 		{"import_replace", "import", dmImportFlags("--mode", "replace")},
 		{"import_parquet", "import", dmImportFlags("-f", "parquet", "-i", "/tmp/imex-engine-test.parquet")},
+		{"import_session_var", "import", dmImportFlags("--session-var", "HAGR_HASH_SIZE=2000000")},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -674,6 +667,37 @@ func TestDMOptionsAreAccepted(t *testing.T) {
 	err := validateListConfig(cfg)
 	if err == nil || !strings.HasPrefix(err.Error(), `invalid --default-charset "nonsense"`) {
 		t.Errorf("dm charset refusal = %v", err)
+	}
+}
+
+// TestDMSessionVarReservedNames pins the parser-side half of honouring
+// --session-var on dm: a DSN parameter the Dameng driver would consume instead
+// of passing to ALTER SESSION SET is rejected before any connection is built,
+// while an ordinary DM8 session parameter name is accepted and SQL-literal-
+// quoted. This is the shared ParseSessionVars check, not an exit-2 engine
+// refusal (that rule is gone), so it drives the parser directly.
+func TestDMSessionVarReservedNames(t *testing.T) {
+	reserved := []string{
+		"host=127.0.0.1", "port=5236", "schema=DMHR",
+		"compatibleMode=oracle", "connectTimeout=1000", "dialName=imex",
+	}
+	for _, pair := range reserved {
+		if _, err := parseSessionVars("dm", []string{pair}); err == nil {
+			t.Errorf("dm --session-var %q must be rejected as tool/driver-owned", pair)
+		}
+	}
+	allowed := []string{"SORT_BUF_SIZE=2", "RESULT_SET_LIMIT=abc", "HAGR_HASH_SIZE=2000000"}
+	vars, err := parseSessionVars("dm", allowed)
+	if err != nil {
+		t.Fatalf("dm must accept ordinary session parameter names, got %v", err)
+	}
+	// Values arrive SQL-literal-quoted, the same quoting MySQL and pg use.
+	// damengSessionVarStatements wraps the name in a quoted literal and
+	// prefixes ALTER SESSION SET; DM8 itself only accepts numeric literals
+	// reliably (see the live-test note in requirements.md 2.1.6.3).
+	if vars["SORT_BUF_SIZE"] != "2" || vars["RESULT_SET_LIMIT"] != "'abc'" ||
+		vars["HAGR_HASH_SIZE"] != "2000000" {
+		t.Errorf("dm session-var values mis-quoted: %+v", vars)
 	}
 }
 

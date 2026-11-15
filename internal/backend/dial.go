@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -34,8 +35,10 @@ type dialPingFunc func(context.Context, *sql.DB) error
 // ordinary engine Open (so no dialect had to learn a second address shape),
 // then a bounded PingContext decides whether the endpoint is usable. A dial or
 // login failure moves to the next endpoint; the first success returns the DB.
-// If all of them fail, the error names every endpoint's failure so the
-// operator can see which node to fix.
+// A rejected ALTER SESSION SET is a configuration error rather than a dead node,
+// so it stops the loop immediately with the option that failed (see
+// damengSessionVarError). If all of them fail, the error names every endpoint's
+// failure so the operator can see which node to fix.
 //
 // The verification ping is a single attempt, not PingWithRetry: failover is
 // itself the retry, and waiting out the shared backoff on a dead node before
@@ -86,6 +89,15 @@ func openWithFailover(cfg *config.Config, open dialOpenFunc, ping dialPingFunc) 
 			return db, nil
 		}
 		db.Close()
+		// A rejected ALTER SESSION SET is a bad --session-var, not a dead node.
+		// Every endpoint would reject the same name/value, so walking the rest
+		// of the list would only produce N copies of the error and hide it
+		// behind "all N addresses failed". Report the option that failed and
+		// stop here; the single-address path never reaches this loop.
+		var svErr *damengSessionVarError
+		if errors.As(pingErr, &svErr) {
+			return nil, svErr
+		}
 		common.Logger.Warn("connection endpoint unavailable, trying next",
 			"host", a.Host, "port", a.Port, "error", pingErr)
 		failures = append(failures, fmt.Sprintf("%s:%d: %v", a.Host, a.Port, pingErr))

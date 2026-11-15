@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -127,5 +128,40 @@ func TestOpenWithFailoverReportsEveryEndpoint(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err.Error(), want)
 		}
+	}
+}
+
+// TestOpenWithFailoverStopsOnSessionVarError pins that a rejected
+// ALTER SESSION SET is a configuration error, not a dead node: the loop must
+// not try the second address and must not wrap the cause in "all addresses
+// failed". The ping error is wrapped once so errors.As has to see through it.
+func TestOpenWithFailoverStopsOnSessionVarError(t *testing.T) {
+	addrCursor.Store(0)
+	cfg := twoAddrConfig()
+	opened := 0
+	open := func(*config.Config) (*sql.DB, error) {
+		opened++
+		return lazyTestDB()
+	}
+	svErr := &damengSessionVarError{name: "SORT_BUF_SIZE", cause: errors.New("Error -837: 配置参数不存在")}
+	ping := func(context.Context, *sql.DB) error { return fmt.Errorf("ping: %w", svErr) }
+	db, err := openWithFailover(cfg, open, ping)
+	if db != nil {
+		db.Close()
+	}
+	if err == nil {
+		t.Fatal("a rejected session variable must be an error")
+	}
+	if opened != 1 {
+		t.Errorf("opened %d endpoints, want 1 (no failover for a bad --session-var)", opened)
+	}
+	if !errors.Is(err, svErr) {
+		t.Errorf("error = %v, want the session-var error itself", err)
+	}
+	if strings.Contains(err.Error(), "all 2 addresses failed") {
+		t.Errorf("error must not be the failover aggregate: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--session-var SORT_BUF_SIZE") {
+		t.Errorf("error must name the option: %v", err)
 	}
 }

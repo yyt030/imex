@@ -27,6 +27,13 @@ func (damengBackend) Engine() Engine { return EngineDM }
 
 // Open builds the Dameng DSN and returns an unopened *sql.DB. The DSN always
 // requests Oracle-compatible mode and binds --database as the initial schema.
+//
+// With no --session-var the plain sql.Open("dm", dsn) path is byte-for-byte
+// what it always was: not one byte of the DSN, the config record or the error
+// text changes. With session variables the DM driver's Connector is decorated
+// (see dameng_sessionvar.go) so every NEW physical connection replays them as
+// ALTER SESSION SET '<name>' = <value>. Open stays lazy on both paths, so
+// PingWithRetry remains the single place a connect failure is decided.
 func (damengBackend) Open(cfg *config.Config) (*sql.DB, error) {
 	dsn, err := buildDamengDSN(cfg)
 	if err != nil {
@@ -37,11 +44,16 @@ func (damengBackend) Open(cfg *config.Config) (*sql.DB, error) {
 	if cfg.ConnectTimeout > 0 {
 		registerDamengDial(cfg)
 	}
+	if len(cfg.Vars) > 0 {
+		return openDamengSessionVarDB(dsn, cfg.Vars)
+	}
 	return sql.Open("dm", dsn)
 }
 
 // IsReservedConnParam reports DSN parameter names that the driver or this tool
-// owns. --session-var cannot override them.
+// owns. A --session-var of one of them is rejected before any connection is
+// built, because the DM driver would read it as a connection setting instead
+// of a session parameter.
 func (damengBackend) IsReservedConnParam(name string) bool {
 	return reservedDamengDSNParams[name]
 }

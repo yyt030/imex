@@ -552,6 +552,13 @@
 # over to the next on a dial or login error. All 22 live bodies were diffed
 # against the rebuilt binary and every generated line is <= 118 bytes.
 # See requirements.md 178.
+# Note 35 (2026-11-15): the Dameng --session-var round changed no help text
+# at all. The option already existed on export and import; only its runtime
+# behaviour on --engine dm changed (the CLI refusal is gone and each new
+# physical connection now replays ALTER SESSION SET). All 22 live bodies
+# were diffed against the rebuilt 0.40.0 binary: identical=22, drift=0,
+# and every generated line is <= 118 bytes. No body was re-baselined.
+# See requirements.md 180.
 
 ## export
 Export data from a MySQL, PostgreSQL or Dameng database to a DEL

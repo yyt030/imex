@@ -1209,11 +1209,11 @@ func (imp *Importer) importParallel(ctx context.Context, reader Reader, columns 
 	// Stage 2: worker goroutines, each with its own connection/transaction.
 
 	// Each worker dials through the backend, so a parallel run opens as many
-	// engine-native connections as there are threads and the DSN-building —
-	// including the charset and session-variable settings only MySQL has — stays
-	// in one place. --threads is refused for engines the CLI has not verified in
-	// parallel, which is what makes this path MySQL-only in practice rather than
-	// in code.
+	// engine-native connections as there are threads and the connection setup —
+	// charset plus the per-engine --session-var mechanism (MySQL DSN parameters,
+	// pg AfterConnect, dm decorated Connector) — stays in one place. --threads is
+	// refused for engines the CLI has not verified in parallel, which is what
+	// makes this path engine-independent in code.
 	imp.warnIfThreadsExceedCapacity(ctx, numThreads)
 	warnIfReplayWindowScales(numThreads)
 

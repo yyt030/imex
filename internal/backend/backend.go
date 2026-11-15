@@ -160,8 +160,10 @@ type Backend interface {
 	// promised (a session SET overriding the tool's own GUC). The question is
 	// engine vocabulary: MySQL reserves its driver's DSN parameter names, pg
 	// reserves its driver keywords plus the client_encoding/statement_timeout it
-	// sets. cmd asks it before the parser in internal/common, which cannot import
-	// this package, rejects the name.
+	// sets, and dm reserves its own DSN parameter names (compatibleMode, schema,
+	// the timeout and dial parameters, …) which the driver would consume instead
+	// of passing to ALTER SESSION SET. cmd asks it before the parser in
+	// internal/common, which cannot import this package, rejects the name.
 	IsReservedConnParam(name string) bool
 
 	// QuoteIdent quotes one identifier (a table or column name) the way this

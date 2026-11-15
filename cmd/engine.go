@@ -183,8 +183,9 @@ func checkShowEngineOptions(e backend.Engine, kind string) error {
 // parseSessionVars runs --session-var values through the shared parser with the
 // reserved-name list of the engine this run resolved. The list belongs to the
 // dialect: those names are the ones the connection string or the tool already
-// owns — the MySQL driver's DSN parameters, and on pg the driver keywords plus
-// the client_encoding/statement_timeout the tool sets itself
+// owns — the MySQL driver's DSN parameters, on pg the driver keywords plus the
+// client_encoding/statement_timeout the tool sets itself, and on dm the DSN
+// parameters the Dameng driver consumes instead of passing to ALTER SESSION SET
 // (Backend.IsReservedConnParam). An engine with no such names would reserve none;
 // every engine here has some. internal/common cannot import backend, so the
 // predicate travels as a value.

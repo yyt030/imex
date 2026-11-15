@@ -4,11 +4,14 @@ import (
 	"github.com/imex/internal/config"
 )
 
-// Dameng (DM8 Oracle mode) option refusals. The first cut only supports:
-//   - export: --format del/sql/parquet, --threads > 1 included, any --query
-//   - import: --format del/sql/parquet, --mode insert/replace
+// Dameng (DM8 Oracle mode) option refusals. What the engine serves on each
+// command:
+//   - export: --format del/sql/parquet, --threads > 1 included, any --query,
+//     and --session-var (translated to ALTER SESSION SET, see below)
+//   - import: --format del/sql/parquet, --mode insert/replace, --session-var
 //   - list: databases, schemas, tables, views, columns, indexes, triggers and
 //     routines (everything but events, which DM has no scheduler for)
+//   - show: every kind but events
 // Everything else is refused here so the run stops before it dials.
 //
 // --format sql round-trips both ways now. The writer emits a Dameng/Oracle
@@ -27,9 +30,12 @@ import (
 // (Dameng has no row-value comparison), which keeps the row multiset identical
 // but not the byte order, so those are compared sorted. parquet never shards —
 // like every other engine, the writer falls back to a single-threaded dump.
-// What is still refused is listed below.
-
-const dmSessionVarReason = "SET <name>=<value> is MySQL session grammar and imex does not translate it for Dameng; put session settings in the server or role configuration"
+//
+// --session-var is no longer refused either: DM8 does have session-level
+// parameters, they are just spelled ALTER SESSION SET '<name>' = <value>
+// rather than MySQL's SET. The translation lives in dameng_sessionvar.go,
+// which decorates the driver's Connector so the statements run on every new
+// physical connection. What is still refused is listed below.
 
 func (damengBackend) Refusals(c Command) []Refusal {
 	switch c {
@@ -40,11 +46,6 @@ func (damengBackend) Refusals(c Command) []Refusal {
 				Reason:  "Dameng rejects a NUL byte inside a text value, so binary columns must go out as 0x hex; imex always does it on this engine",
 				Applies: func(o RunOptions) bool { return o.NoHexBlob },
 			},
-			{
-				Option:  static("--session-var"),
-				Reason:  dmSessionVarReason,
-				Applies: func(o RunOptions) bool { return o.SessionVar },
-			},
 		}
 	case CmdImport:
 		return []Refusal{
@@ -52,11 +53,6 @@ func (damengBackend) Refusals(c Command) []Refusal {
 				Option:  static("--mode insert_update"),
 				Reason:  "the Dameng backend does not implement upsert in this MVP, use --mode insert or --mode replace",
 				Applies: func(o RunOptions) bool { return o.Mode == string(config.ImportModeInsertUpdate) },
-			},
-			{
-				Option:  static("--session-var"),
-				Reason:  dmSessionVarReason,
-				Applies: func(o RunOptions) bool { return o.SessionVar },
 			},
 		}
 	case CmdList:

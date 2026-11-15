@@ -167,7 +167,7 @@ func TestEngineNameInRefusalMessageIsTheValue(t *testing.T) {
 // this pins the shape that owns them.
 func TestDamengSQLRoundTripsBothWays(t *testing.T) {
 	exp := Must(EngineDM).Refusals(CmdExport)
-	wantExp := []string{"--blob-encoding raw", "--session-var"}
+	wantExp := []string{"--blob-encoding raw"}
 	if len(exp) != len(wantExp) {
 		t.Fatalf("dm export has %d rules, want %d", len(exp), len(wantExp))
 	}
@@ -193,13 +193,24 @@ func TestDamengSQLRoundTripsBothWays(t *testing.T) {
 			t.Errorf("dm import must no longer refuse --format sql; the reader is now Dameng-dialect aware")
 		}
 	}
-	wantImp := []string{"--mode insert_update", "--session-var"}
+	wantImp := []string{"--mode insert_update"}
 	if len(imp) != len(wantImp) {
 		t.Fatalf("dm import has %d rules, want %d", len(imp), len(wantImp))
 	}
 	for i, r := range imp {
 		if got := r.Option(RunOptions{Mode: wantImp[i]}); got != wantImp[i] {
 			t.Errorf("dm import rule %d = %q, want %q", i, got, wantImp[i])
+		}
+	}
+	// --session-var left both tables when DM8 gained its ALTER SESSION SET
+	// translation. Re-adding it as a refusal is a contract change and must
+	// fail here rather than slip through as a deleted test row.
+	for _, r := range append(append([]Refusal{}, exp...), imp...) {
+		if r.Option(RunOptions{SessionVar: true}) == "--session-var" {
+			t.Errorf("dm must no longer refuse --session-var")
+		}
+		if r.Applies(RunOptions{SessionVar: true}) {
+			t.Errorf("a dm refusal must not fire merely because --session-var was named")
 		}
 	}
 }
