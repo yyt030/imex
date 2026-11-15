@@ -20,15 +20,18 @@ type shardDialect struct {
 	tableStats string // -> (rows, avg_row_len)
 }
 
-// shardDialectFor picks the statements for one run. PostgreSQL and the GaussDB
-// spike that inherits its refusals and wire protocol both read the PostgreSQL
-// catalogue; Dameng reads the Oracle-compatible ALL_* views; everything else
-// keeps the MySQL statements — those are the bytes every existing MySQL run
-// sends (contract face ⑤).
+// shardDialectFor picks the statements for one run. PostgreSQL reads its own
+// catalogue; Gauss speaks the same wire protocol but its 9.2-era kernel cannot
+// parse the LATERAL/WITH ORDINALITY unwind in pgShardDialect's key lookups, so
+// it gets gaussShardDialect (same four answers from information_schema); Dameng
+// reads the Oracle-compatible ALL_* views; everything else keeps the MySQL
+// statements — those are the bytes every existing MySQL run sends (face ⑤).
 func shardDialectFor(be backend.Backend) shardDialect {
 	switch be.Engine() {
-	case backend.EnginePG, backend.EngineGauss:
+	case backend.EnginePG:
 		return pgShardDialect
+	case backend.EngineGauss:
+		return gaussShardDialect
 	case backend.EngineDM:
 		return dmShardDialect
 	}
@@ -154,6 +157,50 @@ var pgShardDialect = shardDialect{
 		WHERE c.relname = $2
 			AND ` + pgSchemaPredicate + `
 	`,
+}
+
+// gaussSchemaPredicate is the information_schema spelling of pgSchemaPredicate:
+// the same "explicit schema wins, empty falls back to current_schema()" rule,
+// against table_schema instead of pg_namespace.nspname.
+const gaussSchemaPredicate = "tc.table_schema = COALESCE(NULLIF($1, ''), current_schema()::text)"
+
+// gaussShardDialect serves the GaussDB / openGauss kernel (measured on
+// openGauss-lite 5.0.3, server_version 9.2.4). Its key lookups cannot use the
+// PostgreSQL dialect's `JOIN LATERAL unnest(con.conkey) WITH ORDINALITY` — that
+// kernel reports `invalid reference to FROM-clause entry` / a syntax error at
+// `CONFLICT (` and has neither construct. information_schema's
+// table_constraints + key_column_usage give the same ordered column list
+// through ordinal_position, with the same $1 schema / $2 table / $3 column bind
+// order as every other dialect here. columnType and tableStats are inherited
+// verbatim from pgShardDialect: both were PREPARE/EXECUTE-tested on the live bed
+// (information_schema.columns, pg_class.reltuples/relpages, ::bigint casts).
+var gaussShardDialect = shardDialect{
+	primaryKey: `
+		SELECT kcu.column_name
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON kcu.constraint_catalog = tc.constraint_catalog
+		 AND kcu.constraint_schema = tc.constraint_schema
+		 AND kcu.constraint_name = tc.constraint_name
+		WHERE ` + gaussSchemaPredicate + `
+			AND tc.table_name = $2
+			AND tc.constraint_type = 'PRIMARY KEY'
+		ORDER BY kcu.ordinal_position
+	`,
+	uniqueKey: `
+		SELECT kcu.column_name, tc.constraint_name
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON kcu.constraint_catalog = tc.constraint_catalog
+		 AND kcu.constraint_schema = tc.constraint_schema
+		 AND kcu.constraint_name = tc.constraint_name
+		WHERE ` + gaussSchemaPredicate + `
+			AND tc.table_name = $2
+			AND tc.constraint_type = 'UNIQUE'
+		ORDER BY tc.constraint_name, kcu.ordinal_position
+	`,
+	columnType: pgShardDialect.columnType,
+	tableStats: pgShardDialect.tableStats,
 }
 
 // dmSchemaPredicate is Dameng's spelling of "the schema this run named, or the

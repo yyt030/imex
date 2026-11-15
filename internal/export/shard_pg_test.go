@@ -66,13 +66,25 @@ func TestShardDialectIsChosenByEngine(t *testing.T) {
 
 	// Dameng got its own catalogue when --threads > 1 stopped being a refusal
 	// (shard_dm_test.go pins its statements), so it must not land on the MySQL
-	// bytes any more; the Gauss spike inherits PostgreSQL's refusals and protocol
-	// and must therefore inherit its sharding dialect too.
+	// bytes any more. Gauss got its own in round 185: its 9.2-era kernel cannot
+	// parse the LATERAL/WITH ORDINALITY unwind in pgShardDialect's key lookups,
+	// so sharing the PostgreSQL bytes would break every parallel gauss export.
 	if got := shardDialectFor(backend.Must(backend.EngineDM)).primaryKey; got == mysql.primaryKey || got == pg.primaryKey {
 		t.Error("dm shard dialect must be its own ALL_* catalogue read")
 	}
-	if got := shardDialectFor(backend.Must(backend.EngineGauss)).primaryKey; got != pg.primaryKey {
-		t.Error("gauss must inherit the PostgreSQL shard dialect")
+	gauss := shardDialectFor(backend.Must(backend.EngineGauss))
+	if gauss.primaryKey == pg.primaryKey || gauss.uniqueKey == pg.uniqueKey {
+		t.Error("gauss shard dialect must use information_schema, not the pg LATERAL form")
+	}
+	if gauss.columnType != pg.columnType || gauss.tableStats != pg.tableStats {
+		t.Error("gauss inherits the pg columnType/tableStats: both parse on the live bed")
+	}
+	if !strings.Contains(gauss.primaryKey, "information_schema.table_constraints") ||
+		!strings.Contains(gauss.primaryKey, "ordinal_position") {
+		t.Error("gauss primaryKey must read information_schema key columns in order")
+	}
+	if gauss.primaryKey == mysql.primaryKey {
+		t.Error("gauss shard dialect must not fall back to MySQL bytes")
 	}
 }
 

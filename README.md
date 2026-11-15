@@ -1,14 +1,14 @@
 # imex
 
-名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度逻辑导入导出工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，通过 `--engine` 支持 MySQL（含 MariaDB 与 OceanBase MySQL 模式）、PostgreSQL 与达梦 DM8（Oracle 兼容模式）。
+名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度逻辑导入导出工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，通过 `--engine` 支持 MySQL（含 MariaDB 与 OceanBase MySQL 模式）、PostgreSQL、达梦 DM8（Oracle 兼容模式）与 GaussDB / openGauss。
 
-> **当前版本 `v0.42.0`**（2026-11-15，**Y 档选项面变更轮**：`--engine` 新增短选项 `-E` 与环境变量 `IMEX_ENGINE`（连接型 `IMEX_*` 由五个增至六个，显式 flag > 环境变量 > 内置默认的优先级不变），并由「可省略、默认 `mysql`」改为**必输**——`-E`／`--engine` 或 `IMEX_ENGINE` 任一给出即算已输，都不给报 `--engine is required (give -E/--engine or set IMEX_ENGINE)` 退 2；`-E ""` 显式空值同样拦，库层 `backend.Parse("")`／`defaultConfig()` 的空值兜底保留、供手工构造 Config 的调用方。**`--engine` 仍必须保留**：三引擎（mysql／pg／dm）靠它选后端、无法从连接参数自动判定。19 个含 `--engine` 的 help 节去掉 `(default "mysql")`、改标 `(required)` 并补 `-E` 与 `IMEX_ENGINE`（`docs/cli-oracle.txt` note 36／37、22 个 live 正文节 22/22 drift 0）。**无 flag 删除、无需迁移脚本**，但省略 `--engine` 的老命令现在会退 2，须显式补 `-E mysql` 或设 `IMEX_ENGINE=mysql`）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179／181 五轮既定口径，本轮虽为选项面变更，其当前行为已由本文「连接选项」与「三引擎」小节描述、设计与取证由 `docs/requirements.md` 变更记录 **182**／**183**／**184**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
+> **当前版本 `v0.43.0`**（2026-11-15，**Y 档引擎面变更轮**：`--engine` 新增第四个取值 `gauss`（GaussDB / openGauss，别名 `gaussdb`／`opengauss`），由隐藏实验引擎升为**公开引擎**——`engineOrder` 由三值变四值、19 个含 `--engine` 的 help 节改 `mysql, pg, dm, gauss`（106 字节）、root 与 export／import 的引擎描述补 GaussDB（`docs/cli-oracle.txt` note 38、22 个 live 正文节 22/22 drift 0）。`-f sql` 的 `--sql-dialect auto` 把 gauss 归到 **pg 语法**（旧版落 MySQL 方言，产物在真库上直接 `syntax error`）；`--mode insert_update`、`--blob-encoding raw`、`list events`、`show` 除 `tab` 外六种 kind 均在连库前退 2，拒绝理由不再自称 PostgreSQL。9.2 内核兼容处理**全部是 gauss 专属 override**（生成列与唯一键探针改 `information_schema`、`list idx` 与并行分片各用无 LATERAL 查询、`show tab` 走原生 `pg_get_tabledef`），**pg／mysql／dm 的下发 SQL 一字节未改**。实测 bed 为 openGauss-lite 5.0.3（`server_version` 9.2.4、md5 认证）：三格式往返 5 行双向差 0、`attgenerated` WARN 消除、gauss 与 pg 的 SQL 产物逐字节相同且五行 INSERT 由服务端回放 5/5 落库）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179／181 既定口径，本轮的当前行为由本文「四引擎」与「GaussDB / openGauss 引擎」两节描述、设计与取证由 `docs/requirements.md` 变更记录 **185**／**186**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
 
 ## 目录
 
 **使用文档（当前行为）**
 
-- [特性](#特性) — 能力与三引擎口径
+- [特性](#特性) — 能力与四引擎口径
 - [安装](#安装) — 源码构建、交叉编译、发布矩阵
 - [快速开始](#快速开始) — 最短上手路径
 - [命令说明](#命令说明) — 命令、全部选项、环境变量、输出通道
@@ -46,7 +46,7 @@
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
 - **连接参数可走环境变量**：`IMEX_ENGINE`/`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为六个连接选项供值——`--engine` 必输（`-E` 或 `IMEX_ENGINE` 至少给一个，都不给即退出 2），其余五项有内置默认值；命令行显式写下的选项始终优先；日志只记变量名、不记取值。`IMEX_HOST`／`IMEX_PORT` 同样支持逗号分隔的多地址。
-- **三引擎**：`--engine` 为必输项，取 `mysql`、`pg` 或 `dm`（`-E` 或 `IMEX_ENGINE` 至少给一个）。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，导出侧 `--threads 1–256` 并行分片导出（见「PostgreSQL 引擎」），`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；`--blob-encoding raw` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export` 支持 `-f del|sql|parquet`（`--threads 1–256` 并行分片导出，见「达梦引擎」）、`import` 支持 `-f del|sql|parquet` 的 `--mode insert|replace` 与 `--threads`，`list` 给八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`--session-var` 现按达梦语法翻译为 `ALTER SESSION SET '<参数名>' = <值>`、在每条新物理连接上执行（见「会话变量」与「达梦引擎」）。**`--engine` 必输**，由短选项 `-E` 或环境变量 `IMEX_ENGINE` 给出，两者都不给即在校验第一步以退出码 2 报 `--engine is required (give -E/--engine or set IMEX_ENGINE)`
+- **四引擎**：`--engine` 为必输项，取 `mysql`、`pg`、`dm` 或 `gauss`（`-E` 或 `IMEX_ENGINE` 至少给一个）。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，导出侧 `--threads 1–256` 并行分片导出（见「PostgreSQL 引擎」），`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；`--blob-encoding raw` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export` 支持 `-f del|sql|parquet`（`--threads 1–256` 并行分片导出，见「达梦引擎」）、`import` 支持 `-f del|sql|parquet` 的 `--mode insert|replace` 与 `--threads`，`list` 给八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`--session-var` 现按达梦语法翻译为 `ALTER SESSION SET '<参数名>' = <值>`、在每条新物理连接上执行（见「会话变量」与「达梦引擎」）。GaussDB / openGauss（`gauss`，别名 `gaussdb`／`opengauss`）复用同一条 pgx 连接与 PG 语法：`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 的 `auto` 方言落 PG 语法）、`--threads` 并行分片、`--mode insert|replace`（`insert_update` 因服务端无 `ON CONFLICT` 在连库前退出 `2`），`list` 给八个对象、`show tab` 走原生 `pg_get_tabledef`（其余 kind 在连库前退出 `2`）（见「GaussDB / openGauss 引擎」）。**`--engine` 必输**，由短选项 `-E` 或环境变量 `IMEX_ENGINE` 给出，两者都不给即在校验第一步以退出码 2 报 `--engine is required (give -E/--engine or set IMEX_ENGINE)`
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -178,7 +178,7 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 
 | 选项 | 短选项 | 说明 | 环境变量 | 默认值 |
 |------|--------|------|----------|--------|
-| `--engine` | `-E` | 数据库引擎（**必输**：`-E` 或 `IMEX_ENGINE` 至少给一个，都不给即退出 2）：`mysql`、`pg`（PostgreSQL，经 `jackc/pgx/v5`）或 `dm`（达梦 DM8，经 `gitee.com/chunanyong/dm`，恒以 Oracle 兼容模式连接；`dameng` 是同一个取值的别名），取值不区分大小写、裁两端空白；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节，`dm` 见「达梦引擎」一节 | `IMEX_ENGINE` | 必输（无默认） |
+| `--engine` | `-E` | 数据库引擎（**必输**：`-E` 或 `IMEX_ENGINE` 至少给一个，都不给即退出 2）：`mysql`、`pg`（PostgreSQL，经 `jackc/pgx/v5`）、`dm`（达梦 DM8，经 `gitee.com/chunanyong/dm`，恒以 Oracle 兼容模式连接；`dameng` 是同一个取值的别名）或 `gauss`（GaussDB / openGauss，同一条 pgx 连接，`gaussdb`/`opengauss` 是同一个取值的别名），取值不区分大小写、裁两端空白；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节，`dm` 见「达梦引擎」一节，`gauss` 见「GaussDB / openGauss 引擎」一节 | `IMEX_ENGINE` | 必输（无默认） |
 | `--host` | `-h` | 数据库主机地址；可逗号分隔给多个（多地址见下方说明） | `IMEX_HOST` | `127.0.0.1` |
 | `--port` | `-P` | TCP/IP 端口；可逗号分隔给多个：1 个广播到所有主机，N 个与 N 个主机一一对应（`--engine pg` 时默认 `5432`，`--engine dm` 时默认 `5236`） | `IMEX_PORT` | `3306` |
 | `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明）；`--engine dm` 时它就是达梦的账号，不能为空，为空在建连之前退出 2 | `IMEX_USER` | `root` |
@@ -332,7 +332,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 |------|------|--------|
 | `--statement-size` | 单条 INSERT 语句最大字节数（只有 `--extended-insert` 时是攒批上限；默认单行布局下一行无法再拆，超过它只记一次告警） | `8388608`（8MiB） |
 | `--extended-insert` | 把多行合并进一条 INSERT（按 `--statement-size` 分组，等价 mysqldump 默认行为）；若 `--statement-size` 低于单行语句宽度则一条也合不成，产物退回每行一条 INSERT 并记一次告警 | `false` |
-| `--sql-dialect` | 指定 `-f sql` 产物写哪种 SQL 语法：`auto`（默认）跟随所连引擎——MySQL 引擎逐字节保持既有 MySQL 语法、PostgreSQL 引擎写 pg 语法；`mysql`/`pg` 显式指定，**与连的哪个引擎无关**（一个 MySQL 库可以刻意产出 pg dump）。pg 语法用双引号标识符、`'\x..'::bytea` 表二进制、含控制字符的串写 `E'..'`、布尔写 `true`/`false`；MySQL 语法用反引号、`0x` 十六进制、反斜杠转义；dm 语法用双引号标识符、二进制 `HEXTORAW('..')`、串字面量只翻倍单引号且反斜杠与控制字符原样、布尔写 `1`/`0`。仅 `--format sql` 生效（其它格式下传入是用法错误退出 2）；非法值 `invalid --sql-dialect "x": must be one of auto/mysql/pg/dm` 退出 2。`--engine dm` 连接时 `auto` 落 dm 语法，`export -f sql` 与 `import -f sql` 双向可用（见「达梦引擎」） | `auto` |
+| `--sql-dialect` | 指定 `-f sql` 产物写哪种 SQL 语法：`auto`（默认）跟随所连引擎——MySQL 引擎逐字节保持既有 MySQL 语法、PostgreSQL 与 GaussDB 引擎写 pg 语法、达梦写 dm 语法；`mysql`/`pg` 显式指定，**与连的哪个引擎无关**（一个 MySQL 库可以刻意产出 pg dump）。pg 语法用双引号标识符、`'\x..'::bytea` 表二进制、含控制字符的串写 `E'..'`、布尔写 `true`/`false`；MySQL 语法用反引号、`0x` 十六进制、反斜杠转义；dm 语法用双引号标识符、二进制 `HEXTORAW('..')`、串字面量只翻倍单引号且反斜杠与控制字符原样、布尔写 `1`/`0`。仅 `--format sql` 生效（其它格式下传入是用法错误退出 2）；非法值 `invalid --sql-dialect "x": must be one of auto/mysql/pg/dm` 退出 2。`--engine dm` 连接时 `auto` 落 dm 语法，`export -f sql` 与 `import -f sql` 双向可用（见「达梦引擎」） | `auto` |
 
 > SQL 导出只写数据语句：逐行 `INSERT`，**不含任何前导，也不含任何 DDL**（历史上的 `SET NAMES` 前导已移除，以便同一份文件跨 MySQL/PostgreSQL/达梦 通用回放）。文件的另一半——建表语句——由 `imex show tab` 交回，它是本工具唯一读 `SHOW CREATE TABLE` 的地方，两者拼起来就是自带结构的 dump（见上文自带结构 SQL 示例与「show - 对象定义导出」一节）。`--create` 与 `--no-data` 已直接删除、不留别名，传入即 `unknown flag: --create` / `unknown flag: --no-data` 并退出 2（`--no-create`、`--single-row-insert` 此前已按同一口径移除）。因为产物只描述数据，`--format sql` 仍只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。`-q`（含 `-q @file` 从文件读入的语句）里若表名带了 schema（`db.tbl`），导出只按裸表名写 `INSERT`，并行路径的分片键探测、统计读取与采样边界仍以查询点名的 schema 为准（见「并行导出」一节），因此不会再出现把连接的 `--database` 二次拼接导致的 `Error 1054/1146`。导入侧 `--mode create` 已连同其建表语义一并移除（传入即 `invalid --mode "create"`，退出码 2）：imex 不重放 DDL，导入 SQL 文件时它跳过 `CREATE` 语句只灌 `INSERT`，要建表就先用 `show tab` 产出的 DDL 在目标库建好、再以 `--mode insert` 导入；`mysqldump` 等外部工具含 `CREATE TABLE` 的文件同样照此处理，建表交给标准客户端、imex 只负责数据。
 
@@ -342,7 +342,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），六个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--engine`（`-E` 或 `IMEX_ENGINE`）、`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；现行 SQL 产物已不含 `SET NAMES` 前导，imex 导入仍以本参数为准，读旧文件时那一行会被跳过。`--mode create` 已从三个引擎整体移除（传入即 `invalid --mode "create"`，退出码 2），建表交给你自己的客户端，imex 只灌数据。`--engine pg` 时 `--session-var` 与 MySQL 同一口径生效（每条新物理连接上执行 `SET name = value`，见「PostgreSQL 引擎」），`-f sql` 会被拒绝（退出码 `2`）；`--mode replace` 与 `--mode insert_update` 与 `--threads` 可用，但 replace 在 pg 侧只是 `DELETE FROM`（没有可关的引用检查）、insert_update 要求表上有一把唯一的键（见下）。`--engine dm` 时 `--session-var` 按 `ALTER SESSION SET '<参数名>' = <值>` 翻译生效（见上「会话变量」）且 `--mode insert_update` 同样退出 `2`，可用的是 `-f del|sql|parquet` 的 `--mode insert|replace`——`-f sql` 由方言感知的读取器回放同引擎的达梦 dump（见「达梦引擎」）。
+连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），六个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--engine`（`-E` 或 `IMEX_ENGINE`）、`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；现行 SQL 产物已不含 `SET NAMES` 前导，imex 导入仍以本参数为准，读旧文件时那一行会被跳过。`--mode create` 已从所有引擎整体移除（传入即 `invalid --mode "create"`，退出码 2），建表交给你自己的客户端，imex 只灌数据。`--engine pg` 时 `--session-var` 与 MySQL 同一口径生效（每条新物理连接上执行 `SET name = value`，见「PostgreSQL 引擎」），`-f sql` 会被拒绝（退出码 `2`）；`--mode replace` 与 `--mode insert_update` 与 `--threads` 可用，但 replace 在 pg 侧只是 `DELETE FROM`（没有可关的引用检查）、insert_update 要求表上有一把唯一的键（见下）。`--engine dm` 时 `--session-var` 按 `ALTER SESSION SET '<参数名>' = <值>` 翻译生效（见上「会话变量」）且 `--mode insert_update` 同样退出 `2`，可用的是 `-f del|sql|parquet` 的 `--mode insert|replace`——`-f sql` 由方言感知的读取器回放同引擎的达梦 dump（见「达梦引擎」）。`--engine gauss` 与 pg 同一口径读 `-f sql`（PG 语法），`--mode insert_update` 因服务端没有 `ON CONFLICT` 在连库前退出 `2`，可用 `--mode insert|replace` 与 `--threads`（见「GaussDB / openGauss 引擎」）。
 
 **导入选项：**
 
@@ -488,7 +488,7 @@ imex list tab -u root -p pass -D shop -o /backup/shop_tables.txt
 imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 ```
 
-`show` 打印**一个**对象在服务器上保存的定义，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。表的建表语句也只在这里取得——`export -f sql` 的产物是纯数据，全工具取建表文本的地方只有 `show tab`。七个 kind 一律三个字母。三个引擎都取，只是取法不同：MySQL 走 `SHOW CREATE` 语句族；PostgreSQL 没有 `SHOW CREATE`，定义由系统目录重建（列、类型、默认值、约束经 `format_type`/`pg_get_constraintdef` 拼回，视图/函数/存储过程/触发器经 `pg_get_viewdef`/`pg_get_functiondef`/`pg_get_triggerdef`，模式拼成 `CREATE SCHEMA … AUTHORIZATION …;`）；达梦走 Oracle 模式的 `DBMS_METADATA.GET_DDL`，模式这一层取 `GET_DDL('USER',…)`——达梦的模式与账号是同一个对象，`GET_DDL('SCHEMA',…)` 会报 `-20001`，所以输出是 `CREATE USER … IDENTIFIED BY <PASSWORD> …`，口令由服务端元数据层脱敏成占位符。`evt`（事件）只有 MySQL 有——`--engine pg` 与 `--engine dm` 下 `show evt` 在建库连接之前退出 `2`，其余六个 kind 两引擎均可打印。`sch` 是唯一不带 schema 限定的 kind：模式名本身就是完整引用，`imex show sch appdb` 不需要 `-D`。下表是 MySQL 一侧的语句与结果列（`internal/backend/show_mysql.go`）：
+`show` 打印**一个**对象在服务器上保存的定义，与 `list` 的「枚举一批」分工互补：批处理由 `list` 出名字，逐个取定义交给 `show`。表的建表语句也只在这里取得——`export -f sql` 的产物是纯数据，全工具取建表文本的地方只有 `show tab`。七个 kind 一律三个字母。每个引擎都取，只是取法不同：MySQL 走 `SHOW CREATE` 语句族；PostgreSQL 没有 `SHOW CREATE`，定义由系统目录重建（列、类型、默认值、约束经 `format_type`/`pg_get_constraintdef` 拼回，视图/函数/存储过程/触发器经 `pg_get_viewdef`/`pg_get_functiondef`/`pg_get_triggerdef`，模式拼成 `CREATE SCHEMA … AUTHORIZATION …;`）；达梦走 Oracle 模式的 `DBMS_METADATA.GET_DDL`，模式这一层取 `GET_DDL('USER',…)`——达梦的模式与账号是同一个对象，`GET_DDL('SCHEMA',…)` 会报 `-20001`，所以输出是 `CREATE USER … IDENTIFIED BY <PASSWORD> …`，口令由服务端元数据层脱敏成占位符。`evt`（事件）只有 MySQL 有——`--engine pg`、`--engine dm` 与 `--engine gauss` 下 `show evt` 在建库连接之前退出 `2`。Gauss 的取法又不同：`show tab` 走服务端原生 `pg_get_tabledef(regclass)`，其余 kind 没有等价的定义函数，同样在连库前退出 `2`（见「GaussDB / openGauss 引擎」）。`sch` 是唯一不带 schema 限定的 kind：模式名本身就是完整引用，`imex show sch appdb` 不需要 `-D`。下表是 MySQL 一侧的语句与结果列（`internal/backend/show_mysql.go`）：
 
 | kind | 别名（英文全名） | 语句 | 定义所在列 |
 |------|------------------|------|------------|
@@ -534,7 +534,7 @@ SQL 来源三选一，互斥：位置参数给一条、`-f` 指定脚本、或�
 |------|------|
 | `-f, --file` | 从该文件读 SQL（与位置参数、stdin 互斥） |
 | `-D, --database` | 语句运行的默认库（亦 `IMEX_DATABASE`） |
-| `--engine` | `mysql`／`pg`／`dm`，决定顶层 `;` 的切分规则 |
+| `--engine` | `mysql`／`pg`／`dm`／`gauss`，决定顶层 `;` 的切分规则 |
 | `--header` | `off` 令结果集不打表头行 | `on` |
 | `-o`/`-m`/`--no-overwrite` | 与 `list`/`show` 完全同一套输出通道 |
 
@@ -698,7 +698,7 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 | `--mode insert_update` | 方言层的 upsert 在达梦上根本没实现，绕过 CLI 直接调库的调用方同样失败 |
 | `--blob-encoding raw` | 达梦拒绝文本值里出现 NUL 字节，二进制列恒以 `0x` 十六进制写出，关不掉 |
 
-> `--mode create` 不在上表：它不是达梦级拒绝，而是从三个引擎整体移除的非法值（任何引擎传入都 `invalid --mode "create"`、退出 2）。`--session-var` 在三个引擎上均已放行：MySQL 走 DSN 参数、pg 执行 `SET name = value`、达梦翻译成 `ALTER SESSION SET '<参数名>' = <值>`（见上「会话变量」）。
+> `--mode create` 不在上表：它不是达梦级拒绝，而是从所有引擎整体移除的非法值（任何引擎传入都 `invalid --mode "create"`、退出 2）。`--session-var` 在每个引擎上均已放行：MySQL 走 DSN 参数、pg 与 gauss 执行 `SET name = value`、达梦翻译成 `ALTER SESSION SET '<参数名>' = <值>`（见上「会话变量」）。
 
 **取值写法**：驱动对每一个日期时间类型都交回 Go 的 `time.Time`，工具把它重排成达梦自己打印的样子——Oracle 模式的 `DATE` 带时分秒，写成 `2026-01-31 09:26:15`（按日期处理就会把时间部分丢掉）；`TIMESTAMP`/`DATETIME`/`DATETIME2` 同形后跟最多六位小数、尾零不印；`TIME` 写成 `15:04:05`；四个 `WITH TIME ZONE` 类型在各自形态后**保留偏移、不折成 UTC**，服务器给 `2024-05-06T07:08:09.123456+08:00`，文件里就是 `2024-05-06 07:08:09.123456+08:00`。`BIT`/`BOOLEAN` 一律写成一个数字（`1`/`0`）。二进制列（`BLOB`/`RAW`/`LONG RAW`/`BINARY`/`VARBINARY`/`LONGVARBINARY`/`IMAGE`）恒为 `0x…`。`+Inf`/`-Inf`/`NaN` 照达梦存的样子写出，不做归一。NULL 是一个空字段、空串是 `""`，与 MySQL 侧同一套 DEL 布局规则。
 
@@ -717,6 +717,36 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 瞬断重试只认驱动自己那四个连接层错误码（`6001` 通信异常、`9007` 未知网络、`9008` 无效连接、`20001` 连接切换失败），其余一律终态；`6001` 这一条是在沙箱里对着无人监听的 5236 端口实测出来的，其余三个照驱动源码收录。负数码与超出 16 位的正码不参与匹配，免得截断后把一条注定失败的语句误判成可重试。
 
 **已知风险**：① 达梦手册言明多行插入「不支持列存储表」，向列存表导入时攒批 INSERT 可能报错——第一版不特化，遇到就原样透传服务端错误；② `V$DM_INI` 与 `DBA_*` 的可见性依角色权限而定，读不到时连接上限与探列各走自己既有的失败路径。
+
+### GaussDB / openGauss 引擎（`--engine gauss`）
+
+加 `--engine gauss` 即连 GaussDB / openGauss（`gaussdb`、`opengauss` 是同一个取值的别名，不区分大小写、裁两端空白）。它说的是 PostgreSQL 线协议，因此连接、绑定、攒批、快照与导入流水线全部复用 pg 的实现（`jackc/pgx/v5`、`sslmode=disable`），默认端口也随之是 `5432`。实测环境是 **openGauss-lite 5.0.3（build 89d144c2，`server_version` 9.2.4）**，单节点、md5 认证。
+
+```bash
+imex export -E gauss -h 127.0.0.1 -P 5432 -u gaussdb -p pass -D omm \
+  -o /backup/users.del -q "SELECT * FROM users"
+
+imex import -E gauss -h 127.0.0.1 -P 5432 -u gaussdb -p pass -D omm \
+  -i /backup/users.del -t users
+```
+
+**与 PostgreSQL 的差别只在下发语句的兼容层**，pg／mysql／dm 三家的语句一个字节都没改：
+
+| 面 | PostgreSQL 的写法 | Gauss 上改成 |
+|---|---|---|
+| 生成列探针 | `pg_attribute.attgenerated`／`attidentity` | `information_schema.columns` 的 `is_generated`／`is_identity`（9.2 内核没有那两列，用旧查询每次导入都会打一条 42703 的 WARN） |
+| 唯一键探针 | `FROM (…) x, LATERAL unnest(x.indkey) WITH ORDINALITY` | `information_schema.table_constraints` ⋈ `key_column_usage`（9.2 不解析 `LATERAL`／`WITH ORDINALITY`，`list idx` 与 `insert_update` 的预检都走这条） |
+| upsert | `ON CONFLICT (键) DO UPDATE` | 不发（服务端根本没有 `ON CONFLICT`，`--mode insert_update` 在连库前退出 `2`） |
+| `show tab` | 从系统目录重建 DDL | 原生 `pg_get_tabledef(regclass)`，其文本自带 `SET search_path` 头、`WITH (orientation=row, compression=no)` 子句与结尾分号（工具不再追加第二个 `;`） |
+
+**`-f sql` 的方言**：`--sql-dialect auto` 现在把 gauss 归到 **pg 语法**（旧版本曾落到 MySQL 语法，产物里的反引号与 `0x` 十六进制在真库上直接报 `syntax error`）。同一张表用 `-E gauss` 与 `-E pg` 导出的 SQL **逐字节相同**，且这五行 `INSERT` 交给 openGauss 客户端回放时 5/5 落库。导入侧读取器按同一判定解析，因此 gauss 的 dump 能导回 gauss。
+
+**能用的**：`export -f del|sql|parquet`（含 `--threads 1–256` 并行分片，分片键与统计改用 `information_schema`）、`import -f del|sql|parquet` 的 `--mode insert|replace` 与 `--threads`、`list` 的八个对象（`dbs sch tab vws col idx trg rtn`）、`show tab`（`tab`/`table` 两个拼法）。`export`／`import`／`list idx`／`show tab` 与 `-E pg` 的实测结果一致：10 列 5 行（含中文、引号、换行、NULL、`bytea`、`NUMERIC`、`CHAR` 补空格）三种格式往返，双向 `EXCEPT ALL` 差异均为 0。
+
+**被拒的**（都在连库前退出 `2`，不拨号）：`--mode insert_update`（服务端无 `ON CONFLICT`）、`--blob-encoding raw`（服务端拒绝文本值里的 NUL，`bytea` 恒写 `0x…`）、`list events`（无事件调度器）、`show` 除 `tab` 外的六个 kind（没有等价的定义函数，提示改用 `pg_dump`）。`--default-charset` 与 pg 用同一张 `client_encoding` 映射表，文案里点的是 `--engine gauss`。
+
+> **边界**：这里测的是**开源单节点 openGauss Lite**，不是商业 GaussDB / DWS。DWS 的 `pg_get_tabledef` 是三参数签名（带 `DISTRIBUTE BY`），商业版默认 sha256 认证而 pgx 说 md5，分布式与列存未验证。
+
 
 ### 并行导出
 

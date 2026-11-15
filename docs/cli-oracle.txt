@@ -580,9 +580,19 @@
 # bodies were re-diffed against the rebuilt binary: identical=22, drift=0, every
 # generated line <= 118 bytes. Note 36's quoted old row stands as history. See
 # requirements.md 183.
+# Re-baselined note 38 (2026-11-15): gauss became a released engine, so face ①
+# lists it. The 19 live bodies that carry the --engine row now print
+# `Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE` (106
+# bytes, was 99; no column moved). The root help's Engines block gained
+# `and GaussDB / openGauss` and now wraps to two lines before `--engine.`, and
+# the one-line export/import descriptions say `Dameng or GaussDB` instead of
+# `or Dameng`. Every other help row is untouched. All 22 live bodies were
+# re-diffed against the rebuilt binary: identical=22, drift=0, every generated
+# line <= 118 bytes. The `## version` body is still the 4934dd2 snapshot and was
+# not regenerated. Note 37's quoted row stands as history. See requirements.md 185.
 
 ## export
-Export data from a MySQL, PostgreSQL or Dameng database to a DEL
+Export data from a MySQL, PostgreSQL, Dameng or GaussDB database to a DEL
 (delimited ASCII), SQL, or Parquet format file.
 
 Examples:
@@ -629,7 +639,7 @@ Flags:
   -D, --database string                 Database name (also IMEX_DATABASE)
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
       --default-charset string          Connection & output-file charset (utf8mb4 default)
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --escape string                   Escape character (only with --format del) (default "\"")
       --extended-insert                 Merge rows into multi-row INSERTs (only with --format sql)
   -f, --format string                   Output file format (del/sql/parquet) (default "del")
@@ -667,7 +677,7 @@ Global Flags:
 
 ## import
 Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
-MySQL, PostgreSQL or Dameng database.
+MySQL, PostgreSQL, Dameng or GaussDB database.
 
 Examples:
   # Basic import from DEL format
@@ -703,7 +713,7 @@ Flags:
   -D, --database string                 Database name (also IMEX_DATABASE)
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
       --default-charset string          Connection & input-file charset (utf8mb4 default)
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --escape string                   Escape character (only with --format del) (default "\"")
   -f, --format string                   Input file format (del/sql/parquet) (default "del")
       --header string                   Include the header row (on/off) (only with --format del) (default "on")
@@ -789,7 +799,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list dbs
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -824,7 +834,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list sch
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -859,7 +869,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list tab
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -895,7 +905,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list vws
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -929,7 +939,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list col
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -964,7 +974,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list idx
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1000,7 +1010,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list trg
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1036,7 +1046,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list rtn
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1072,7 +1082,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database to inspect (required for columns and indexes; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for list evt
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1146,7 +1156,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Optional for schema: the name is the schema (also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show sch
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1179,7 +1189,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show tab
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1212,7 +1222,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show vws
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1245,7 +1255,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show trg
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1278,7 +1288,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show evt
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1311,7 +1321,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show prc
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1344,7 +1354,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Schema of the object (required unless qualified; also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
       --header string                   Include the header row (on/off); a definition has none (default "on")
   -?, --help                            help for show fcn
   -h, --host string                     Database host(s), comma-separated (also IMEX_HOST) (default "127.0.0.1")
@@ -1390,7 +1400,7 @@ Flags:
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Default schema the statements run in (also IMEX_DATABASE)
       --default-charset string          Connection charset (default "utf8mb4")
-  -E, --engine string                   Database engine (required): mysql, pg, dm; also IMEX_ENGINE
+  -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
   -f, --file string                     Read the SQL to run from this file
       --header string                   Include the header row (on/off) (default "on")
   -?, --help                            help for exec
@@ -1414,8 +1424,9 @@ Global Flags:
 ## root
 imex is a table-level logical import/export tool.
 
-Engines: MySQL (including MariaDB and OceanBase MySQL mode), PostgreSQL, and
-Dameng DM8 in Oracle-compatible mode, selected with --engine.
+Engines: MySQL (including MariaDB and OceanBase MySQL mode), PostgreSQL,
+Dameng DM8 in Oracle-compatible mode, and GaussDB / openGauss, selected with
+--engine.
 
 Commands:
   export, import   move table data to and from DEL, SQL or Parquet files

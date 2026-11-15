@@ -36,7 +36,9 @@ func Objects() []string {
 // engine field was never set (every library caller that builds a config by hand,
 // and every command line that omits --engine) keeps the statements it has always
 // emitted. A new engine adds one row here plus its own queries_<engine>.go file;
-// nothing else in this package knows engine names.
+// nothing else in this package knows engine names. Gauss delegates eight of the
+// nine objects to the PostgreSQL builder and overrides only `indexes`, whose
+// 9.2-era kernel cannot parse LATERAL/WITH ORDINALITY (queries_gauss.go).
 //
 // The key is a parsed backend.Engine and the lookup goes through
 // backend.Normalize, so the spelling on the command line cannot decide which
@@ -47,7 +49,7 @@ func Objects() []string {
 var queryBuilders = map[backend.Engine]func(*config.ListConfig) (string, []any, []string, error){
 	backend.EnginePG:    buildPGQuery,
 	backend.EngineDM:    buildDMQuery,
-	backend.EngineGauss: buildPGQuery,
+	backend.EngineGauss: buildGaussQuery,
 }
 
 // BuildQuery returns the statement, its bound arguments and the output column

@@ -57,6 +57,18 @@ func dmImportFlags(extra ...string) []string {
 	return append(append([]string{}, dmConnFlags...), append([]string{"--engine", "dm", "-i", "/tmp/imex-engine-test.del", "-t", "RT"}, extra...)...)
 }
 
+// gaussConnFlags is the same unreachable-address idea for --engine gauss: every
+// case below must stop at validation, never at a dial.
+var gaussConnFlags = []string{"-h", "127.0.0.1", "-P", "15432", "-u", "gaussprobe", "-p", "pw", "-D", "omm"}
+
+func gaussExportFlags(extra ...string) []string {
+	return append(append([]string{}, gaussConnFlags...), append([]string{"--engine", "gauss", "-o", "/tmp/imex-engine-test.del", "-q", "SELECT 1"}, extra...)...)
+}
+
+func gaussImportFlags(extra ...string) []string {
+	return append(append([]string{}, gaussConnFlags...), append([]string{"--engine", "gauss", "-i", "/tmp/imex-engine-test.del", "-t", "rt"}, extra...)...)
+}
+
 // TestEngineRefusalMatrix drives every option an engine cannot serve through the
 // real validator and asserts the message and the exit class. One table, both
 // directions, so a new engine refusal without a row here cannot land quietly.
@@ -71,7 +83,7 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			name: "export_unknown_engine",
 			sub:  "export",
 			args: append(append([]string{}, pgConnFlags...), "-o", "/tmp/x.del", "-q", "SELECT 1", "--engine", "oracle"),
-			want: `invalid --engine "oracle": must be one of mysql/pg/dm`,
+			want: `invalid --engine "oracle": must be one of mysql/pg/dm/gauss`,
 		},
 		{
 			name: "export_no_hex_blob",
@@ -95,7 +107,7 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			name: "import_engine_typo",
 			sub:  "import",
 			args: append(append([]string{}, pgConnFlags...), "-i", "/tmp/x.del", "-t", "rt", "--engine", "postgres"),
-			want: `invalid --engine "postgres": must be one of mysql/pg/dm`,
+			want: `invalid --engine "postgres": must be one of mysql/pg/dm/gauss`,
 		},
 
 		// --engine dm. What the Dameng surface still refuses has to stop here
@@ -108,7 +120,7 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			name: "dm_export_engine_dm8",
 			sub:  "export",
 			args: append(append([]string{}, dmConnFlags...), "-o", "/tmp/x.del", "-q", "SELECT 1", "--engine", "dm8"),
-			want: `invalid --engine "dm8": must be one of mysql/pg/dm`,
+			want: `invalid --engine "dm8": must be one of mysql/pg/dm/gauss`,
 		},
 		{
 			name: "dm_export_no_hex_blob",
@@ -121,6 +133,39 @@ func TestEngineRefusalMatrix(t *testing.T) {
 			sub:  "import",
 			args: dmImportFlags("--mode", "insert_update"),
 			want: "--mode insert_update is not supported with --engine dm: the Dameng backend does not implement upsert in this MVP, use --mode insert or --mode replace",
+		},
+
+		// --engine gauss (released in round 185). The refusals are the engine's
+		// own words, not PostgreSQL's: before gauss was public it inherited the pg
+		// table verbatim, so the message told a --engine gauss operator that
+		// "a PostgreSQL server rejects a NUL" and that "PostgreSQL has no event
+		// scheduler". Both texts are pinned here so a later revert to inheritance
+		// shows up as a message diff.
+		{
+			name: "gauss_export_no_hex_blob",
+			sub:  "export",
+			args: gaussExportFlags("--blob-encoding", "raw"),
+			want: "--blob-encoding raw is not supported with --engine gauss: a GaussDB / openGauss server rejects a NUL inside any text value, so bytea columns must go out as 0x hex; imex always does it on this engine",
+		},
+		{
+			name: "gauss_export_charset",
+			sub:  "export",
+			args: gaussExportFlags("--default-charset", "nonsense"),
+			want: `invalid --default-charset "nonsense" with --engine gauss: GaussDB / openGauss has no such client encoding (supported: utf8mb4, latin1, gbk, gb18030, ascii)`,
+		},
+		{
+			name: "gauss_import_charset",
+			sub:  "import",
+			args: gaussImportFlags("--default-charset", "nonsense"),
+			want: `invalid --default-charset "nonsense" with --engine gauss: GaussDB / openGauss has no such client encoding (supported: utf8mb4, latin1, gbk, gb18030, ascii)`,
+		},
+		{
+			// The kernel has no ON CONFLICT at all (measured: bare syntax error),
+			// so an upsert is refused at validation rather than by the server.
+			name: "gauss_import_mode_insert_update",
+			sub:  "import",
+			args: gaussImportFlags("--mode", "insert_update"),
+			want: "--mode insert_update is not supported with --engine gauss: the GaussDB / openGauss server has no ON CONFLICT, so an upsert cannot be built; use --mode insert or --mode replace",
 		},
 	}
 
@@ -682,7 +727,7 @@ func TestEngineFlagFace(t *testing.T) {
 		if f.DefValue != "" {
 			t.Errorf("%s --engine default = %q, want empty (required)", name, f.DefValue)
 		}
-		if f.Usage != "Database engine (required): mysql, pg, dm; also IMEX_ENGINE" {
+		if f.Usage != "Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE" {
 			t.Errorf("%s --engine usage = %q", name, f.Usage)
 		}
 		if f.Shorthand != "E" {
@@ -847,4 +892,87 @@ func dmListConfigForCharsetTest() *config.ListConfig {
 	cfg.Password = "pw"
 	cfg.Object = "databases"
 	return cfg
+}
+
+// TestGaussShowSurface pins the narrow `show` whitelist on the GaussDB engine.
+// A Gauss table definition is served by the native pg_get_tabledef(regclass),
+// which exists for no other object kind on that kernel, so table/tab pass at
+// validation and every other kind is refused with a reason naming pg_dump. The
+// refusal is a validation error, not a server error: the run never dials.
+func TestGaussShowSurface(t *testing.T) {
+	// `list events` is refused for the same reason `show evt` is: no scheduler.
+	// validateOnly does not drive `list` (the command builds its own config), so
+	// the rule is exercised through the list validator, as TestListAndShowRefusals
+	// does for pg.
+	listCfg := config.NewListConfig()
+	listCfg.Engine = "gauss"
+	listCfg.Host = "127.0.0.1"
+	listCfg.Port = 15432
+	listCfg.User = "gaussprobe"
+	listCfg.Password = "pw"
+	listCfg.Database = "omm"
+	listCfg.Object = list.ObjectEvents
+	if err := validateListConfig(listCfg); err == nil ||
+		err.Error() != "list events is not supported with --engine gauss: GaussDB / openGauss has no event scheduler, so there is nothing to list; scheduled work lives in an external scheduler" {
+		t.Errorf("list events refusal on gauss = %v", err)
+	} else if !common.IsUsageError(err) {
+		t.Errorf("list events refusal must exit 2")
+	}
+
+	for _, kind := range []string{"tab", "table"} {
+		if err := checkShowEngineOptions(backend.EngineGauss, kind); err != nil {
+			t.Errorf("show %s on gauss must be supported, got refusal %v", kind, err)
+		}
+	}
+
+	for _, kind := range []string{"db", "vw", "trg", "rtn", "evt"} {
+		err := checkShowEngineOptions(backend.EngineGauss, kind)
+		if err == nil {
+			t.Errorf("show %s on gauss must be refused", kind)
+			continue
+		}
+		want := "show " + kind + " is not supported with --engine gauss: Gauss table definitions are read with the native pg_get_tabledef; the other kinds have no equivalent definition function on this engine, use pg_dump for those"
+		if err.Error() != want {
+			t.Errorf("show %s refusal drifted:\n got %q\nwant %q", kind, err.Error(), want)
+		}
+		if !common.IsUsageError(err) {
+			t.Errorf("show %s refusal must exit 2", kind)
+		}
+	}
+}
+
+// TestGaussAliasesResolve pins the three spellings a GaussDB user may type.
+// gaussdb and opengauss were accepted by Parse while the engine was a hidden
+// spike and stay accepted now that it is released: an operator who memorised
+// either name must not be told, after an upgrade, that their engine is invalid.
+// resolveEngine proves the alias reaches the same engine the help text lists.
+func TestGaussAliasesResolve(t *testing.T) {
+	for _, name := range []string{"gauss", "gaussdb", "opengauss"} {
+		got, err := parseEngine(name)
+		if err != nil {
+			t.Errorf("--engine %s must resolve, got %v", name, err)
+			continue
+		}
+		if got != backend.EngineGauss {
+			t.Errorf("--engine %s resolved to %q, want %q", name, got, backend.EngineGauss)
+		}
+	}
+}
+
+// TestGaussIsListedInHelp pins face ①: the engine is in the --engine help text
+// and in the invalid-value list, in the order backend.Engines() reports. A
+// released engine that is absent from help is a hidden engine by another name.
+func TestGaussIsListedInHelp(t *testing.T) {
+	want := "mysql, pg, dm, gauss"
+	if got := strings.Join(backend.Engines(), ", "); got != want {
+		t.Fatalf("Engines() = %q, want %q", got, want)
+	}
+
+	f := exportCmd.Flags().Lookup("engine")
+	if f == nil {
+		t.Fatal("export has no --engine flag")
+	}
+	if got := f.Usage; !strings.Contains(got, want) || !strings.Contains(got, "IMEX_ENGINE") {
+		t.Errorf("--engine usage must list %q and IMEX_ENGINE, got %q", want, got)
+	}
 }

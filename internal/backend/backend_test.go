@@ -30,6 +30,9 @@ func TestParseEngine(t *testing.T) {
 		{"postgres", "", true},
 		{"dameng", EngineDM, false},
 		{"DM", EngineDM, false},
+		{"gauss", EngineGauss, false},
+		{"gaussdb", EngineGauss, false},
+		{"opengauss", EngineGauss, false},
 		{"mariadb", "", true},
 	}
 	for _, c := range cases {
@@ -50,8 +53,8 @@ func TestParseEngine(t *testing.T) {
 			t.Fatalf("Parse(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	if got := Engines(); len(got) != 3 || got[0] != "mysql" || got[1] != "pg" || got[2] != "dm" {
-		t.Fatalf("Engines() = %v, want [mysql pg dm]: the order is printed in help and in the rejection", got)
+	if got := Engines(); len(got) != 4 || got[0] != "mysql" || got[1] != "pg" || got[2] != "dm" || got[3] != "gauss" {
+		t.Fatalf("Engines() = %v, want [mysql pg dm gauss]: the order is printed in help and in the rejection", got)
 	}
 }
 

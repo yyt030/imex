@@ -35,11 +35,12 @@ var messagesPath string
 
 var rootCmd = &cobra.Command{
 	Use:   "imex",
-	Short: "Table-level logical import/export for MySQL, PostgreSQL and Dameng",
+	Short: "Table-level logical import/export for MySQL, PostgreSQL, Dameng and GaussDB",
 	Long: `imex is a table-level logical import/export tool.
 
-Engines: MySQL (including MariaDB and OceanBase MySQL mode), PostgreSQL, and
-Dameng DM8 in Oracle-compatible mode, selected with --engine.
+Engines: MySQL (including MariaDB and OceanBase MySQL mode), PostgreSQL,
+Dameng DM8 in Oracle-compatible mode, and GaussDB / openGauss, selected with
+--engine.
 
 Commands:
   export, import   move table data to and from DEL, SQL or Parquet files

@@ -19,7 +19,7 @@ var exportCmd = &cobra.Command{
 	Aliases: []string{"exp"},
 	Args:    cobra.NoArgs,
 	Short:   "Export table data to DEL, SQL or Parquet",
-	Long: `Export data from a MySQL, PostgreSQL or Dameng database to a DEL
+	Long: `Export data from a MySQL, PostgreSQL, Dameng or GaussDB database to a DEL
 (delimited ASCII), SQL, or Parquet format file.
 
 Examples:

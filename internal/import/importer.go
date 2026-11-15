@@ -137,9 +137,13 @@ func (imp *Importer) backend() backend.Backend {
 // source grammar. A Dameng run reads HEXTORAW('..') binary and Oracle-style
 // strings, a PostgreSQL run reads '..'::bytea and E”, and a MySQL run reads the
 // historical 0x/backslash grammar byte for byte.
+//
+// gauss is paired with EnginePG here for the same reason as the exporter's auto
+// branch: a `-f sql` dump produced by `--engine gauss` carries pg grammar, and
+// this reader has to parse it with the pg rules or the round-trip fails.
 func (imp *Importer) sqlDialect() config.SQLDialect {
 	switch imp.backend().Engine() {
-	case backend.EnginePG:
+	case backend.EnginePG, backend.EngineGauss:
 		return config.SQLDialectPG
 	case backend.EngineDM:
 		return config.SQLDialectDM

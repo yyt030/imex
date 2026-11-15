@@ -18,7 +18,7 @@ var importCmd = &cobra.Command{
 	Args:    cobra.NoArgs,
 	Short:   "Import table data from DEL, SQL or Parquet",
 	Long: `Import data from a DEL (delimited ASCII), SQL, or Parquet format file into a
-MySQL, PostgreSQL or Dameng database.
+MySQL, PostgreSQL, Dameng or GaussDB database.
 
 Examples:
   # Basic import from DEL format

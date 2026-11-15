@@ -41,22 +41,24 @@ const (
 	// Dameng Go driver. Only Oracle mode is supported; the MySQL-compatible
 	// mode is out of scope for this first cut.
 	EngineDM Engine = "dm"
-	// EngineGauss is the GaussDB family (GaussDB / openGauss), which speaks the
-	// PostgreSQL wire protocol and is driven through pgx like EnginePG, but whose
-	// `show` path reads native Gauss functions (pg_get_tabledef) that a stock
-	// PostgreSQL server does not have.
-	//
-	// EXPERIMENTAL SPIKE: it is deliberately kept out of engineOrder, so it is
-	// accepted by Parse and resolvable from backends, but is NOT listed in the
-	// --engine help text or the oracle. It is not a released engine yet.
+	// EngineGauss is the GaussDB family (GaussDB / openGauss). It speaks the
+	// PostgreSQL wire protocol and is driven through pgx like EnginePG, but its
+	// catalogue is a PostgreSQL 9.2-era kernel: no LATERAL / WITH ORDINALITY, no
+	// attgenerated / attidentity, and no ON CONFLICT. Its `show` path reads the
+	// native pg_get_tabledef(regclass) a stock PostgreSQL server does not have.
+	// gaussBackend overrides exactly those differences; every other method is
+	// inherited from postgresBackend, and none of the PostgreSQL statements are
+	// rewritten to accommodate it (contract face ⑤ stays byte-identical for pg).
 	EngineGauss Engine = "gauss"
 )
 
 // engineOrder is the order --engine values are listed in help text and in the
 // rejection message. It is a slice, not a map, for the same reason the delimiter
 // validation in cmd/validate.go uses one: the order a value is reported in is
-// part of the error-text contract.
-var engineOrder = []Engine{EngineMySQL, EnginePG, EngineDM}
+// part of the error-text contract. gauss sits last: it was a hidden spike until
+// round 185 and appending it keeps the three released values in their original
+// positions, so a message that lists them reads in the order operators know.
+var engineOrder = []Engine{EngineMySQL, EnginePG, EngineDM, EngineGauss}
 
 // Engines returns the accepted --engine values in contract order.
 func Engines() []string {
@@ -81,8 +83,9 @@ func Parse(s string) (Engine, error) {
 	case EngineDM, "dameng":
 		return EngineDM, nil
 	case EngineGauss, "gaussdb", "opengauss":
-		// Accepted here but absent from engineOrder, so --engine gauss resolves
-		// while the value stays unlisted in the help text and the oracle (spike).
+		// All three spellings resolve to the one public engine. Only EngineGauss
+		// itself is listed by Engines(); the aliases are accepted input, not
+		// additional help values.
 		return EngineGauss, nil
 	default:
 		return "", errors.Errorf("invalid --engine %q: must be one of %s", s, strings.Join(Engines(), "/"))
