@@ -2,7 +2,7 @@
 
 名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度逻辑导入导出工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，通过 `--engine` 支持 MySQL（含 MariaDB 与 OceanBase MySQL 模式）、PostgreSQL 与达梦 DM8（Oracle 兼容模式）。
 
-> **当前版本 `v0.41.0`**（2026-11-15，**Y 档新增能力轮**：`--engine dm` 的 `--session-var` 由「连库前退出 2 的整体拒绝」翻为按 DM8 语法 `ALTER SESSION SET '<参数名>' = <值>` 在每条新物理连接执行；DM8 会话级参数取 `V$PARAMETER` 中 `TYPE = SESSION` 的动态参数，DISQL 的 `SET` 只是客户端显示开关。`ALTER SESSION` 一报错就一句话指认 `--session-var <参数名>` 并立即退出（只带参数名不带值、`Unwrap` 保留服务端码、多地址不换址不聚合、单地址 `after 1 attempt` 退出 1）。**单地址无 Vars 路径逐字不变**：DSN、`export/import config` 记录、既有用法错误、连库失败错误、下发 SQL 与 v0.40.0 全等；保留名与非法值仍在解析阶段退 2。达梦拒绝清单由六类收为四类（export 只剩 `--blob-encoding raw`、import 只剩 `--mode insert_update`）。**无 flag 删除、无需迁移脚本**）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179 四轮既定口径，本轮虽为新增能力，其当前行为已由本文会话变量节的达梦说明描述、设计与取证由 `docs/requirements.md` 变更记录 **180**／**181**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
+> **当前版本 `v0.42.0`**（2026-11-15，**Y 档选项面变更轮**：`--engine` 新增短选项 `-E` 与环境变量 `IMEX_ENGINE`（连接型 `IMEX_*` 由五个增至六个，显式 flag > 环境变量 > 内置默认的优先级不变），并由「可省略、默认 `mysql`」改为**必输**——`-E`／`--engine` 或 `IMEX_ENGINE` 任一给出即算已输，都不给报 `--engine is required (give -E/--engine or set IMEX_ENGINE)` 退 2；`-E ""` 显式空值同样拦，库层 `backend.Parse("")`／`defaultConfig()` 的空值兜底保留、供手工构造 Config 的调用方。**`--engine` 仍必须保留**：三引擎（mysql／pg／dm）靠它选后端、无法从连接参数自动判定。19 个含 `--engine` 的 help 节去掉 `(default "mysql")`、改标 `(required)` 并补 `-E` 与 `IMEX_ENGINE`（`docs/cli-oracle.txt` note 36／37、22 个 live 正文节 22/22 drift 0）。**无 flag 删除、无需迁移脚本**，但省略 `--engine` 的老命令现在会退 2，须显式补 `-E mysql` 或设 `IMEX_ENGINE=mysql`）。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要），不代表当前行为。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179／181 五轮既定口径，本轮虽为选项面变更，其当前行为已由本文「连接选项」与「三引擎」小节描述、设计与取证由 `docs/requirements.md` 变更记录 **182**／**183**／**184**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
 
 ## 目录
 
@@ -45,8 +45,8 @@
 - **单行 SQL 布局**：`--format sql` 默认每行一条 INSERT，文件逐行可切分；攒批统一由导入侧按 `--batch-size` 完成，导出侧的 `--extended-insert` 只用于换取更小的文件体积
 - **低开销 DEL 解析**：定界符预计算、读取路径不做无效字节↔字符串转换，单线程解析开销降低后并行导入才有效扩展
 - **密码加密**：PBKDF2-HMAC-SHA256 派生密钥 + AES-256-GCM 加密密码，避免在 ps 命令中泄露明文
-- **连接参数可走环境变量**：`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为五个连接选项供默认值，命令行显式写下的选项始终优先；日志只记变量名、不记取值。`IMEX_HOST`／`IMEX_PORT` 同样支持逗号分隔的多地址。
-- **三引擎**：`--engine` 取 `mysql`（默认）、`pg` 或 `dm`。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，导出侧 `--threads 1–256` 并行分片导出（见「PostgreSQL 引擎」），`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；`--blob-encoding raw` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export` 支持 `-f del|sql|parquet`（`--threads 1–256` 并行分片导出，见「达梦引擎」）、`import` 支持 `-f del|sql|parquet` 的 `--mode insert|replace` 与 `--threads`，`list` 给八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`--session-var` 现按达梦语法翻译为 `ALTER SESSION SET '<参数名>' = <值>`、在每条新物理连接上执行（见「会话变量」与「达梦引擎」）。**`--engine` 没有对应的环境变量**，引擎只能由命令行选定
+- **连接参数可走环境变量**：`IMEX_ENGINE`/`IMEX_HOST`/`IMEX_PORT`/`IMEX_USER`/`IMEX_PASSWORD`/`IMEX_DATABASE` 为六个连接选项供值——`--engine` 必输（`-E` 或 `IMEX_ENGINE` 至少给一个，都不给即退出 2），其余五项有内置默认值；命令行显式写下的选项始终优先；日志只记变量名、不记取值。`IMEX_HOST`／`IMEX_PORT` 同样支持逗号分隔的多地址。
+- **三引擎**：`--engine` 为必输项，取 `mysql`、`pg` 或 `dm`（`-E` 或 `IMEX_ENGINE` 至少给一个）。PostgreSQL 走 `github.com/jackc/pgx/v5`，`export`/`import` 支持 `-f del|sql|parquet`（`-f sql` 由 `--sql-dialect pg` 产出方言匹配的 SQL）、`--session-var`（与 MySQL 同一口径）、导入侧 `--mode insert|replace|insert_update` 与 `--threads`，导出侧 `--threads 1–256` 并行分片导出（见「PostgreSQL 引擎」），`list` 给七个对象；`show` 现从系统目录重建对象定义（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因 PostgreSQL 无事件调度器仍在连库前退出 `2`）；`--blob-encoding raw` 在连库前退出 `2`。达梦 DM8 走 `gitee.com/chunanyong/dm`、恒以 Oracle 兼容模式连接，`export` 支持 `-f del|sql|parquet`（`--threads 1–256` 并行分片导出，见「达梦引擎」）、`import` 支持 `-f del|sql|parquet` 的 `--mode insert|replace` 与 `--threads`，`list` 给八个对象（除 `events` 外全部），`show` 现走 Oracle 模式的 `DBMS_METADATA.GET_DDL`（`tab`/`vws`/`trg`/`prc`/`fcn` 五类可用，`evt` 因无事件调度器退出 `2`），`--session-var` 现按达梦语法翻译为 `ALTER SESSION SET '<参数名>' = <值>`、在每条新物理连接上执行（见「会话变量」与「达梦引擎」）。**`--engine` 必输**，由短选项 `-E` 或环境变量 `IMEX_ENGINE` 给出，两者都不给即在校验第一步以退出码 2 报 `--engine is required (give -E/--engine or set IMEX_ENGINE)`
 - **单一二进制**：纯 Go 实现，无 CGO 依赖
 
 ## 安装
@@ -178,7 +178,7 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 
 | 选项 | 短选项 | 说明 | 环境变量 | 默认值 |
 |------|--------|------|----------|--------|
-| `--engine` | | 数据库引擎：`mysql`（默认）、`pg`（PostgreSQL，经 `jackc/pgx/v5`）或 `dm`（达梦 DM8，经 `gitee.com/chunanyong/dm`，恒以 Oracle 兼容模式连接；`dameng` 是同一个取值的别名），取值不区分大小写、裁两端空白；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节，`dm` 见「达梦引擎」一节 | 无（刻意不设） | `mysql` |
+| `--engine` | `-E` | 数据库引擎（**必输**：`-E` 或 `IMEX_ENGINE` 至少给一个，都不给即退出 2）：`mysql`、`pg`（PostgreSQL，经 `jackc/pgx/v5`）或 `dm`（达梦 DM8，经 `gitee.com/chunanyong/dm`，恒以 Oracle 兼容模式连接；`dameng` 是同一个取值的别名），取值不区分大小写、裁两端空白；`pg` 的能力面与被拒选项见「PostgreSQL 引擎」一节，`dm` 见「达梦引擎」一节 | `IMEX_ENGINE` | 必输（无默认） |
 | `--host` | `-h` | 数据库主机地址；可逗号分隔给多个（多地址见下方说明） | `IMEX_HOST` | `127.0.0.1` |
 | `--port` | `-P` | TCP/IP 端口；可逗号分隔给多个：1 个广播到所有主机，N 个与 N 个主机一一对应（`--engine pg` 时默认 `5432`，`--engine dm` 时默认 `5236`） | `IMEX_PORT` | `3306` |
 | `--user` | `-u` | 数据库用户名（支持 OceanBase 格式，见下方说明）；`--engine dm` 时它就是达梦的账号，不能为空，为空在建连之前退出 2 | `IMEX_USER` | `root` |
@@ -189,7 +189,7 @@ imex export [连接选项] [导出选项] [修饰选项] --query "<SELECT SQL>"
 | `--socket-read-timeout` | | 单次 socket 读超时，落到驱动的 `readTimeout` | | `300s` |
 | `--socket-write-timeout` | | 单次 socket 写超时，落到驱动的 `writeTimeout` | | `300s` |
 
-`--password` 与 `--database` 没有默认值，任一缺失即是用法错误、退出码 `2`；缺口令时的提示同时点名两个来源（`--password is required (or set IMEX_PASSWORD)`）。`--host` 与 `--user` 有内置默认值（`127.0.0.1`、`root`），只有把它们**显式写成空值**（`-h ""`、`-u ""`）才会被判为缺失并以退出码 `2` 拒绝，此时不会回落到 `IMEX_HOST`/`IMEX_USER`（见「连接信息来自环境变量」）。
+`--engine`、`--password` 与 `--database` 都必输：`--engine` 无默认值、须由 `-E` 或 `IMEX_ENGINE` 给出，三者任一缺失即是用法错误、退出码 `2`（缺引擎的提示为 `--engine is required (give -E/--engine or set IMEX_ENGINE)`）；缺口令时的提示同时点名两个来源（`--password is required (or set IMEX_PASSWORD)`）。`--host` 与 `--user` 有内置默认值（`127.0.0.1`、`root`），只有把它们**显式写成空值**（`-h ""`、`-u ""`）才会被判为缺失并以退出码 `2` 拒绝，此时不会回落到 `IMEX_HOST`/`IMEX_USER`（见「连接信息来自环境变量」）。
 
 由于 `-h` 被 `--host` 占用，帮助短选项为 `-?`。
 
@@ -342,7 +342,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 imex import [连接选项] [导入选项] [修饰选项]
 ```
 
-连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），五个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；现行 SQL 产物已不含 `SET NAMES` 前导，imex 导入仍以本参数为准，读旧文件时那一行会被跳过。`--mode create` 已从三个引擎整体移除（传入即 `invalid --mode "create"`，退出码 2），建表交给你自己的客户端，imex 只灌数据。`--engine pg` 时 `--session-var` 与 MySQL 同一口径生效（每条新物理连接上执行 `SET name = value`，见「PostgreSQL 引擎」），`-f sql` 会被拒绝（退出码 `2`）；`--mode replace` 与 `--mode insert_update` 与 `--threads` 可用，但 replace 在 pg 侧只是 `DELETE FROM`（没有可关的引用检查）、insert_update 要求表上有一把唯一的键（见下）。`--engine dm` 时 `--session-var` 按 `ALTER SESSION SET '<参数名>' = <值>` 翻译生效（见上「会话变量」）且 `--mode insert_update` 同样退出 `2`，可用的是 `-f del|sql|parquet` 的 `--mode insert|replace`——`-f sql` 由方言感知的读取器回放同引擎的达梦 dump（见「达梦引擎」）。
+连接选项与 export 子命令相同（`--engine`/`--host`/`--port`/`--user`/`--password`/`--database`/`--session-var`/`--default-charset` 以及 `--connect-timeout`/`--socket-read-timeout`/`--socket-write-timeout`），六个连接选项的环境变量形式同样可用（见「连接信息来自环境变量」）；`--engine`（`-E` 或 `IMEX_ENGINE`）、`--password` 与 `--database` 必填，`--host` 与 `--user` 走内置默认值，口径与 export 一致。导入时 `--default-charset` 须与当初导出所用的字符集一致（文件编码 == 连接字符集），否则文本列会被误解码；现行 SQL 产物已不含 `SET NAMES` 前导，imex 导入仍以本参数为准，读旧文件时那一行会被跳过。`--mode create` 已从三个引擎整体移除（传入即 `invalid --mode "create"`，退出码 2），建表交给你自己的客户端，imex 只灌数据。`--engine pg` 时 `--session-var` 与 MySQL 同一口径生效（每条新物理连接上执行 `SET name = value`，见「PostgreSQL 引擎」），`-f sql` 会被拒绝（退出码 `2`）；`--mode replace` 与 `--mode insert_update` 与 `--threads` 可用，但 replace 在 pg 侧只是 `DELETE FROM`（没有可关的引用检查）、insert_update 要求表上有一把唯一的键（见下）。`--engine dm` 时 `--session-var` 按 `ALTER SESSION SET '<参数名>' = <值>` 翻译生效（见上「会话变量」）且 `--mode insert_update` 同样退出 `2`，可用的是 `-f del|sql|parquet` 的 `--mode insert|replace`——`-f sql` 由方言感知的读取器回放同引擎的达梦 dump（见「达梦引擎」）。
 
 **导入选项：**
 
@@ -414,7 +414,7 @@ imex import [连接选项] [导入选项] [修饰选项]
 imex list <object|缩写> [连接选项] [查询选项]
 ```
 
-`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含 `--engine` 与五个 `IMEX_*` 连接变量，见「连接信息来自环境变量」），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时九个对象里八个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时八个对象可用（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`），`events` 退出 `2`；`-D` 对 tables/views/triggers/routines/columns/indexes 是模式名（进 DSN 并过滤 `OWNER`），对 `databases` 过滤库名、对 `schemas` 过滤模式名且都不进 DSN；五个系统模式在 `schemas`、`tables`、`views`、`triggers`、`routines` 上默认排除，`--all` 取消排除（见「达梦引擎」）。子命令以三字母短名为主名、英文全名为等价别名（`imex list tab` 与 `imex list tab` 解析到同一子命令，与 `show` 同形；下表用全名列举对象）：
+`list` 读取 `information_schema`。结果、日志、错误各走自己该走的通道（见下表与「输出通道」段），因此可以直接接管道。连接选项与 export 相同（含必输的 `--engine` 与六个 `IMEX_*` 连接变量，见「连接信息来自环境变量」，`--engine` 由 `-E` 或 `IMEX_ENGINE` 给出），但 `--database` 对大多数对象**不是必填**；`--password` 始终必填（缺失时提示 `--password is required (or set IMEX_PASSWORD)` 并退出码 `2`），`--host` 与 `--user` 同样走内置默认值。`--engine pg` 时九个对象里八个可用，`evt`（事件）退出 `2`；`-D` 是连接的库，对象范围取 `current_schema()`，系统 schema（`pg_catalog`、`information_schema`、`pg_toast`）默认排除，`--all` 取消排除。`--engine dm` 时八个对象可用（除 `events` 外全部：`databases`、`schemas`、`tables`、`views`、`columns`、`indexes`、`triggers`、`routines`），`events` 退出 `2`；`-D` 对 tables/views/triggers/routines/columns/indexes 是模式名（进 DSN 并过滤 `OWNER`），对 `databases` 过滤库名、对 `schemas` 过滤模式名且都不进 DSN；五个系统模式在 `schemas`、`tables`、`views`、`triggers`、`routines` 上默认排除，`--all` 取消排除（见「达梦引擎」）。子命令以三字母短名为主名、英文全名为等价别名（`imex list tab` 与 `imex list tab` 解析到同一子命令，与 `show` 同形；下表用全名列举对象）：
 
 | 对象 | 需要的范围 | 输出列 |
 |------|------------|--------|
@@ -601,28 +601,29 @@ imex list tab -D shop -u root -p pass 2>/dev/null | awk 'NR > 1 { print $2 }' |
 
 ### 连接信息来自环境变量
 
-export、import、`list`、`show` 四条需要连库的命令，五个连接选项都可以由环境变量供值，容器与 CI 里设一次即可，不必每条命令重复写地址与口令。`--engine` 不在其中——引擎只能由命令行显式选定，没有 `IMEX_ENGINE`：
+export、import、`list`、`show` 四条需要连库的命令，六个连接选项都可以由环境变量供值，容器与 CI 里设一次即可，不必每条命令重复写地址与口令。`--engine` 也在其中，但它是**必输项**：短选项 `-E` 或环境变量 `IMEX_ENGINE` 至少给一个，都不给即以 `--engine is required` 退出 2；下面示例把六个变量全设上（含 `IMEX_ENGINE`）：
 
 ```bash
-export IMEX_HOST=127.0.0.1 IMEX_PORT=3306 IMEX_USER=app IMEX_PASSWORD=pass IMEX_DATABASE=mydb
-imex export -q "SELECT * FROM users" -o /backup/users.del   # 一个连接参数都没写
+export IMEX_ENGINE=mysql IMEX_HOST=127.0.0.1 IMEX_PORT=3306 IMEX_USER=app IMEX_PASSWORD=pass IMEX_DATABASE=mydb
+imex export -q "SELECT * FROM users" -o /backup/users.del   # 命令行一个连接参数都没写，全靠环境变量（含必输的 IMEX_ENGINE）
 imex import -i /backup/users.del -t users
 imex list tab
 ```
 
 | 选项 | 环境变量 | 空白取值 | 说明 |
 |------|----------|----------|------|
+| `--engine` | `IMEX_ENGINE` | 按未设置（即没给这个必输项，退出 2） | 数据库引擎（必输）；短选项 `-E`，取值同 `--engine`（大小写不敏感、裁两端空白）；`-E` 与 `IMEX_ENGINE` 都不给即 `--engine is required` 退 2，非法值仍以 `invalid --engine` 退出码 `2` 拒绝 |
 | `--host` | `IMEX_HOST` | 按未设置 | 主机地址；也可逗号分隔给多个 |
 | `--port` | `IMEX_PORT` | 按未设置 | 端口；也可逗号分隔给多个。非数字或超出 1–65535 是用法错误、退出码 `2` |
 | `--user` | `IMEX_USER` | 按未设置 | 用户名 |
 | `--password` | `IMEX_PASSWORD` | 按未设置 | 口令；`ENC:` 密文照常按 `IMEX_KEY` 解密 |
 | `--database` | `IMEX_DATABASE` | 按未设置 | 数据库名 |
 
-- **优先级：命令行显式写下的选项 > 环境变量 > 选项的内置默认值。** 判据是这个选项在命令行上被写过没有，不看取值，因此 `IMEX_USER=svc` 时 `imex export -u root` 用的仍是 `root`，`IMEX_PASSWORD=pass` 时 `imex export -p ""` 用的仍是空口令。
-- **空白等于没设**：变量不存在、为空、或去掉首尾空白后为空，都退回内置默认值；供值的变量两端空白会被去掉。
-- **缺值提示点名两个来源**：`--password` 是唯一既没有默认值、又最常被放进环境的必填项，缺失时的用法错误文案为 `--password is required (or set IMEX_PASSWORD)`，export、import、`list`、`show` 四条命令一字不差（`cmd/conn_env_test.go` 钉前两条，`cmd/list_test.go`/`cmd/show_test.go` 钉后两条）。它是一句静态文案，只说明「这个值有两个来源」：写了 `-p ""` 而 `IMEX_PASSWORD` 有值时，按优先级用的仍是那个空值、打出的仍是这句提示，此时该改的是命令行上的空值而不是环境变量。
+- **优先级：命令行显式写下的选项 > 环境变量 > 选项的内置默认值。** 判据是这个选项在命令行上被写过没有，不看取值，因此 `IMEX_USER=svc` 时 `imex export -u root` 用的仍是 `root`，`IMEX_PASSWORD=pass` 时 `imex export -p ""` 用的仍是空口令。同理 `IMEX_ENGINE=pg` 时显式写下的 `-E mysql` 用的仍是 `mysql`。`--engine` 是唯一没有内置默认值的连接选项，优先级链对它只剩「显式 flag > 环境变量」：两者都不给就是必输错误。
+- **空白等于没设**：变量不存在、为空、或去掉首尾空白后为空，都退回内置默认值（`--engine` 没有默认值，空白即视为没给这个必输项，由 `parseEngine` 报错退 2）；供值的变量两端空白会被去掉。
+- **缺值提示点名两个来源**：`--password` 是最常被放进环境的必填项（同样没有默认值的还有 `--engine` 与 `--database`；`--engine` 另由 `-E`／`IMEX_ENGINE` 满足），缺失时的用法错误文案为 `--password is required (or set IMEX_PASSWORD)`，export、import、`list`、`show` 四条命令一字不差（`cmd/conn_env_test.go` 钉前两条，`cmd/list_test.go`/`cmd/show_test.go` 钉后两条）。它是一句静态文案，只说明「这个值有两个来源」：写了 `-p ""` 而 `IMEX_PASSWORD` 有值时，按优先级用的仍是那个空值、打出的仍是这句提示，此时该改的是命令行上的空值而不是环境变量。
 - **日志只出现变量名，绝不出现值**：有变量供值时记 INFO `connection values supplied by environment variables="[IMEX_USER IMEX_PASSWORD]"`。这条记录同样进 `--messages` 文件，所以口令（含 `ENC:` 密文）不会落到任何产物里。
-- 这与四个全局开关的语义**相反**，是刻意的：`IMEX_ERROR_STACK`/`IMEX_ECHO_SQL_VALUES`/`IMEX_NO_SQL_TAG`/`IMEX_LOG_FORMAT` 是**覆盖**（布尔与布局只有「打开/选一个」这一维），连接变量是**默认值的来源**（让 env 压过命令行写下的地址，同一条命令就会连到操作者没写的那个库）。
+- 这与四个全局开关的语义**相反**，是刻意的：`IMEX_ERROR_STACK`/`IMEX_ECHO_SQL_VALUES`/`IMEX_NO_SQL_TAG`/`IMEX_LOG_FORMAT` 是**覆盖**（布尔与布局只有「打开/选一个」这一维），连接变量（必输的 `--engine` 由 env 供值算满足，其余）是**默认值的来源**（让 env 压过命令行写下的地址，同一条命令就会连到操作者没写的那个库）。
 
 ### PostgreSQL 引擎（`--engine pg`）
 

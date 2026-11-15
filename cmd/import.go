@@ -45,7 +45,7 @@ Examples:
 		}
 
 		// Fill the connection fields the run left unset from the environment
-		// (IMEX_HOST, IMEX_PORT, IMEX_USER, IMEX_PASSWORD, IMEX_DATABASE),
+		// (IMEX_ENGINE, IMEX_HOST, IMEX_PORT, IMEX_USER, IMEX_PASSWORD, IMEX_DATABASE),
 		// before the required-parameter checks. See applyConnEnv
 		// for the precedence rule and why it differs from the IMEX_* switches.
 		connEnv, err := applyConnEnv(cmd.Flags(), &importCfg.Config)

@@ -13,11 +13,17 @@ import (
 
 // connEnvSources pairs each connection flag with the environment variable that
 // can supply its value. The order is the order the resolved variables are
-// reported in the log record.
+// reported in the log record, and matches registerConnFlags: engine first (it
+// decides the backend), then the five address/credential fields. IMEX_ENGINE is
+// a source like any other here, so the flag > env > default rule below applies
+// to it too. With the flag absent, IMEX_ENGINE is what satisfies the CLI's
+// required-engine check (cmd/engine.go); an empty default left over from both
+// being unset is rejected there, not filled in here.
 var connEnvSources = []struct {
 	flag string
 	env  string
 }{
+	{"engine", "IMEX_ENGINE"},
 	{"host", "IMEX_HOST"},
 	{"port", "IMEX_PORT"},
 	{"user", "IMEX_USER"},
@@ -61,6 +67,8 @@ func applyConnEnv(f *pflag.FlagSet, c *config.Config) (connEnvReport, error) {
 		}
 
 		switch src.flag {
+		case "engine":
+			c.Engine = value
 		case "host":
 			c.Host = value
 		case "port":

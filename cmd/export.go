@@ -58,7 +58,7 @@ Examples:
 		}
 
 		// Fill the connection fields the run left unset from the environment
-		// (IMEX_HOST, IMEX_PORT, IMEX_USER, IMEX_PASSWORD, IMEX_DATABASE).
+		// (IMEX_ENGINE, IMEX_HOST, IMEX_PORT, IMEX_USER, IMEX_PASSWORD, IMEX_DATABASE).
 		// This happens before the required-parameter checks so an
 		// environment-supplied database satisfies them exactly like a typed -D.
 		connEnv, err := applyConnEnv(cmd.Flags(), &exportCfg.Config)

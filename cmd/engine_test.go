@@ -7,8 +7,12 @@ package cmd
 //      these expectations were written down;
 //   2. that --engine mysql accepts every option the pg path refuses — the
 //      refactor must not cost the existing engine a single usable flag;
-//   3. that the engine arrives only from the flag: IMEX_ENGINE does not exist, so
-//      face ④ (the IMEX_* environment) is unchanged by this feature.
+//   3. that the engine reads IMEX_ENGINE through face ④ with the same
+//      flag > env > default precedence as the other connection values, and
+//      that -E is its shorthand (see TestEngineEnvironmentVariable);
+//   4. that --engine is required: with an empty flag default, a run giving
+//      neither -E/--engine nor IMEX_ENGINE fails at validation with an exit-2
+//      usage error naming both sources (see TestEngineRequired).
 //
 // The refusals are driven through validateOnly / the config validators rather
 // than rootCmd.Execute() so no case dials a server: every one of them fires
@@ -466,6 +470,10 @@ func TestEnginePortIsAppliedByEngineOnly(t *testing.T) {
 // fill from the environment, resolve the engine, apply what the engine decides.
 func resolvedExportPort(t *testing.T, engine, portArg string) int {
 	t.Helper()
+	// An IMEX_ENGINE left in the shell must not decide the port this helper
+	// measures: the cases name the engine themselves, or leave it empty to mean
+	// the built-in default.
+	t.Setenv("IMEX_ENGINE", "")
 	*exportCfg = *newExportConfigForTest()
 	resetChangedFlags(exportCmd, importCmd, rootCmd)
 
@@ -494,38 +502,164 @@ func resolvedExportPort(t *testing.T, engine, portArg string) int {
 	return cfg.Port
 }
 
-// TestEngineHasNoEnvironmentVariable keeps contract face ④ as it was measured
-// before this feature: the engine comes from --engine and from nowhere else, so
-// an IMEX_* sweep finds no engine knob.
-func TestEngineHasNoEnvironmentVariable(t *testing.T) {
-	t.Setenv("IMEX_ENGINE", "pg")
-
-	*exportCfg = *newExportConfigForTest()
-	resetChangedFlags(exportCmd, importCmd, rootCmd)
-	args := []string{"-h", "127.0.0.1", "-P", "3306", "-u", "root", "-p", "pw", "-D", "mydb",
+// TestEngineEnvironmentVariable pins face ④ for the engine. IMEX_ENGINE is now
+// a source exactly like the other five: it fills the engine when the flag was
+// not given, loses to any explicitly written flag (including -E, and including
+// one that restates the default), and is reported in the log by name. The engine
+// is required now, so this variable is also one of the two ways to satisfy that
+// requirement: the "env fills" case proves parseEngine accepts the filled value,
+// while a blank env leaves the empty default that TestEngineRequired rejects.
+// Only the trimming happens here; case-folding and alias resolution stay in
+// parseEngine, so an env "  PG  " behaves exactly like a typed --engine "  PG  ".
+func TestEngineEnvironmentVariable(t *testing.T) {
+	base := []string{"-h", "127.0.0.1", "-P", "3306", "-u", "root", "-p", "pw", "-D", "mydb",
 		"-o", "/tmp/x.del", "-q", "SELECT 1"}
-	if err := exportCmd.Flags().Parse(args); err != nil {
-		t.Fatal(err)
-	}
-	cfg := exportCfg
-	if _, err := applyConnEnv(exportCmd.Flags(), &cfg.Config); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Engine != "mysql" {
-		t.Fatalf("IMEX_ENGINE changed the engine to %q: the flag is the only source", cfg.Engine)
+	parse := func(t *testing.T, extra ...string) (*config.Config, connEnvReport) {
+		t.Helper()
+		*exportCfg = *newExportConfigForTest()
+		// The real --engine flag default is empty (the engine is required);
+		// newExportConfigForTest seeds mysql for hand-built library configs, so
+		// clear it to reproduce the CLI starting point before env/flag fill-in.
+		exportCfg.Engine = ""
+		resetChangedFlags(exportCmd, importCmd, rootCmd)
+		if err := exportCmd.Flags().Parse(append(append([]string{}, base...), extra...)); err != nil {
+			t.Fatal(err)
+		}
+		rep, err := applyConnEnv(exportCmd.Flags(), &exportCfg.Config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &exportCfg.Config, rep
 	}
 
-	for _, src := range connEnvSources {
-		if src.env == "IMEX_ENGINE" || src.flag == "engine" {
-			t.Fatalf("connection env table grew an engine entry: %s/%s", src.flag, src.env)
+	t.Run("env fills the engine and is reported by name", func(t *testing.T) {
+		t.Setenv("IMEX_ENGINE", "pg")
+		cfg, rep := parse(t)
+		if cfg.Engine != "pg" {
+			t.Fatalf("engine = %q, want pg from IMEX_ENGINE", cfg.Engine)
 		}
+		if strings.Join(rep.used, ",") != "IMEX_ENGINE" {
+			t.Errorf("used = %v, want only IMEX_ENGINE", rep.used)
+		}
+		e, err := parseEngine(cfg.Engine)
+		if err != nil || e != backend.EnginePG {
+			t.Errorf("parseEngine(%q) = %q, %v; want pg, nil", cfg.Engine, e, err)
+		}
+	})
+
+	// An explicit flag wins even when it restates the built-in default: that is
+	// the Changed() rule, not a value comparison. Both spellings are checked so
+	// -E cannot quietly stop counting as "explicitly written".
+	for _, spelling := range [][]string{{"--engine", "mysql"}, {"-E", "mysql"}} {
+		t.Run("explicit "+spelling[0]+" beats env", func(t *testing.T) {
+			t.Setenv("IMEX_ENGINE", "pg")
+			cfg, _ := parse(t, spelling...)
+			if cfg.Engine != "mysql" {
+				t.Errorf("%v lost to IMEX_ENGINE=pg: engine = %q", spelling, cfg.Engine)
+			}
+		})
+	}
+
+	t.Run("blank is unset, leaving the engine required", func(t *testing.T) {
+		t.Setenv("IMEX_ENGINE", "")
+		cfg, _ := parse(t)
+		if cfg.Engine != "" {
+			t.Errorf("blank IMEX_ENGINE = %q, want the empty flag default", cfg.Engine)
+		}
+		// A blank env cannot satisfy the required engine: parseEngine must
+		// reject the empty value with the usage error that names both sources.
+		if _, err := parseEngine(cfg.Engine); err == nil ||
+			!strings.Contains(err.Error(), "--engine is required") {
+			t.Errorf("blank env did not leave the engine required: %v", err)
+		}
+
+		t.Setenv("IMEX_ENGINE", "  PG  ")
+		cfg, _ = parse(t)
+		if cfg.Engine != "PG" {
+			t.Errorf("IMEX_ENGINE = %q, want trimmed PG", cfg.Engine)
+		}
+		e, err := parseEngine(cfg.Engine)
+		if err != nil || e != backend.EnginePG {
+			t.Errorf("trimmed env value did not normalise: parseEngine = %q, %v", e, err)
+		}
+	})
+
+	// A bad env value is not given a special message: it reaches parseEngine
+	// like any other --engine value and keeps face ③'s usage error (exit 2).
+	t.Run("invalid value keeps the --engine usage error", func(t *testing.T) {
+		t.Setenv("IMEX_ENGINE", "oracle")
+		cfg, _ := parse(t)
+		_, err := parseEngine(cfg.Engine)
+		if err == nil || !strings.Contains(err.Error(), `invalid --engine "oracle"`) {
+			t.Fatalf("parseEngine on env value = %v, want the usual invalid --engine error", err)
+		}
+		if !common.IsUsageError(err) {
+			t.Errorf("invalid IMEX_ENGINE must stay a usage error (exit 2), got %v", err)
+		}
+	})
+
+	// The pair has to be in connEnvSources for any of the above to be true, and
+	// it sits first because registerConnFlags declares --engine first.
+	if src := connEnvSources[0]; src.flag != "engine" || src.env != "IMEX_ENGINE" {
+		t.Errorf("first conn env source = %+v, want engine/IMEX_ENGINE", src)
+	}
+}
+
+// TestEngineRequired pins the required-engine contract. With an empty flag
+// default, a run that gives neither -E/--engine nor IMEX_ENGINE fails at
+// validation with an exit-2 usage error naming both sources; a blank or
+// whitespace-only IMEX_ENGINE counts as unset and cannot satisfy it. The
+// end-to-end cases drive the real command tree with the library-seeded engine
+// cleared, so they measure the same empty default the shipped binary starts
+// from, before any connection is attempted.
+func TestEngineRequired(t *testing.T) {
+	const want = "--engine is required (give -E/--engine or set IMEX_ENGINE)"
+
+	// The rejection lives in parseEngine, which every command's validation and
+	// run path goes through. Both the empty default and a whitespace-only flag
+	// value must be refused, and the message has to name both sources.
+	for _, value := range []string{"", "   ", "\t"} {
+		_, err := parseEngine(value)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("parseEngine(%q) = %v, want %q", value, err, want)
+		}
+		if !common.IsUsageError(err) {
+			t.Errorf("parseEngine(%q) must be a usage error (exit 2), got %T", value, err)
+		}
+	}
+	if _, err := parseEngine("mysql"); err != nil {
+		t.Errorf("parseEngine(mysql) = %v, want nil", err)
+	}
+
+	for _, tc := range []struct{ name, env string }{
+		{"unset env", ""},
+		{"blank env", "   "},
+	} {
+		t.Run(tc.name+" leaves engine required", func(t *testing.T) {
+			t.Setenv("IMEX_ENGINE", tc.env)
+			*exportCfg = *newExportConfigForTest()
+			exportCfg.Engine = "" // the real --engine flag default
+			*importCfg = *newImportConfigForTest()
+			logFormat = "console"
+			resetChangedFlags(exportCmd, importCmd, rootCmd)
+			rootCmd.SetArgs([]string{"export", "-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb",
+				"-o", "/tmp/out.del", "-q", "SELECT 1"})
+			err := rootCmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("want %q, got %v", want, err)
+			}
+			if !common.IsUsageError(err) {
+				t.Errorf("required-engine error must be a usage error (exit 2), got %T", err)
+			}
+		})
 	}
 }
 
 // TestEngineFlagFace pins the --engine flag on the eighteen help faces that carry
 // it: export, import, the nine `list` objects and the seven `show` kinds. The
-// default must stay mysql, so an existing run's behaviour never depends on this
-// feature being there, and the usage text is what docs/cli-oracle.txt quotes.
+// engine is required, so the flag has an empty default (no "(default ...)" in
+// help) and the usage says so; -E is its shorthand and the usage text (which
+// names both the requirement and IMEX_ENGINE) is what docs/cli-oracle.txt quotes.
 func TestEngineFlagFace(t *testing.T) {
 	faces := map[string]*cobra.Command{
 		"export": exportCmd,
@@ -545,11 +679,14 @@ func TestEngineFlagFace(t *testing.T) {
 		if f == nil {
 			t.Fatalf("%s has no --engine flag", name)
 		}
-		if f.DefValue != "mysql" {
-			t.Errorf("%s --engine default = %q, want mysql", name, f.DefValue)
+		if f.DefValue != "" {
+			t.Errorf("%s --engine default = %q, want empty (required)", name, f.DefValue)
 		}
-		if f.Usage != "Database engine: mysql, pg, dm" {
+		if f.Usage != "Database engine (required): mysql, pg, dm; also IMEX_ENGINE" {
 			t.Errorf("%s --engine usage = %q", name, f.Usage)
+		}
+		if f.Shorthand != "E" {
+			t.Errorf("%s --engine shorthand = %q, want E", name, f.Shorthand)
 		}
 	}
 }

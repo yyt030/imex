@@ -13,8 +13,8 @@ import (
 	"github.com/imex/internal/config"
 )
 
-// The five connection options also read IMEX_HOST, IMEX_PORT, IMEX_USER,
-// IMEX_PASSWORD and IMEX_DATABASE, so a container or CI job can set
+// The six connection options also read IMEX_ENGINE, IMEX_HOST, IMEX_PORT,
+// IMEX_USER, IMEX_PASSWORD and IMEX_DATABASE, so a container or CI job can set
 // them once instead of repeating them on every call. The rule these tests pin is
 // "explicit flag > environment > built-in default", where "explicit" means
 // FlagSet.Changed(): what decides is whether the user typed the option, never
@@ -38,6 +38,7 @@ func connEnvFlags(t *testing.T, args ...string) (*pflag.FlagSet, *config.Config)
 }
 
 func TestConnEnvFillsUnsetOptions(t *testing.T) {
+	t.Setenv("IMEX_ENGINE", "pg")
 	t.Setenv("IMEX_HOST", "db.internal")
 	t.Setenv("IMEX_PORT", "3307")
 	t.Setenv("IMEX_USER", "svc")
@@ -49,11 +50,11 @@ func TestConnEnvFillsUnsetOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Host != "db.internal" || cfg.Port != 3307 || cfg.User != "svc" ||
+	if cfg.Engine != "pg" || cfg.Host != "db.internal" || cfg.Port != 3307 || cfg.User != "svc" ||
 		cfg.Password != "s3cr3t" || cfg.Database != "mydb" {
 		t.Errorf("environment did not fill the options: %+v", *cfg)
 	}
-	want := []string{"IMEX_HOST", "IMEX_PORT", "IMEX_USER", "IMEX_PASSWORD", "IMEX_DATABASE"}
+	want := []string{"IMEX_ENGINE", "IMEX_HOST", "IMEX_PORT", "IMEX_USER", "IMEX_PASSWORD", "IMEX_DATABASE"}
 	if strings.Join(rep.used, ",") != strings.Join(want, ",") {
 		t.Errorf("used = %v, want %v", rep.used, want)
 	}
@@ -63,8 +64,8 @@ func TestConnEnvFillsUnsetOptions(t *testing.T) {
 // and the record must never carry a value: passwords arrive here as ENC:<...>
 // strings that must not end up in the log or the --messages file.
 func TestConnEnvSourceOrderAndReportIsNamesOnly(t *testing.T) {
-	if got := connEnvSources[0].env; got != "IMEX_HOST" {
-		t.Errorf("first source = %q, want IMEX_HOST", got)
+	if got := connEnvSources[0].env; got != "IMEX_ENGINE" {
+		t.Errorf("first source = %q, want IMEX_ENGINE", got)
 	}
 	if got := connEnvSources[len(connEnvSources)-1].env; got != "IMEX_DATABASE" {
 		t.Errorf("last source = %q, want IMEX_DATABASE", got)
@@ -88,6 +89,7 @@ func TestConnEnvSourceOrderAndReportIsNamesOnly(t *testing.T) {
 }
 
 func TestConnEnvExplicitFlagBeatsEnvironment(t *testing.T) {
+	t.Setenv("IMEX_ENGINE", "pg")
 	t.Setenv("IMEX_HOST", "db.internal")
 	t.Setenv("IMEX_PORT", "3307")
 	t.Setenv("IMEX_USER", "svc")
@@ -95,14 +97,16 @@ func TestConnEnvExplicitFlagBeatsEnvironment(t *testing.T) {
 	t.Setenv("IMEX_DATABASE", "fromenv_db")
 
 	f, cfg := connEnvFlags(t,
-		"-h", "127.0.0.1", "-P", "3306", "-u", "root", "-p", "", "-D", "mydb")
+		"-E", "mysql", "-h", "127.0.0.1", "-P", "3306", "-u", "root", "-p", "", "-D", "mydb")
 	rep, err := applyConnEnv(f, cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Every value equals the built-in default except the empty password, which
 	// is the default too: a typed option must still win over the environment.
-	if cfg.Host != "127.0.0.1" || cfg.Port != 3306 || cfg.User != "root" ||
+	// -E mysql is the strongest form of this: the value is the default, so only
+	// Changed() can keep IMEX_ENGINE=pg from taking over.
+	if cfg.Engine != "mysql" || cfg.Host != "127.0.0.1" || cfg.Port != 3306 || cfg.User != "root" ||
 		cfg.Password != "" || cfg.Database != "mydb" {
 		t.Errorf("environment overwrote explicit flags: %+v", *cfg)
 	}

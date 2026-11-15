@@ -12,9 +12,13 @@ import (
 	"github.com/imex/internal/config"
 )
 
-// This file is the whole of imex's --engine contract at the command line: the
-// value is parsed here, the port default follows it, and every option the engine
-// cannot honour is refused here rather than discovered mid-run by a server error.
+// This file is the whole of imex's --engine contract once a value is in hand:
+// the value is parsed here, the port default follows it, and every option the
+// engine cannot honour is refused here rather than discovered mid-run by a
+// server error. The value arrives from --engine / -E or, when the flag was not
+// given, from IMEX_ENGINE (cmd/conn_env.go); this file does not care which. The
+// engine is required: if neither supplied one, parseEngine rejects the empty
+// value below as a usage error rather than falling back to a default backend.
 //
 // Refusing is deliberate. The alternative — translating MySQL grammar into
 // PostgreSQL's — would mean the tool emits statements nobody has measured against
@@ -50,6 +54,13 @@ import (
 // config` and `show` records carry no connection fields at all, so on those two
 // commands the default simply applies without being echoed.
 func parseEngine(value string) (backend.Engine, error) {
+	// --engine is required. applyConnEnv runs before this on every command, so
+	// an env-only run already carries a non-empty value here; an empty one means
+	// the flag's empty default survived and neither source supplied the engine.
+	// Worded with both sources so a run in a container knows what to set.
+	if strings.TrimSpace(value) == "" {
+		return "", common.Usagef("--engine is required (give -E/--engine or set IMEX_ENGINE)")
+	}
 	e, err := backend.Parse(value)
 	if err != nil {
 		// backend.Parse words this as an invalid-value message; it must still exit

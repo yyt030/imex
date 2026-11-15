@@ -181,12 +181,13 @@ type DelModifier struct {
 // wire text (decimal point '.', no leading-zero stripping), so those DB2-era
 // modifiers are gone as well.
 type Config struct {
-	// Engine selects the backend the connection options are sent to: "mysql"
-	// (the default, and the only value these options had any meaning for until
-	// --engine existed) or "pg". It is a CLI option, not an IMEX_* variable, so
-	// contract face ④ is untouched: the five connection variables keep naming
-	// five MySQL connection fields. See internal/backend for what each engine
-	// does with the rest of this struct.
+	// Engine selects the backend the connection options are sent to: "mysql",
+	// "pg" or "dm". On the CLI it is required — -E/--engine or IMEX_ENGINE must
+	// supply it, and cmd/engine.go rejects an empty value as a usage error. The
+	// library-level defaultConfig still seeds "mysql" for callers that build a
+	// Config by hand; cmd/flags_common.go registers the flag with an empty
+	// default so that seed is overwritten before any CLI run resolves a backend.
+	// See internal/backend for what each engine does with the rest of this struct.
 	Engine string
 
 	Host string

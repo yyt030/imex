@@ -55,9 +55,11 @@ type connFlagOpts struct {
 
 // engineUsage builds --engine's help text from the backend's own registry, so
 // the value list cannot drift away from Parse or from the invalid-value error.
-// The rendered string is unchanged: "Database engine: mysql, pg, dm".
+// The engine is required: neither the flag nor IMEX_ENGINE supplies a value is
+// a usage error (cmd/engine.go). It names IMEX_ENGINE so the help says the
+// environment can satisfy that requirement instead of the flag.
 func engineUsage() string {
-	return "Database engine: " + strings.Join(backend.Engines(), ", ")
+	return "Database engine (required): " + strings.Join(backend.Engines(), ", ") + "; also IMEX_ENGINE"
 }
 
 // registerConnFlags declares the shared option set on f, bound to cfg. Import
@@ -67,7 +69,7 @@ func registerConnFlags(f *pflag.FlagSet, cfg *config.Config, o connFlagOpts) {
 	// re-registered under -?. The parent list/show commands keep cobra's -h.
 	f.BoolP("help", "?", false, o.HelpLabel)
 
-	f.StringVar(&cfg.Engine, "engine", "mysql", engineUsage())
+	f.StringVarP(&cfg.Engine, "engine", "E", "", engineUsage())
 	f.StringVarP(&cfg.Host, "host", "h", "127.0.0.1",
 		"Database host(s), comma-separated (also IMEX_HOST)")
 	// --port is registered through portSpecValue so the help column still says

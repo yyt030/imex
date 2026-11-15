@@ -67,9 +67,11 @@ func Engines() []string {
 	return out
 }
 
-// Parse turns a --engine value into an Engine. An empty value is the default
-// engine rather than an error: `imex export -h ... -u ...` without --engine must
-// keep doing exactly what it did before this option existed.
+// Parse turns a --engine value into an Engine. An empty value resolves to the
+// default engine rather than an error: this is the library-level fallback for
+// callers that build a Config by hand (see defaultConfig). The CLI does not rely
+// on it — --engine is required there, and cmd/engine.go rejects an empty value
+// as a usage error before Parse is reached.
 func Parse(s string) (Engine, error) {
 	switch Engine(strings.ToLower(strings.TrimSpace(s))) {
 	case "", EngineMySQL:
