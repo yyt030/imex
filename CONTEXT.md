@@ -884,3 +884,4 @@ done
 - **一笔结清的内容**：190 轮边界矩阵固化（5 个测试文件改动：`ParseCharDelimiter`/`ParseEscape` 单测、CLI 解析层 42 断言、`rootCmd.Execute()` 旧 flag exit 2、真库 DEL 边界 7 子用例、裸字段 NULL/空串语义）＋ 191 轮数据边界与异常路径（`data_boundary_test.go` 5 子测试、`exception_path_test.go` 5 测试：扁平字段流语义、中途失败全量回滚、DEL 主键冲突、连接拒绝、黑洞超时）。
 - **QA**：`gofmt` 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 11 包 ok、异常路径真库全 PASS、真库全量恰好既有 4 组 list/show 欠账（基线复现、非本轮引入）、oracle 22/22 drift 0、`make build` 0。
 - **待办**：release 提交 + 附注 tag `v0.44.1` → 推 main 与 tag → 同轮第二笔纯 docs 收口补记（仅 `CONTEXT.md`）。
+- **推成真值（2026-11-16 收口）**：远端 `main` = `48eef0a`、`refs/tags/v0.44.1` = `9e4f832`、peeled = `48eef0a`，与本地 `rev-parse` 三项逐项相等，`ls-remote` 穿透验证通过；v0.44.1 发布完成。推送过程中 GitHub OAuth 连接器 token 多次失效（`/user` 401、git 写 `Invalid username or token`），最终以用户临时提供的 PAT 推成，推送后已按 103 轮惯例清除全部临时凭据（remote URL、shell 配置、git config 均无残留），PAT 建议轮换。二十三节「待办」三项全部完成。
