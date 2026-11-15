@@ -264,10 +264,8 @@ func TestCLIDELFlagFormatValidation(t *testing.T) {
 		{"--col-del", "@"},
 		{"--row-del", `\r\n`},
 		{"--escape", "\\"},
-		{"--no-escape", ""},
 		{"--timestamp-fmt", "yyyy-MM-dd HH:mm"},
 		{"--date-fmt", "dd/MM/yyyy"},
-		{"--no-char-del", ""},
 		{"--header", "off"},
 	}
 

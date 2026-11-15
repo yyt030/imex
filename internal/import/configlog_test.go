@@ -33,7 +33,7 @@ func configKeys(t *testing.T, args []interface{}) map[string]interface{} {
 // row stream rather than to a file.
 var (
 	delLayoutKeys = []string{
-		"char_del", "col_del", "row_del", "escape", "no_escape", "no_char_del",
+		"char_del", "col_del", "row_del", "escape",
 		"timestamp_fmt", "date_fmt", "no_col_names",
 	}
 	alwaysKeys = []string{
@@ -86,23 +86,33 @@ func TestImportStatementSizeIsAlwaysReported(t *testing.T) {
 	}
 }
 
-// TestImportConfigRecordCarriesTheThreeFieldsItUsedToOmit names the regression on
-// the missing side: --date-fmt, --no-escape and --no-char-del are read by the DEL
-// reader, but the record never printed them, so a run that moved them looked
-// indistinguishable from one that did not.
-func TestImportConfigRecordCarriesTheThreeFieldsItUsedToOmit(t *testing.T) {
+// TestImportConfigRecordCarriesDateFmtAndLiteralModes names the regression on the
+// missing side: --date-fmt is read by the DEL reader, but the record never printed
+// it, so a run that moved it looked indistinguishable from one that did not. Both
+// "read the value as it appears" modes now show as an empty value of the option
+// that selects them: char_del "" (was --no-char-del) and escape "" (was
+// --no-escape).
+func TestImportConfigRecordCarriesDateFmtAndLiteralModes(t *testing.T) {
 	cfg := config.NewImportConfig()
 	cfg.DelModifier.DateFmt = "yyyyMMdd"
-	cfg.DelModifier.NoEscape = true
-	cfg.DelModifier.NoCharDel = true
+	cfg.DelModifier.Escape = ""
+	cfg.DelModifier.CharDel = ""
 
 	keys := configKeys(t, importConfigFields(cfg))
-	for _, field := range []string{"date_fmt", "no_escape", "no_char_del"} {
+	for _, field := range []string{"date_fmt", "char_del", "escape"} {
 		if _, ok := keys[field]; !ok {
 			t.Errorf("DEL record is missing %q", field)
 		}
 	}
 	if keys["date_fmt"] != "yyyyMMdd" {
 		t.Errorf("date_fmt = %v, want the value the run was given", keys["date_fmt"])
+	}
+	if keys["char_del"] != "" || keys["escape"] != "" {
+		t.Errorf("char_del=%q escape=%q, want both empty", keys["char_del"], keys["escape"])
+	}
+	for _, gone := range []string{"no_char_del", "no_escape"} {
+		if _, ok := keys[gone]; ok {
+			t.Errorf("the record still prints %q after the flag was folded into a delimiter value", gone)
+		}
 	}
 }

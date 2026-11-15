@@ -209,10 +209,12 @@ func TestDelModifierFlagsAgreeAcrossCommands(t *testing.T) {
 	if strings.Join(exp, ",") != strings.Join(imp, ",") {
 		t.Errorf("DEL-only flags differ: export %v, import %v", exp, imp)
 	}
-	// --date-fmt, --no-escape and --no-char-del were the three the configuration
-	// record used to leave out; they have to be in the registry for it to print
-	// them at all.
-	for _, want := range []string{"date-fmt", "no-escape", "no-char-del"} {
+	// --date-fmt was the one the configuration record used to leave out; it has
+	// to be in the registry for the record to print it at all. --no-char-del and
+	// --no-escape are gone (both folded into an empty delimiter value), so they
+	// must not appear here either: a row naming a flag that no longer exists
+	// would make the registry itself a stale copy of the help text.
+	for _, want := range []string{"date-fmt"} {
 		found := false
 		for _, f := range imp {
 			if f == want {
@@ -221,6 +223,11 @@ func TestDelModifierFlagsAgreeAcrossCommands(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("import registry is missing DEL flag --%s", want)
+		}
+	}
+	for _, f := range imp {
+		if f == "no-char-del" || f == "no-escape" {
+			t.Errorf("import registry still scopes --%s, a flag that no longer exists", f)
 		}
 	}
 }

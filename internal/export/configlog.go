@@ -102,8 +102,6 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		{"col-del", "col_del", cfg.DelModifier.ColDel},
 		{"row-del", "row_del", cfg.DelModifier.RowDel},
 		{"escape", "escape", cfg.DelModifier.Escape},
-		{"no-escape", "no_escape", cfg.DelModifier.NoEscape},
-		{"no-char-del", "no_char_del", cfg.DelModifier.NoCharDel},
 		{"timestamp-fmt", "timestamp_fmt", cfg.DelModifier.TimestampFmt},
 		{"date-fmt", "date_fmt", cfg.DelModifier.DateFmt},
 		// The flag name is the scope-registry key; the record key stays

@@ -20,7 +20,9 @@ func parseLineRef(line string, mod *config.DelModifier) ([]string, []bool) {
 	colDel := mod.ColDel
 	charDel := mod.CharDel
 	escape := mod.Escape
-	noEscape := mod.NoEscape
+	// --no-escape folded into an empty --escape; the reference body below still
+	// speaks the old boolean, so derive it from the value it was replaced by.
+	noEscape := mod.Escape == ""
 
 	var fields []string
 	var quoted []bool
@@ -28,7 +30,7 @@ func parseLineRef(line string, mod *config.DelModifier) ([]string, []bool) {
 	i := 0
 
 	for i < len(line) {
-		if !mod.NoCharDel && charDel != "" && strings.HasPrefix(line[i:], charDel) {
+		if charDel != "" && strings.HasPrefix(line[i:], charDel) {
 			i += len(charDel)
 			current.Reset()
 
@@ -103,10 +105,7 @@ func scanRowsRef(d *DelReader) bufioSplitFunc {
 		rowDel := []byte(d.mod.RowDel)
 		charDel := []byte(d.mod.CharDel)
 		escape := []byte(d.mod.Escape)
-		if d.mod.NoCharDel {
-			charDel = nil
-		}
-		noEscape := d.mod.NoEscape
+		noEscape := d.mod.Escape == ""
 
 		inQuote := false
 		pos := 0
@@ -167,14 +166,14 @@ func scanRowsRef(d *DelReader) bufioSplitFunc {
 type bufioSplitFunc = func(data []byte, atEOF bool) (advance int, token []byte, err error)
 
 // delModVariants are the delimiter configurations the differential tests run
-// over: the defaults, the --no-escape / --no-char-del forms, multi-byte
-// delimiters, and hex-style multi-byte escapes.
+// over: the defaults, the empty-escape / bare-field forms, multi-byte delimiters,
+// and hex-style multi-byte escapes.
 func delModVariants() []*config.DelModifier {
 	return []*config.DelModifier{
 		{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`},
 		{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `\`},
-		{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`, NoEscape: true},
-		{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`, NoCharDel: true},
+		{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: ""},
+		{CharDel: "", ColDel: ",", RowDel: "\n", Escape: `"`},
 		{CharDel: "'", ColDel: "||", RowDel: "\r\n", Escape: "''"},
 		{CharDel: `"`, ColDel: ";", RowDel: "\n", Escape: "\\"},
 	}

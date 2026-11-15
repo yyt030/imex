@@ -281,14 +281,28 @@ func validateProgressInterval(d time.Duration) error {
 // only later, in whoever tried to use the file. --escape equal to --char-del stays
 // legal: it is the shipped default, and a delimiter that also escapes its own
 // string quote is how MySQL doubles it.
-func validateDelimiters(charDel, colDel, rowDel, escape string, noCharDel, noEscape bool) error {
+//
+// An empty --char-del is legal and means "no character delimiter" (the removed
+// --no-char-del flag), and an empty --escape is legal and means "no escaping"
+// (the removed --no-escape flag). Neither can collide with anything: the two
+// structural delimiters are still refused when empty, so a disabled option can
+// never compare equal to a live one, and the pair (--char-del "", --escape "")
+// is simply every field written verbatim.
+func validateDelimiters(charDel, colDel, rowDel, escape string) error {
 	// Slice, not map: the order an unparseable delimiter is reported in is part of
 	// the error-text contract.
 	names := []string{"char-del", "col-del", "row-del", "escape"}
 	raws := []string{charDel, colDel, rowDel, escape}
 	chars := make(map[string]string, len(names))
 	for i, name := range names {
-		v, err := common.ParseDelimiter(raws[i])
+		parse := common.ParseDelimiter
+		switch name {
+		case "char-del":
+			parse = common.ParseCharDelimiter
+		case "escape":
+			parse = common.ParseEscape
+		}
+		v, err := parse(raws[i])
 		if err != nil {
 			return common.Usagef("invalid --%s: %v", name, err)
 		}
@@ -304,10 +318,6 @@ func validateDelimiters(charDel, colDel, rowDel, escape string, noCharDel, noEsc
 	}
 	for _, c := range conflicts {
 		if chars[c.a] != chars[c.b] {
-			continue
-		}
-		// A disabled option is not part of the layout, so it cannot collide.
-		if (c.a == "char-del" && noCharDel) || (c.a == "escape" && noEscape) {
 			continue
 		}
 		return common.Usagef("invalid --%s %q: it is the same as --%s, which makes the file layout ambiguous",
@@ -418,7 +428,7 @@ func validateExportConfig(cmd *cobra.Command, cfg *config.ExportConfig) error {
 		return err
 	}
 	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel,
-		cfg.DelModifier.Escape, cfg.DelModifier.NoCharDel, cfg.DelModifier.NoEscape)
+		cfg.DelModifier.Escape)
 }
 
 // validateImportConfig performs all validation for import.
@@ -496,5 +506,5 @@ func validateImportConfig(cmd *cobra.Command, cfg *config.ImportConfig) error {
 		return err
 	}
 	return validateDelimiters(cfg.DelModifier.CharDel, cfg.DelModifier.ColDel, cfg.DelModifier.RowDel,
-		cfg.DelModifier.Escape, cfg.DelModifier.NoCharDel, cfg.DelModifier.NoEscape)
+		cfg.DelModifier.Escape)
 }

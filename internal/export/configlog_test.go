@@ -33,7 +33,7 @@ func configKeys(t *testing.T, args []interface{}) map[string]interface{} {
 // registry, under the key names the record uses.
 var (
 	delLayoutKeys = []string{
-		"char_del", "col_del", "row_del", "escape", "no_escape", "no_char_del",
+		"char_del", "col_del", "row_del", "escape",
 		"timestamp_fmt", "date_fmt", "no_col_names",
 	}
 	sqlLayoutKeys = []string{"statement_size", "extended_insert"}
@@ -95,19 +95,21 @@ func TestExportConfigRecordIsFilteredByFormat(t *testing.T) {
 	}
 }
 
-// TestExportConfigRecordCarriesTheThreeFieldsItUsedToOmit names the regression
-// this change fixes on the missing side: --date-fmt, --no-escape and --no-char-del
-// have always been read by the DEL writer, but only the other DEL fields were
-// printed, so a run using them looked like a run using the defaults.
-func TestExportConfigRecordCarriesTheThreeFieldsItUsedToOmit(t *testing.T) {
+// TestExportConfigRecordCarriesDateFmtAndLiteralModes names the regression this
+// change fixes on the missing side: --date-fmt has always been read by the DEL
+// writer, but only the other DEL fields were printed, so a run using it looked
+// like a run using the defaults. Both "write the value as it arrived" modes are
+// now visible as an empty value of the option that selects them: char_del ""
+// (was --no-char-del) and escape "" (was --no-escape).
+func TestExportConfigRecordCarriesDateFmtAndLiteralModes(t *testing.T) {
 	cfg := config.NewExportConfig()
 	cfg.Format = config.FormatDel
 	cfg.DelModifier.DateFmt = "yyyyMMdd"
-	cfg.DelModifier.NoEscape = true
-	cfg.DelModifier.NoCharDel = true
+	cfg.DelModifier.Escape = ""
+	cfg.DelModifier.CharDel = ""
 
 	keys := configKeys(t, exportConfigFields(cfg))
-	for _, field := range []string{"date_fmt", "no_escape", "no_char_del"} {
+	for _, field := range []string{"date_fmt", "char_del", "escape"} {
 		if _, ok := keys[field]; !ok {
 			t.Errorf("DEL record is missing %q", field)
 		}
@@ -115,8 +117,14 @@ func TestExportConfigRecordCarriesTheThreeFieldsItUsedToOmit(t *testing.T) {
 	if keys["date_fmt"] != "yyyyMMdd" {
 		t.Errorf("date_fmt = %v, want the value the run was given", keys["date_fmt"])
 	}
-	if keys["no_escape"] != true || keys["no_char_del"] != true {
-		t.Errorf("no_escape=%v no_char_del=%v, want both true", keys["no_escape"], keys["no_char_del"])
+	if keys["char_del"] != "" || keys["escape"] != "" {
+		t.Errorf("char_del=%q escape=%q, want both empty: the run selects bare, unescaped values",
+			keys["char_del"], keys["escape"])
+	}
+	for _, gone := range []string{"no_char_del", "no_escape"} {
+		if _, ok := keys[gone]; ok {
+			t.Errorf("the record still prints %q after the flag was folded into a delimiter value", gone)
+		}
 	}
 }
 

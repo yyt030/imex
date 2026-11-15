@@ -590,6 +590,34 @@
 # re-diffed against the rebuilt binary: identical=22, drift=0, every generated
 # line <= 118 bytes. The `## version` body is still the 4934dd2 snapshot and was
 # not regenerated. Note 37's quoted row stands as history. See requirements.md 185.
+# Re-baselined note 39 (2026-11-15): --no-char-del is gone, folded into an empty
+# --char-del. The two spellings were already one state downstream (DelWriter
+# .bareFields and DelReader.quote both keyed off CharDel == ""), so the flag only
+# existed because ParseDelimiter refused an empty string; ParseCharDelimiter now
+# accepts it for --char-del alone, and --col-del/--row-del/--escape keep the
+# cannot-be-empty rule. Each DEL block therefore loses one row and the --char-del
+# usage reads `String delimiter; empty disables it` (115 bytes, was 97; no column
+# moved). --no-char-del is now an unknown-flag usage error (exit 2), deliberately
+# without a compat alias, the same policy as note 3 / row 55 / row 58. All 22 live
+# bodies were re-diffed against the rebuilt binary: identical=22, drift=0, every
+# generated line <= 118 bytes. The `## version` body is still the 4934dd2 snapshot
+# and was not regenerated. See requirements.md 187.
+# Re-baselined note 40 (2026-11-15): --no-escape is gone, folded into an empty
+# --escape. Unlike note 39 the two spellings were NOT one state downstream: the
+# writer rewrote an empty escape to --char-del and double-wrote, while the reader
+# already read it as "do not un-escape", so the same value produced a file that
+# could not be read back. Folding them therefore had to redefine the writer side
+# first (no fallback, literal values) before the flag could go. ParseEscape now
+# accepts the empty string for --escape alone, an empty escape means "no
+# escaping" on both sides, and --col-del/--row-del keep the cannot-be-empty rule.
+# Each DEL block therefore loses another row and the --escape usage reads
+# `Escape character; empty disables it` (115 bytes, was 17 for the text alone; no
+# column moved). --no-escape is now an unknown-flag usage error (exit 2),
+# deliberately without a compat alias, the same policy as note 3 / note 39 /
+# row 55 / row 58. All 22 live bodies were re-diffed against the rebuilt binary:
+# identical=22, drift=0, every generated line <= 118 bytes. The `## version`
+# body is still the 4934dd2 snapshot and was not regenerated. See
+# requirements.md 188.
 
 ## export
 Export data from a MySQL, PostgreSQL, Dameng or GaussDB database to a DEL
@@ -633,14 +661,14 @@ Aliases:
 Flags:
       --batch-size int                  Rows per hand-off batch; with --threads>1 it is a usage error (default 1000)
       --blob-encoding string            Binary encoding (auto/hex/raw) (not with --format parquet) (default "auto")
-      --char-del string                 String delimiter (only with --format del) (default "\"")
+      --char-del string                 String delimiter; empty disables it (only with --format del) (default "\"")
       --col-del string                  Column delimiter (only with --format del) (default ",")
       --connect-timeout duration        TCP connect timeout (default 5s)
   -D, --database string                 Database name (also IMEX_DATABASE)
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
       --default-charset string          Connection & output-file charset (utf8mb4 default)
   -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
-      --escape string                   Escape character (only with --format del) (default "\"")
+      --escape string                   Escape character; empty disables it (only with --format del) (default "\"")
       --extended-insert                 Merge rows into multi-row INSERTs (only with --format sql)
   -f, --format string                   Output file format (del/sql/parquet) (default "del")
       --header string                   Include the header row (on/off) (only with --format del) (default "on")
@@ -649,8 +677,6 @@ Flags:
       --log-format string               Log layout: console or text; also IMEX_LOG_FORMAT (default "console")
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
-      --no-char-del                     Do not use string delimiter (only with --format del)
-      --no-escape                       Disable escaping (only with --format del)
       --no-overwrite                    Refuse to overwrite an existing output file (default: overwrite)
   -o, --output string                   Output file path (required)
       --parquet-compression string      Compression: none, snappy, zstd (only with --format parquet) (default "none")
@@ -705,7 +731,7 @@ Aliases:
 
 Flags:
       --batch-size int                  Rows per INSERT batch (default 1000)
-      --char-del string                 String delimiter (only with --format del) (default "\"")
+      --char-del string                 String delimiter; empty disables it (only with --format del) (default "\"")
       --col-del string                  Column delimiter (only with --format del) (default ",")
   -c, --columns string                  Target columns (one per input column) or file=table mapping (subset ok)
       --commit-count int                Commit every n rows (default 1000)
@@ -714,7 +740,7 @@ Flags:
       --date-fmt string                 Date format (only with --format del) (default "yyyy-MM-dd")
       --default-charset string          Connection & input-file charset (utf8mb4 default)
   -E, --engine string                   Database engine (required): mysql, pg, dm, gauss; also IMEX_ENGINE
-      --escape string                   Escape character (only with --format del) (default "\"")
+      --escape string                   Escape character; empty disables it (only with --format del) (default "\"")
   -f, --format string                   Input file format (del/sql/parquet) (default "del")
       --header string                   Include the header row (on/off) (only with --format del) (default "on")
   -?, --help                            help for import
@@ -724,8 +750,6 @@ Flags:
       --log-level string                Log level (debug/info/warn/error) (default "info")
   -m, --messages string                 Redirect the command log to this file; with it, nothing is printed to stderr
   -M, --mode string                     insert, insert_update, replace (clears the table) (default "insert")
-      --no-char-del                     Do not use string delimiter (only with --format del)
-      --no-escape                       Disable escaping (only with --format del)
   -p, --password string                 Database password (also IMEX_PASSWORD)
       --pipeline-buffer int             Hand-off queue depth in batches (0 = synchronous) (default 10)
   -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)

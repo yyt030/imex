@@ -45,14 +45,14 @@ func registerImportFlags(cmd *cobra.Command) {
 	f.StringVarP(&importCfg.Columns, "columns", "c", "", "Target columns (one per input column) or file=table mapping (subset ok)")
 
 	// DEL format modifiers
-	f.StringVar(&importCfg.DelModifier.CharDel, "char-del", "\"", "String delimiter")
+	f.StringVar(&importCfg.DelModifier.CharDel, "char-del", "\"",
+		"String delimiter; empty disables it")
 	f.StringVar(&importCfg.DelModifier.ColDel, "col-del", ",", "Column delimiter")
 	f.StringVar(&importCfg.DelModifier.RowDel, "row-del", "\n", "Row delimiter")
-	f.StringVar(&importCfg.DelModifier.Escape, "escape", "\"", "Escape character")
-	f.BoolVar(&importCfg.DelModifier.NoEscape, "no-escape", false, "Disable escaping")
+	f.StringVar(&importCfg.DelModifier.Escape, "escape", "\"",
+		"Escape character; empty disables it")
 	f.StringVar(&importCfg.DelModifier.TimestampFmt, "timestamp-fmt", "yyyy-MM-dd HH:mm:ss", "Timestamp format")
 	f.StringVar(&importCfg.DelModifier.DateFmt, "date-fmt", "yyyy-MM-dd", "Date format")
-	f.BoolVar(&importCfg.DelModifier.NoCharDel, "no-char-del", false, "Do not use string delimiter")
 	f.StringVar(&importCfg.DelModifier.Header, "header", string(config.HeaderOn),
 		"Include the header row (on/off)")
 

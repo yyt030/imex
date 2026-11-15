@@ -26,6 +26,40 @@ func ParseDelimiter(s string) (string, error) {
 	return processEscapes(s), nil
 }
 
+// ParseCharDelimiter parses --char-del, the one delimiter that accepts the empty
+// value. Empty means "no character delimiter": fields go out bare, which is what
+// the removed --no-char-del flag used to select. The other three delimiters keep
+// ParseDelimiter's "cannot be empty" rule, because a bare column or row delimiter
+// produces a file that cannot be read back at all.
+//
+// Everywhere downstream the two spellings were already the same state
+// (DelWriter.bareFields and DelReader.quote both key off CharDel == ""), so this
+// function is the only place that has to know the empty value is legal.
+func ParseCharDelimiter(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	return ParseDelimiter(s)
+}
+
+// ParseEscape parses --escape, the second delimiter that accepts the empty
+// value. Empty means "no escaping": values go into the file exactly as they
+// came out of the database, which is what the removed --no-escape flag used to
+// select. It is the same "zero value disables the option" rule --char-del has,
+// and the only other place that has to know the empty value is legal.
+//
+// The CLI used to refuse an empty --escape while the reader already treated it
+// as "do not un-escape" and the writer silently rewrote it to --char-del; the
+// result was a file that could not be read back (see DelWriter.literalFields).
+// Parsing is where the option is either legal or not, so the decision lives
+// here alone: both sides now read the empty value the same way.
+func ParseEscape(s string) (string, error) {
+	if s == "" {
+		return "", nil
+	}
+	return ParseDelimiter(s)
+}
+
 // parseHexDelimiter parses a hex-encoded delimiter string.
 // Supports formats like "0x09", "0x0D0A", "0x7C0x7C".
 func parseHexDelimiter(s string) (string, error) {

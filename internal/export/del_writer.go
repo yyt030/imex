@@ -24,11 +24,9 @@ type DelWriter struct {
 	timeFormat string
 	dateFormat string
 	// 缓存常用字段，减少间接寻址
-	colDel    string
-	charDel   string
-	escape    string
-	noEscape  bool
-	noCharDel bool
+	colDel  string
+	charDel string
+	escape  string
 	// binaryFlags[i] marks column i as binary; hexBlob controls 0x encoding.
 	binaryFlags []bool
 	hexBlob     bool
@@ -41,12 +39,6 @@ type DelWriter struct {
 // NewDelWriter creates a new DEL format writer. kinds may be nil, in which
 // case every value is treated as an opaque string (legacy behavior).
 func NewDelWriter(w io.Writer, mod *config.DelModifier, writeColumns bool, kinds []common.ColumnKind) *DelWriter {
-	// 预计算 escape 值
-	escape := mod.Escape
-	if escape == "" {
-		escape = mod.CharDel
-	}
-
 	return &DelWriter{
 		bw:         bufio.NewWriterSize(w, 256*1024),
 		mod:        mod,
@@ -55,11 +47,9 @@ func NewDelWriter(w io.Writer, mod *config.DelModifier, writeColumns bool, kinds
 		timeFormat: convertTimeFormat(mod.TimestampFmt),
 		dateFormat: convertTimeFormat(mod.DateFmt),
 		// 缓存字段
-		colDel:    mod.ColDel,
-		charDel:   mod.CharDel,
-		escape:    escape,
-		noEscape:  mod.NoEscape,
-		noCharDel: mod.NoCharDel,
+		colDel:  mod.ColDel,
+		charDel: mod.CharDel,
+		escape:  mod.Escape,
 	}
 }
 
@@ -89,7 +79,7 @@ func (d *DelWriter) WriteHeader(columns []string) error {
 	for i, col := range columns {
 		values[i] = col
 	}
-	if err := d.validateNoEscapeRow(values); err != nil {
+	if err := d.validateLiteralRow(values); err != nil {
 		return err
 	}
 	return d.writeRow(values)
@@ -97,7 +87,7 @@ func (d *DelWriter) WriteHeader(columns []string) error {
 
 // WriteRow writes a single data row
 func (d *DelWriter) WriteRow(values []interface{}) error {
-	if err := d.validateNoEscapeRow(values); err != nil {
+	if err := d.validateLiteralRow(values); err != nil {
 		return err
 	}
 	return d.writeRow(values)
@@ -105,7 +95,7 @@ func (d *DelWriter) WriteRow(values []interface{}) error {
 
 // WriteRawRow writes a row directly from sql.RawBytes to avoid allocation
 func (d *DelWriter) WriteRawRow(values []sql.RawBytes) error {
-	if err := d.validateNoEscapeRaw(values); err != nil {
+	if err := d.validateLiteralRaw(values); err != nil {
 		return err
 	}
 	for i, val := range values {
@@ -180,11 +170,11 @@ func (d *DelWriter) kind(i int) common.ColumnKind {
 	return d.kinds[i]
 }
 
-// validateNoEscapeRow rejects values the writer cannot represent
+// validateLiteralRow rejects values the writer cannot represent
 // unambiguously. Validation runs before anything is written so a rejected row
 // never leaves a half-written, corrupt record in the output.
-func (d *DelWriter) validateNoEscapeRow(values []interface{}) error {
-	if !d.noEscape && !d.bareFields() {
+func (d *DelWriter) validateLiteralRow(values []interface{}) error {
+	if !d.literalFields() {
 		return nil
 	}
 	for i, val := range values {
@@ -207,42 +197,51 @@ func (d *DelWriter) validateNoEscapeRow(values []interface{}) error {
 			// configured delimiter.
 			continue
 		}
-		if err := d.checkNoEscapeText(text, i); err != nil {
+		if err := d.checkLiteralText(text, i); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// validateNoEscapeRaw is validateNoEscapeRow for the RawBytes fast path.
-func (d *DelWriter) validateNoEscapeRaw(values []sql.RawBytes) error {
-	if !d.noEscape && !d.bareFields() {
+// validateLiteralRaw is validateLiteralRow for the RawBytes fast path.
+func (d *DelWriter) validateLiteralRaw(values []sql.RawBytes) error {
+	if !d.literalFields() {
 		return nil
 	}
 	for i, val := range values {
 		if d.hexBlob && i < len(d.binaryFlags) && d.binaryFlags[i] {
 			continue
 		}
-		if err := d.checkNoEscapeText(bytesToString(val), i); err != nil {
+		if err := d.checkLiteralText(bytesToString(val), i); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// bareFields reports whether fields go out without character delimiters. The
-// DEL reader only honours escapes *inside* quoted fields, so a bare field is
-// written verbatim even when --no-escape was not given: it must not contain a
-// structural delimiter either.
+// bareFields reports whether fields go out without character delimiters, which
+// is what an empty --char-del asks for. The DEL reader only honours escapes
+// *inside* quoted fields, so a bare field is written verbatim whatever --escape
+// says: it must not contain a structural delimiter either.
 func (d *DelWriter) bareFields() bool {
-	return d.noCharDel || d.charDel == ""
+	return d.charDel == ""
 }
 
-// checkNoEscapeText reports whether s can be written verbatim. A quoted field
-// (character delimiter in use) can contain the column and row delimiters, but
-// not the quote itself. An unquoted field has to avoid both structural
-// separators.
-func (d *DelWriter) checkNoEscapeText(s string, idx int) error {
+// literalFields reports whether values go into the file exactly as they arrived,
+// either because there is no character delimiter to wrap them (empty
+// --char-del) or because there is no escape character to protect a quote (empty
+// --escape, the removed --no-escape flag). Only then can a value break the
+// record layout, so only then is the row validated before it is written.
+func (d *DelWriter) literalFields() bool {
+	return d.bareFields() || d.escape == ""
+}
+
+// checkLiteralText reports whether s can be written verbatim. A quoted field
+// (character delimiter in use, no escape) can contain the column and row
+// delimiters, but not the quote itself. An unquoted field has to avoid both
+// structural separators.
+func (d *DelWriter) checkLiteralText(s string, idx int) error {
 	if s == "" {
 		return nil
 	}
@@ -261,14 +260,17 @@ func (d *DelWriter) checkNoEscapeText(s string, idx int) error {
 	return nil
 }
 
-// unrepresentableError names the flag that made the field bare, so the user
-// sees an actionable remedy in both --no-escape and --no-char-del mode.
+// unrepresentableError names the flag that made the field literal, so the user
+// sees an actionable remedy in both empty --escape and empty --char-del mode.
 func (d *DelWriter) unrepresentableError(idx int, kind, delim string) error {
-	flag := "--no-escape"
-	remedy := "remove --no-escape or choose a different delimiter"
-	if d.bareFields() && !d.noEscape {
-		flag = "--no-char-del"
-		remedy = "drop --no-char-del so fields are quoted, or choose delimiters absent from the data"
+	// Bare fields win the attribution: with no character delimiter the field is
+	// written verbatim whatever --escape says, so naming --escape would send the
+	// user to the wrong flag.
+	flag := "--escape"
+	remedy := "set --escape to a character so quotes are escaped, or choose delimiters absent from the data"
+	if d.bareFields() {
+		flag = "--char-del"
+		remedy = "set --char-del to a character so fields are quoted, or choose delimiters absent from the data"
 	}
 	return fmt.Errorf("%s: column %d value contains the %s %q, which would corrupt the DEL record; %s", flag, idx+1, kind, delim, remedy)
 }
@@ -385,11 +387,6 @@ func bytesToString(b []byte) string {
 }
 
 func (d *DelWriter) formatString(s string) {
-	if d.noCharDel {
-		d.bw.WriteString(s)
-		return
-	}
-
 	charDel := d.charDel
 	if charDel == "" {
 		d.bw.WriteString(s)
@@ -398,15 +395,13 @@ func (d *DelWriter) formatString(s string) {
 
 	d.bw.WriteString(charDel)
 
-	if !d.noEscape {
-		if d.escape == charDel {
-			// Double-write escaping
-			d.writeEscapedDouble(s, charDel)
-		} else {
-			d.writeEscapedBackslash(s, charDel, d.escape)
-		}
+	if d.escape == charDel {
+		// Double-write escaping
+		d.writeEscapedDouble(s, charDel)
 	} else {
-		d.bw.WriteString(s)
+		// An empty escape writes the value unescaped; writeEscapedBackslash
+		// already returns it verbatim in that case.
+		d.writeEscapedBackslash(s, charDel, d.escape)
 	}
 
 	d.bw.WriteString(charDel)

@@ -158,14 +158,12 @@ const MinProgressInterval = 100 * time.Millisecond
 
 // DelModifier holds DEL format modifier options.
 type DelModifier struct {
-	CharDel      string // string delimiter (wraps string values)
+	CharDel      string // string delimiter (wraps string values); empty = bare fields
 	ColDel       string // column delimiter
 	RowDel       string // row delimiter
-	Escape       string // escape character
-	NoEscape     bool   // disable escaping
+	Escape       string // escape character; empty = no escaping (bare values)
 	TimestampFmt string // timestamp format
 	DateFmt      string // date format
-	NoCharDel    bool   // do not use string delimiter
 	NoColNames   bool   // do not output/read column names (effective --header value)
 	Header       string // --header: on or off; folded into NoColNames by cmd
 }

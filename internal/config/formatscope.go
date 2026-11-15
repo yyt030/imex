@@ -104,10 +104,8 @@ func ExportOptionScopes() OptionScopes {
 		delOnly("col-del"),
 		delOnly("row-del"),
 		delOnly("escape"),
-		delOnly("no-escape"),
 		delOnly("timestamp-fmt"),
 		delOnly("date-fmt"),
-		delOnly("no-char-del"),
 		delOnly("header"),
 		notWith("blob-encoding", delAndSQL, FormatParquet, binaryEncodingReason),
 	}
@@ -123,10 +121,8 @@ func ImportOptionScopes() OptionScopes {
 		delOnly("col-del"),
 		delOnly("row-del"),
 		delOnly("escape"),
-		delOnly("no-escape"),
 		delOnly("timestamp-fmt"),
 		delOnly("date-fmt"),
-		delOnly("no-char-del"),
 		delOnly("header"),
 	}
 }

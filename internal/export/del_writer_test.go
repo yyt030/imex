@@ -102,11 +102,10 @@ func TestDelWriter_WriteRow(t *testing.T) {
 			name:   "no char delimiter",
 			values: []interface{}{"Alice", "Bob"},
 			mod: &config.DelModifier{
-				CharDel:   `"`,
-				ColDel:    ",",
-				RowDel:    "\n",
-				Escape:    `"`,
-				NoCharDel: true,
+				CharDel: "",
+				ColDel:  ",",
+				RowDel:  "\n",
+				Escape:  `"`,
 			},
 			expected: "Alice,Bob\n",
 		},
@@ -273,12 +272,11 @@ func TestDelWriter_EscapeHandling(t *testing.T) {
 			expected: `"test \"quoted\" value"`,
 		},
 		{
-			name:  "no escape",
+			name:  "empty escape (no escaping)",
 			input: `test "quoted" value`,
 			mod: &config.DelModifier{
-				CharDel:  `"`,
-				Escape:   `"`,
-				NoEscape: true,
+				CharDel: `"`,
+				Escape:  "",
 			},
 			expected: `"test "quoted" value"`,
 		},
@@ -619,14 +617,13 @@ func TestBlobEncodingMatchesFormerFlagPair(t *testing.T) {
 	}
 }
 
-func TestDelWriter_NoEscapeRejectsDelimiters(t *testing.T) {
+func TestDelWriter_EmptyEscapeRejectsDelimiters(t *testing.T) {
 	base := func() *config.DelModifier {
 		return &config.DelModifier{
-			CharDel:  `"`,
-			ColDel:   ",",
-			RowDel:   "\n",
-			Escape:   `"`,
-			NoEscape: true,
+			CharDel: `"`,
+			ColDel:  ",",
+			RowDel:  "\n",
+			Escape:  "",
 		}
 	}
 
@@ -647,7 +644,7 @@ func TestDelWriter_NoEscapeRejectsDelimiters(t *testing.T) {
 
 	t.Run("no char delimiter, column delimiter in value", func(t *testing.T) {
 		mod := base()
-		mod.NoCharDel = true
+		mod.CharDel = ""
 		var buf bytes.Buffer
 		w := NewDelWriter(&buf, mod, false, nil)
 		err := w.WriteRow([]interface{}{"a,b"})
@@ -659,7 +656,6 @@ func TestDelWriter_NoEscapeRejectsDelimiters(t *testing.T) {
 	t.Run("empty char delimiter, row delimiter in value", func(t *testing.T) {
 		mod := base()
 		mod.CharDel = ""
-		mod.NoCharDel = true
 		var buf bytes.Buffer
 		w := NewDelWriter(&buf, mod, false, nil)
 		err := w.WriteRow([]interface{}{"line1\nline2"})
@@ -709,7 +705,7 @@ func TestDelWriter_NoEscapeRejectsDelimiters(t *testing.T) {
 
 	t.Run("escaping enabled keeps the quote", func(t *testing.T) {
 		mod := base()
-		mod.NoEscape = false
+		mod.Escape = `"`
 		var buf bytes.Buffer
 		w := NewDelWriter(&buf, mod, false, nil)
 		if err := w.WriteRow([]interface{}{`a"b`}); err != nil {
@@ -722,18 +718,19 @@ func TestDelWriter_NoEscapeRejectsDelimiters(t *testing.T) {
 	})
 }
 
-// The reader only honours escapes inside quoted fields, so with --no-char-del
-// (or an empty character delimiter) every field is written verbatim even when
-// escaping is still enabled. A delimiter inside such a bare field silently
-// produced an unparseable file; it must be rejected like --no-escape does.
-func TestDelWriter_NoCharDelRejectsDelimiters(t *testing.T) {
+// The reader only honours escapes inside quoted fields, so with an empty
+// --char-del every field is written verbatim even when escaping is still
+// enabled. A delimiter inside such a bare field silently produced an
+// unparseable file; it must be rejected like --no-escape does, and the message
+// has to name --char-del — the only flag that can undo it now that
+// --no-char-del is gone.
+func TestDelWriter_EmptyCharDelRejectsDelimiters(t *testing.T) {
 	bare := func() *config.DelModifier {
 		return &config.DelModifier{
-			CharDel:   `"`,
-			NoCharDel: true,
-			ColDel:    "\t",
-			RowDel:    "\n",
-			Escape:    `\`,
+			CharDel: "",
+			ColDel:  "\t",
+			RowDel:  "\n",
+			Escape:  `\`,
 		}
 	}
 
@@ -744,8 +741,8 @@ func TestDelWriter_NoCharDelRejectsDelimiters(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "column delimiter") {
 			t.Fatalf("error = %v, want column delimiter error", err)
 		}
-		if !strings.Contains(err.Error(), "--no-char-del") {
-			t.Errorf("error = %v, want it to name --no-char-del", err)
+		if !strings.Contains(err.Error(), "--char-del") || strings.Contains(err.Error(), "--no-char-del") {
+			t.Errorf("error = %v, want it to name --char-del and never the removed --no-char-del", err)
 		}
 		if buf.Len() != 0 {
 			t.Errorf("output was buffered despite the error: %q", buf.String())

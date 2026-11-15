@@ -318,10 +318,9 @@ func TestDelReader_ParseLine(t *testing.T) {
 			name: "no char delimiter",
 			line: "Alice,Bob,Charlie",
 			mod: &config.DelModifier{
-				CharDel:   `"`,
-				ColDel:    ",",
-				Escape:    `"`,
-				NoCharDel: true,
+				CharDel: "",
+				ColDel:  ",",
+				Escape:  `"`,
 			},
 			expected: []string{"Alice", "Bob", "Charlie"},
 		},

@@ -230,9 +230,10 @@ func TestOptionMatrixDELModifiers(t *testing.T) {
 		importFlags []string
 		// wantInFile asserts the modifier really reached the output bytes.
 		wantInFile string
-		// plain uses a delimiter-free fixture. --no-escape and --no-char-del write
-		// fields verbatim, so the exporter refuses any value that contains a
-		// structural delimiter; the standard fixture deliberately contains those.
+		// plain uses a delimiter-free fixture. An empty --escape and an empty
+		// --char-del write fields verbatim, so the exporter refuses any value that
+		// contains a structural delimiter; the standard fixture deliberately
+		// contains those.
 		plain bool
 	}{
 		{
@@ -252,8 +253,8 @@ func TestOptionMatrixDELModifiers(t *testing.T) {
 		},
 		{
 			name:        "不使用字符定界符",
-			exportFlags: []string{"--no-char-del"},
-			importFlags: []string{"--no-char-del"},
+			exportFlags: []string{"--char-del", ""},
+			importFlags: []string{"--char-del", ""},
 			wantInFile:  "1,plain,",
 			plain:       true,
 		},
@@ -267,8 +268,8 @@ func TestOptionMatrixDELModifiers(t *testing.T) {
 		},
 		{
 			name:        "关闭转义",
-			exportFlags: []string{"--no-escape"},
-			importFlags: []string{"--no-escape"},
+			exportFlags: []string{"--escape", ""},
+			importFlags: []string{"--escape", ""},
 			plain:       true,
 		},
 		{
@@ -342,7 +343,7 @@ func TestOptionMatrixNoColNamesSymmetry(t *testing.T) {
 
 // makePlainPair builds the same table shape as makePair but with values that
 // contain no structural delimiter (",", "\n", "\r", '"'), which the verbatim
-// writing modes --no-escape and --no-char-del cannot represent.
+// writing modes (an empty --escape or an empty --char-del) cannot represent.
 func (c *cliEnv) makePlainPair(t *testing.T, prefix string) (src, dst string) {
 	t.Helper()
 	src = c.liveTable(t, prefix+"_plain_src")
@@ -381,8 +382,8 @@ func TestOptionMatrixDELGuardRefusal(t *testing.T) {
 		flags []string
 		want  string
 	}{
-		{"含换行的值遇上 --no-char-del", []string{"--no-char-del"}, "would corrupt the DEL record"},
-		{"含引号的值遇上 --no-escape", []string{"--no-escape"}, "would corrupt the DEL record"},
+		{"含换行的值遇上空 --char-del", []string{"--char-del", ""}, "would corrupt the DEL record"},
+		{"含引号的值遇上空 --escape", []string{"--escape", ""}, "would corrupt the DEL record"},
 	}
 
 	for _, tc := range cases {
@@ -433,7 +434,7 @@ func TestOptionMatrixPartialOutputCleanup(t *testing.T) {
 		t.Run("threads="+threads, func(t *testing.T) {
 			path := filepath.Join(env.dir, "partial-"+threads+".del")
 			out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"` ORDER BY id",
-				"-f", "del", "-o", path, "--threads", threads, "--no-char-del")
+				"-f", "del", "-o", path, "--threads", threads, "--char-del", "")
 			if code == 0 {
 				t.Fatalf("export must refuse the unrepresentable row\n%s", out)
 			}

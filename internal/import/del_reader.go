@@ -143,13 +143,14 @@ func NewDelReader(r *bufio.Reader, mod *config.DelModifier, readColumns bool) *D
 		colD:     newDelimSpec(mod.ColDel),
 		escD:     newDelimSpec(mod.Escape),
 	}
-	// Quote handling is off for --no-char-del and for an empty char delimiter,
-	// exactly as the per-position checks below require.
-	d.quote = !mod.NoCharDel && mod.CharDel != ""
-	if !mod.NoEscape {
-		d.doubleWrite = d.quote && mod.Escape == mod.CharDel
-		d.backslashEsc = mod.Escape != "" && mod.Escape != mod.CharDel
-	}
+	// Quote handling is off for an empty --char-del (bare fields), exactly as the
+	// per-position checks below require.
+	d.quote = mod.CharDel != ""
+	// An empty --escape turns both escape modes off: the value is read exactly as
+	// it appears (the removed --no-escape flag), which is also what the writer
+	// emits in that mode.
+	d.doubleWrite = d.quote && mod.Escape == mod.CharDel
+	d.backslashEsc = mod.Escape != "" && mod.Escape != mod.CharDel
 	// --date-fmt / --timestamp-fmt: re-parse configured layouts back to the
 	// canonical MySQL text the server expects.
 	if df := convertImportFormat(mod.DateFmt); df != "" && df != "2006-01-02" && strings.Contains(df, "2006") {

@@ -46,14 +46,14 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.StringVarP(&exportCfg.Query, "query", "q", "", "SQL SELECT statement, or @file to read it from a file")
 
 	// DEL format modifiers
-	f.StringVar(&exportCfg.DelModifier.CharDel, "char-del", "\"", "String delimiter")
+	f.StringVar(&exportCfg.DelModifier.CharDel, "char-del", "\"",
+		"String delimiter; empty disables it")
 	f.StringVar(&exportCfg.DelModifier.ColDel, "col-del", ",", "Column delimiter")
 	f.StringVar(&exportCfg.DelModifier.RowDel, "row-del", "\n", "Row delimiter")
-	f.StringVar(&exportCfg.DelModifier.Escape, "escape", "\"", "Escape character")
-	f.BoolVar(&exportCfg.DelModifier.NoEscape, "no-escape", false, "Disable escaping")
+	f.StringVar(&exportCfg.DelModifier.Escape, "escape", "\"",
+		"Escape character; empty disables it")
 	f.StringVar(&exportCfg.DelModifier.TimestampFmt, "timestamp-fmt", "yyyy-MM-dd HH:mm:ss", "Timestamp format")
 	f.StringVar(&exportCfg.DelModifier.DateFmt, "date-fmt", "yyyy-MM-dd", "Date format")
-	f.BoolVar(&exportCfg.DelModifier.NoCharDel, "no-char-del", false, "Do not use string delimiter")
 	f.StringVar(&exportCfg.DelModifier.Header, "header", string(config.HeaderOn),
 		"Include the header row (on/off)")
 

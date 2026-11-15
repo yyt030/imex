@@ -178,7 +178,7 @@ func resolveExportQuery() error {
 // parseExportDelimiters parses DEL format delimiter strings.
 func parseExportDelimiters() error {
 	var err error
-	if exportCfg.DelModifier.CharDel, err = common.ParseDelimiter(exportCfg.DelModifier.CharDel); err != nil {
+	if exportCfg.DelModifier.CharDel, err = common.ParseCharDelimiter(exportCfg.DelModifier.CharDel); err != nil {
 		return common.Usagef("invalid --char-del: %v", err)
 	}
 	if exportCfg.DelModifier.ColDel, err = common.ParseDelimiter(exportCfg.DelModifier.ColDel); err != nil {
@@ -187,7 +187,7 @@ func parseExportDelimiters() error {
 	if exportCfg.DelModifier.RowDel, err = common.ParseDelimiter(exportCfg.DelModifier.RowDel); err != nil {
 		return common.Usagef("invalid --row-del: %v", err)
 	}
-	if exportCfg.DelModifier.Escape, err = common.ParseDelimiter(exportCfg.DelModifier.Escape); err != nil {
+	if exportCfg.DelModifier.Escape, err = common.ParseEscape(exportCfg.DelModifier.Escape); err != nil {
 		return common.Usagef("invalid --escape: %v", err)
 	}
 	return nil
