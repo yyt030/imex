@@ -301,6 +301,130 @@ func TestOptionMatrixDELModifiers(t *testing.T) {
 	}
 }
 
+// TestOptionMatrixDELBoundaryMatrix is the live-server half of the delimiter
+// boundary matrix (the parse/validate half lives in cmd/validate_boundary_test.go
+// and internal/common/util_test.go). It drives the values that used to be checked
+// by hand against the built binary and asserts on the actual rows that survive a
+// round trip, because only a server can tell whether an accepted layout really
+// reproduces the data. Every case pairs the export flag with the matching import
+// flag: the option that shaped the file must be the one that reads it back.
+func TestOptionMatrixDELBoundaryMatrix(t *testing.T) {
+	env := newCLILive(t)
+
+	// The plain fixture has no structural delimiter in any value, so it is the
+	// right shape for the verbatim modes (empty --char-del / --escape): the
+	// exporter refuses values containing the column or row delimiter before it
+	// writes anything, and this fixture deliberately keeps those out.
+	roundTripCases := []struct {
+		name        string
+		exportFlags []string
+		importFlags []string
+		wantInFile  string
+	}{
+		{
+			name:        "空 escape 不转义",
+			exportFlags: []string{"--escape", ""},
+			importFlags: []string{"--escape", ""},
+		},
+		{
+			name:        "空 char-del 裸字段 + tab 列定界",
+			exportFlags: []string{"--char-del", "", "--col-del", `\t`},
+			importFlags: []string{"--char-del", "", "--col-del", `\t`},
+		},
+		{
+			name:        "空 char-del 与空 escape 全裸",
+			exportFlags: []string{"--char-del", "", "--escape", "", "--col-del", `\t`},
+			importFlags: []string{"--char-del", "", "--escape", "", "--col-del", `\t`},
+		},
+		{
+			name:        "反斜杠 escape",
+			exportFlags: []string{"--escape", `\`},
+			importFlags: []string{"--escape", `\`},
+		},
+		{
+			name:        "十六进制列定界 0x7C",
+			exportFlags: []string{"--col-del", "0x7C"},
+			importFlags: []string{"--col-del", "0x7C"},
+			wantInFile:  "|",
+		},
+		{
+			name:        "多字节列定界 §",
+			exportFlags: []string{"--col-del", "§"},
+			importFlags: []string{"--col-del", "§"},
+			wantInFile:  "§",
+		},
+	}
+	for _, tc := range roundTripCases {
+		t.Run(tc.name, func(t *testing.T) {
+			src, dst := env.makePlainPair(t, "dlbnd")
+			file := env.roundTrip(t, tc.name, "del", src, dst, tc.exportFlags, tc.importFlags)
+			if tc.wantInFile != "" && !strings.Contains(readFile(t, file), tc.wantInFile) {
+				t.Errorf("output does not contain %q", tc.wantInFile)
+			}
+		})
+	}
+
+	// The 0x22 / default-double-write pair: a hex quote as --char-del is the same
+	// byte as the literal default --escape, i.e. the shipped double-write layout,
+	// and must round-trip the tricky fixture (which contains quotes and newlines).
+	t.Run("hex 引号 char-del 与默认双写", func(t *testing.T) {
+		src, dst := env.makePair(t, "dlbndhexq")
+		env.roundTrip(t, "hex 引号", "del", src, dst,
+			[]string{"--char-del", "0x22"}, []string{"--char-del", "0x22"})
+	})
+}
+
+// TestOptionMatrixBareFieldsNullVsEmpty pins a semantic limit of the verbatim
+// layout rather than a regression: with --char-del "" a NULL and an empty string
+// are both written as an empty field, so on import both come back as NULL. This
+// was already the behaviour of the removed --no-char-del flag (verified against
+// the v0.43.0 binary), and folding the flag into an empty value did not change
+// it. Pinning it here keeps a future reader from either treating it as a bug or
+// "fixing" it by changing what the empty value means. Quoted mode (the default)
+// keeps the two distinct and is asserted alongside as the contrast.
+func TestOptionMatrixBareFieldsNullVsEmpty(t *testing.T) {
+	env := newCLILive(t)
+	src := env.liveTable(t, "nullsrc")
+	dst := env.liveTable(t, "nulldst")
+	env.exec(t, fmt.Sprintf(liveSourceDDL, src))
+	// Two rows differing only in whether note is NULL or the empty string.
+	env.exec(t, "INSERT INTO `"+src+"` (id, name, note) VALUES (1, 'null note', NULL), (2, 'empty note', '')")
+	env.exec(t, "CREATE TABLE `"+dst+"` LIKE `"+src+"`")
+
+	// snapshotTable renders name/note as HEX(...), so NULL shows as the literal
+	// <NULL> while an empty string shows as an empty (zero-length) field. Columns
+	// are id|name|amount|note|created|payload|flag; note is index 3.
+	noteOf := func(row string) string {
+		cols := strings.Split(row, "|")
+		if len(cols) < 4 {
+			t.Fatalf("row %q has %d columns, want at least 4", row, len(cols))
+		}
+		return cols[3]
+	}
+
+	// Quoted (default): NULL and empty string stay distinct across the round trip.
+	quotedSrc := env.snapshotTable(t, src)
+	if q0, q1 := noteOf(quotedSrc[0]), noteOf(quotedSrc[1]); q0 != "<NULL>" || q1 == "<NULL>" || q1 != "" {
+		t.Fatalf("fixture note values = %q and %q, want <NULL> and empty string", q0, q1)
+	}
+	env.roundTrip(t, "quoted null vs empty", "del", src, dst, nil, nil)
+	assertSameRows(t, quotedSrc, env.snapshotTable(t, dst))
+
+	// Bare: both become NULL. Assert the exact rendered form so a change in the
+	// writer or reader that starts preserving the distinction fails here loudly.
+	env.exec(t, "DELETE FROM `"+dst+"`")
+	file := env.cliExport(t, src, "del", "bare_null.del", "--char-del", "", "--col-del", `\t`)
+	env.cliImport(t, dst, "del", file, "--char-del", "", "--col-del", `\t`)
+	got := env.snapshotTable(t, dst)
+	if len(got) != 2 {
+		t.Fatalf("bare round trip row count = %d, want 2: %v", len(got), got)
+	}
+	if b0, b1 := noteOf(got[0]), noteOf(got[1]); b0 != "<NULL>" || b1 != "<NULL>" {
+		t.Errorf("bare fields must read both NULL and empty string back as <NULL>, got notes %q and %q (rows %v)",
+			b0, b1, got)
+	}
+}
+
 // TestOptionMatrixNoColNamesSymmetry pins what happens when the two sides of the
 // --header=off pair are not matched. The file cannot say whether its first
 // record is a header or data, so positional --columns keeps the header behaviour

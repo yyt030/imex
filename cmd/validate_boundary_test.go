@@ -113,3 +113,89 @@ func TestCLIEmptyCharDelAndEscapeAreTheOnlyLegalEmptyDelimiters(t *testing.T) {
 		}
 	}
 }
+
+// TestCLIDelimiterParseBoundary drives the full parse-and-validate layer with the
+// boundary matrix that used to be checked only by hand against the built binary.
+// It pins three behaviours that a value-level unit test cannot see from here:
+//
+//   - values are compared for collisions *after* parsing, so two different
+//     spellings of the same byte (0x09 and \t) are still refused;
+//   - a value that cannot be parsed is reported as that option's own error,
+//     before any collision check, and in the fixed char/col/row/escape order;
+//   - the two flags folded into delimiter values in 187/188 are gone, so their
+//     old spellings are unknown-flag usage errors, not silent aliases.
+//
+// Exit-code 2 (common.IsUsageError) is the whole contract at this layer; a nil
+// error means the options parsed and validation would let the run reach the DB.
+func TestCLIDelimiterParseBoundary(t *testing.T) {
+	base := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb"}
+	exportArgs := append(append([]string{}, base...), "-o", "/tmp/out.del", "-q", "SELECT 1", "-f", "del")
+	importArgs := append(append([]string{}, base...), "-i", "/tmp/in.del", "-t", "users", "-f", "del")
+
+	type outcome struct {
+		reject   bool
+		contains string // substring the usage error must name
+	}
+	cases := []struct {
+		name  string
+		flags []string
+		outcome
+	}{
+		// --- hex parsing: valid forms pass, malformed forms are rejected ---
+		{"hex tab", []string{"--col-del", "0x09"}, outcome{}},
+		{"hex CRLF row", []string{"--row-del", "0x0D0A"}, outcome{}},
+		{"hex multi 0x7C0x7C", []string{"--col-del", "0x7C0x7C"}, outcome{}},
+		{"hex uppercase 0X", []string{"--col-del", "0X7C"}, outcome{}},
+		{"hex odd length", []string{"--col-del", "0x9"}, outcome{true, "--col-del"}},
+		{"hex bad digits", []string{"--col-del", "0xZZ"}, outcome{true, "--col-del"}},
+		{"hex bare prefix", []string{"--col-del", "0x"}, outcome{true, "--col-del"}},
+		// --- escape-sequence parsing ---
+		{"escape tab", []string{"--col-del", `\t`}, outcome{}},
+		{"escape newline", []string{"--row-del", `\n`}, outcome{}},
+		{"escape backslash", []string{"--col-del", `\\`}, outcome{}},
+		{"escape nul", []string{"--col-del", `\0`}, outcome{}},
+		{"unknown escape kept", []string{"--col-del", `\x`}, outcome{}},
+		// --- collisions are judged on the parsed bytes ---
+		{"hex tab equals literal tab", []string{"--col-del", "0x09", "--row-del", `\t`}, outcome{true, "--col-del"}},
+		{"hex comma equals col-del", []string{"--char-del", "0x2C", "--col-del", ","}, outcome{true, "--char-del"}},
+		{"hex newline equals row-del", []string{"--char-del", "0x0A", "--row-del", `\n`}, outcome{true, "--char-del"}},
+		{"hex escape equals col-del", []string{"--escape", "0x7C", "--col-del", "|"}, outcome{true, "--escape"}},
+		{"0x22 escape is the default double-write", []string{"--char-del", "0x22", "--escape", `"`}, outcome{}},
+		// --- bad values win over collisions, in char/col/row/escape order ---
+		{"bad col before bad escape", []string{"--col-del", "0x9", "--escape", "0xZZ"}, outcome{true, "--col-del"}},
+		{"bad char before bad col", []string{"--char-del", "0x9", "--col-del", "0xZZ"}, outcome{true, "--char-del"}},
+		// --- the two folded-away flags are unknown, not aliases ---
+		{"removed --no-char-del", []string{"--no-char-del"}, outcome{true, "unknown flag"}},
+		{"removed --no-escape", []string{"--no-escape"}, outcome{true, "unknown flag"}},
+	}
+
+	for _, c := range cases {
+		for _, sub := range []string{"export", "import"} {
+			args := exportArgs
+			if sub == "import" {
+				args = importArgs
+			}
+			err := validateOnly(t, sub, append(append([]string{}, args...), c.flags...))
+			if !c.reject {
+				if err != nil {
+					t.Errorf("%s %s: unexpected error %v", sub, c.name, err)
+				}
+				continue
+			}
+			if err == nil {
+				t.Errorf("%s %s: expected a usage error, got nil", sub, c.name)
+				continue
+			}
+			// An unknown flag is produced by pflag's Parse, below the validation
+			// layer, so it arrives here unwrapped; the command layer turns it
+			// into exit 2 (pinned by TestCLIMatrix). What matters at this layer
+			// is that the old spelling is refused at all, with that message.
+			if c.contains != "unknown flag" && !common.IsUsageError(err) {
+				t.Errorf("%s %s: %q must be a usage error (exit 2)", sub, c.name, err)
+			}
+			if !strings.Contains(err.Error(), c.contains) {
+				t.Errorf("%s %s: error %q must name %q", sub, c.name, err, c.contains)
+			}
+		}
+	}
+}

@@ -859,3 +859,28 @@ done
 - **两轮叠加的边界（值得记）**：187 的合并是「解析层放行 + 删镜像 bool」，写读两侧本来同义，删 `NoCharDel` 不改变任何字节；188 的合并若只做同样两步就是错的——旧写入器 `if escape == "" { escape = mod.CharDel }` 会回退双写，而读取器把空 escape 读作不反转义，删掉 flag 等于把「静默写出读不回来的文件」从不可达路径变成可达路径。因此 188 先删回退、加 `literalFields()` 校验门，再把空 escape 定义为「原样写 + 写出前校验」，最后才删 `NoEscape`。两轮共用同一套 `Parse*Delimiter` 单点例外模式，这是唯一可以套用的部分。
 - **进位后 QA 实跑**：`gofmt -l .` 0、`git diff --check` 0、`go vet ./...` 净、`go test ./... -count=1` 11 包 ok、`make build` 0、`docs/cli-oracle.txt` 22/22 drift 0（最长行 117 B）、真凭据 0、`go.mod`／`go.sum` 未动。真库 MySQL 8.0.46（`imexdb`）：`TestOptionMatrix` 全量 PASS（13.8 s，含 DEL 修饰 8 组与守卫拒绝 2 组）；二进制冒烟 `--char-del '' --col-del '|'` 与 `--escape ''` 两条导出均 exit 0，`--config` 回显 `escape=""`、`no_escape`／`no_char_del` 出现 0 次，`export --help` 中两个旧 flag 出现 0 次。
 - **推成真值（2026-11-15 收口）**：远端 `main` = `a159fa4`、`refs/tags/v0.44.0` = `25bacce`、peeled = `a159fa4`，与本地 `rev-parse` 三项逐项相等；`git tag -l` **49 → 50**、既有 49 个 tag 一个都不动／不移／不重打、工作树 **0** 条。**环境事件（如实记）**：推送前只读 `ls-remote` 出现多次「连得上但返回空」的抖动（`curl` 20 s 超时、`ls-remote` 首两次空输出，ICMP 0% 丢包、DNS 正常），重试后恢复 100+ 行正常返回。`main` 一次推成（`f43d00e..a159fa4`）；tag 首推触发 120 s 超时、远端无 `v0.44.0`，改用 `refs/tags/v0.44.0` 显式引用重试后 2 s 推成（`* [new tag] v0.44.0`）。凭据仅经进程内 `-c http.https://github.com/.extraheader=…` 注入并配 `http.postBuffer=52428800`，**未写入 `.git/config`／remote URL／任何文件、未回显明文**，推完随进程消失；落盘核对用的 `/tmp/lsr_v44*.txt` 临时文件仅含公开引用。第二笔纯 docs 收口补记（本行）不另打 tag、不再进位、不回改 append-only 行。
+
+## 二十一、190 轮状态快照（2026-11-15，纯测试资产轮，**未发版**；边界矩阵固化为自动化用例）
+
+- **指令与语义**：用户「固化边界矩阵成自动化测试用例」。承接上一轮黑盒验证（36 解析用例 + 7 真库往返 + 新旧对照，全绿、工作树 0 改动），把那套一次性脚本变成仓库里的常驻测试。只加测试、不碰生产代码、不进位、不提交。
+- **四个落点**：① `internal/common/util_test.go` 的 `TestParseEmptyableDelimiters`（`ParseCharDelimiter`／`ParseEscape` 空值放行与逐值委托）；② `cmd/validate_boundary_test.go` 的 `TestCLIDelimiterParseBoundary`（hex/转义/解析后比较/错误优先级/旧 flag，双侧 42 断言）；③ `cmd/cli_matrix_test.go` 的 `TestCLIFoldedFlagsAreUnknownUsageErrors`（走 `rootCmd.Execute` 断言旧 flag 的 exit 2）；④ `test/integration/option_matrix_test.go` 的 `TestOptionMatrixDELBoundaryMatrix`（7 子用例真库往返）与 `TestOptionMatrixBareFieldsNullVsEmpty`（固化裸字段下 NULL 与空串都读回 NULL 的既有语义）。
+- **值得记的两点**：一是 unknown-flag 错误由 pflag `Parse` 产生、不带 `UsageError` 包装，`validateOnly` 只到解析层，故退出码契约必须由走 `Execute()` 的 ③ 单独覆盖，两层分工写进测试注释。二是 ④ 里 `snapshotTable` 对 name/note 做 `HEX(CAST(...))`，NULL 显示 `<NULL>`、空串显示空字段，测试按此断言；裸字段的 NULL/空串不可区分是 187 合并前就有的语义（v0.43.0 旧 `--no-char-del` 产物逐字节相同），本轮把它钉死防止误改。
+- **QA 与既有欠账**：`gofmt` 0、`git diff --check` 0、`vet` 净、`go test ./...` 11 包 ok、两例新增真库测试全 PASS、`make build` 0、oracle 22/22 drift 0。真库全量集成另有 4 组 list/show 失败（`unknown object subcommand "tables"` 等），经基线 HEAD 复现确认是 185 轮 `show` kind 改单数后遗留的测试未同步，非本轮引入，如实记账不修。
+- **工作树**：5 个测试文件改动（`internal/common/util_test.go`、`cmd/validate_boundary_test.go`、`cmd/cli_matrix_test.go`、`test/integration/option_matrix_test.go` ＋ 本轮记账的 `docs/requirements.md`、`CONTEXT.md`），生产代码 0 改动；`Makefile` 仍 **0.44.0**；**未 commit／tag／push**，等用户发版指令。
+
+## 二十二、191 轮状态快照（2026-11-15，纯测试资产轮，**未发版**；数据边界与异常路径测试）
+
+- **指令与语义**：用户「边界测试再补充一些数据类型最大值最小值，左对齐右对齐，乱码，异常字符，正负号，特殊字符等。补充写异常测试如中断，主键冲突，访问超时等异常」。在 190 轮选项矩阵之上补两类真库测试资产：数据值边界 + 异常路径。只加测试、不碰生产代码、不进位、不提交。
+- **数据边界**：`test/integration/data_boundary_test.go`，`TestLive_DataBoundary` 5 子测试（数值极值含 FLOAT 极值改 `CAST AS CHAR` 文本比较、时间边界含零日期改 NULL、CHAR 右填充与 VARCHAR 首尾空格、控制字符与引号反斜杠分隔符、无效 UTF-8 与 emoji），NULL-safe `<=>` 逐行比对。
+- **异常路径**：`test/integration/exception_path_test.go` 5 测试——畸形字段数（钉死 DEL 扁平字段流语义：短行静默错位、1366 兜底、表 0 行）、中途失败全量回滚（batch-size 1 三批两进一炸整表回滚）、DEL 格式主键冲突（insert 1062 表原状／insert_update 吸收，与 SQL 格式互补）、连接拒绝 fail fast（`connection refused` <30s）、黑洞端口握手超时（`context deadline exceeded` ~5s 防挂起）。
+- **值得记的三点**：一是 DEL 读取器是扁平字段流，行定界符只是又一个字段终止符，缺字段不报错而是后续行静默错位、最终由 MySQL 类型错误兜底——本轮把它钉死为既有语义，若未来加字段数校验须保表干净与错误可归属；二是 DEL 默认列分隔符是逗号（`config.go` `ColDel: ","`），手写 fixture 按逗号造，真实 TAB 每行只切出 1 个字段；三是超时保护无用户可见 flag，走 DSN 参数与建连 ping 的 deadline（实测 ~5s），黑洞测试首版 cleanup 死锁（先关连接再 `<-done` 等 Accept 退出）已改为单一 cleanup 按序执行。
+- **QA 与既有欠账**：`gofmt` 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 11 包 ok、异常路径 5 测试真库全 PASS、真库全量集成恰好既有 4 组 list/show 欠账失败（190 轮已判非本轮引入）、`make build` 0。
+- **工作树**：在 190 轮 5 个测试文件之上新增 `test/integration/data_boundary_test.go`、`test/integration/exception_path_test.go` ＋ 本轮记账的 `docs/requirements.md`、`CONTEXT.md`，生产代码 0 改动；`Makefile` 仍 **0.44.0**；**未 commit／tag／push**，等用户发版指令。
+
+## 二十三、192 轮发版快照（2026-11-16；v0.44.1 — 结清 190／191 两轮测试资产，Z 档）
+
+- **指令与判档**：用户「发版」。190／191 两轮均为纯测试资产轮（0 生产代码改动，help/CLI 行为/DEL 产物/`--config` 回显不变，oracle 22/22 drift 0），按 62／0.2.3／0.12.1 先例记 **Z 档，patch 位进位 `0.44.0 → 0.44.1`**。
+- **发版记账三处**：`Makefile` 首行 0.44.1；README 横幅改写为 v0.44.1（189 口径，历史存档与摘要表不新增节）；`docs/requirements.md` 新增 **192** 条。
+- **一笔结清的内容**：190 轮边界矩阵固化（5 个测试文件改动：`ParseCharDelimiter`/`ParseEscape` 单测、CLI 解析层 42 断言、`rootCmd.Execute()` 旧 flag exit 2、真库 DEL 边界 7 子用例、裸字段 NULL/空串语义）＋ 191 轮数据边界与异常路径（`data_boundary_test.go` 5 子测试、`exception_path_test.go` 5 测试：扁平字段流语义、中途失败全量回滚、DEL 主键冲突、连接拒绝、黑洞超时）。
+- **QA**：`gofmt` 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 11 包 ok、异常路径真库全 PASS、真库全量恰好既有 4 组 list/show 欠账（基线复现、非本轮引入）、oracle 22/22 drift 0、`make build` 0。
+- **待办**：release 提交 + 附注 tag `v0.44.1` → 推 main 与 tag → 同轮第二笔纯 docs 收口补记（仅 `CONTEXT.md`）。

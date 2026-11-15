@@ -508,6 +508,39 @@ func TestCLIDELFlagRejectedExitCode(t *testing.T) {
 // TestCLILogFormatEnvOverrideRejected covers the IMEX_LOG_FORMAT path: the
 // env value goes through the same membership check as the flag, so a typo
 // cannot silently fall back to the console layout.
+// TestCLIFoldedFlagsAreUnknownUsageErrors pins the user-visible half of the
+// 187/188 folds: --no-char-del and --no-escape no longer exist, and passing one
+// must be a usage error (exit 2) on both commands with no compatibility alias.
+// TestCLIDelimiterParseBoundary checks they are refused at the parse layer; this
+// test goes through rootCmd.Execute so the exit-code contract is covered too.
+func TestCLIFoldedFlagsAreUnknownUsageErrors(t *testing.T) {
+	for _, sub := range []string{"export", "import"} {
+		for _, flag := range []string{"--no-char-del", "--no-escape"} {
+			*exportCfg = *newExportConfigForTest()
+			*importCfg = *newImportConfigForTest()
+			resetChangedFlags(exportCmd, importCmd, rootCmd)
+			tail := []string{"-h", "127.0.0.1", "-u", "root", "-p", "pass", "-D", "mydb", "-f", "del", flag}
+			if sub == "export" {
+				tail = append(tail, "-o", "/tmp/out.del", "-q", "SELECT 1")
+			} else {
+				tail = append(tail, "-i", "/tmp/in.del", "-t", "users")
+			}
+			rootCmd.SetArgs(append([]string{sub}, tail...))
+			err := rootCmd.Execute()
+			if err == nil {
+				t.Errorf("%s %s: expected an unknown-flag error, got nil", sub, flag)
+				continue
+			}
+			if !strings.Contains(err.Error(), "unknown flag: "+flag) {
+				t.Errorf("%s %s: error %q must name the unknown flag", sub, flag, err)
+			}
+			if !common.IsUsageError(err) {
+				t.Errorf("%s %s: %q must be a usage error (exit code 2)", sub, flag, err)
+			}
+		}
+	}
+}
+
 func TestCLILogFormatEnvOverrideRejected(t *testing.T) {
 	t.Setenv("IMEX_LOG_FORMAT", "consoleness")
 	*exportCfg = *newExportConfigForTest()
