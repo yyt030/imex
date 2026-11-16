@@ -956,3 +956,4 @@ done
 - **一笔结清的内容**：197 轮 kdfIterations 600000→200000 ＋ 新测试钉死旧密文失效；198 轮 200000→100000 ＋ 旧迭代测试表驱动扩为 60 万/20 万两档。端到端提速 ~118ms→~20ms（约 6.4×），安全代价是离线破解约 6 倍速，历史 ENC 密文须新版 `imex encrypt` 重生成。
 - **QA 与凭据**：gofmt 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、`make build` 0。
 - **待办**：release 提交 + 附注 tag `v0.47.0` → 推 main 与 tag → 同轮第二笔纯 docs 收口补记（仅 `CONTEXT.md`）。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`。
+- **推成真值（2026-11-16 收口）**：远端 `main` = `a927d0b`、`refs/tags/v0.47.0` = `cf57fa3`、peeled = `a927d0b`，与本地 `rev-parse` 三项逐项相等，`ls-remote` 穿透验证通过；v0.47.0 发布完成。推送过程中 GitHub TLS 连接多次非正常终止（`GnuTLS recv error -110`、timeout 124），经重试推成；沿用会话内 PAT 文件 `/root/.gh_pat_session`，未写入任何仓库文件。二十九节「待办」三项全部完成。
