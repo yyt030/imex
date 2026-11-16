@@ -974,4 +974,5 @@ done
 - **一笔结清的内容**：变更记录 200 的全部代码、测试与文档 —— 新增 `internal/ddl/view.go`／`view_test.go`，改 `internal/ddl/ddl.go`／`cmd/show.go`／`internal/show/show.go`／`cmd/show_dialect_test.go`／`test/integration/dm_live_test.go`／README。真库验证 3 个视图转出的 MySQL DDL 在真实 MySQL 8.0 建成＋查询正确行、带 `||` 视图被拒绝。既有欠账（干净 HEAD worktree 已证非本轮引入）：表活体测试 `TestDMLive_DMToMySQLDefinitionRebuild` 在当前 dm8 实例建夹具报 `-6119`，未改动该测试。
 - **QA 与凭据**：gofmt 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、over118 0、`make build` 0、bin 版本 0.48.0。
 - **交付面**：11 个文件改动（代码 7＋记账 4），`go.mod`／`go.sum`／`docs/cli-oracle.txt` 一字未动、零新依赖；`git tag -l` 53 → 54。
-- **待办**：release 提交 + 附注 tag `v0.48.0` → 推 main 与 tag → 同轮第二笔纯 docs 收口补记（仅 `CONTEXT.md`）。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`。
+- **待办（已完成）**：release 提交 + 附注 tag `v0.48.0` → 推 main 与 tag → 同轮第二笔纯 docs 收口补记（仅 `CONTEXT.md`）。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`。
+- **推成真值（2026-11-16 收口）**：release 提交 `4df7cd3`、附注 tag 对象 `91354e8`（peeled `4df7cd3`）、`git tag -l` **53 → 54**、远端 `main` = `4df7cd3`、`refs/tags/v0.48.0` = `91354e8`、peeled = `4df7cd3`，与本地 `rev-parse` 三项逐项相等，`ls-remote` 穿透验证通过；v0.48.0 发布完成。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`（仅本地会话使用、未轮换、未写入任何仓库文件），本轮 TLS 一次推成。三十一节「待办」全部完成。
