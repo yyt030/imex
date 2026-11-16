@@ -1070,3 +1070,73 @@ func TestHeaderRegisteredOnEveryResultCommand(t *testing.T) {
 		}
 	}
 }
+
+// TestSnapshotConsistencyFlagFace pins the read-consistency option's CLI face:
+// export carries it, it is a bool with no shorthand, its default is false — so a
+// run that says nothing sends no isolation statement on any read connection —
+// and no other command carries it. The option is deliberately CLI-only: contract
+// face ④ keeps its six IMEX_* names, so a run cannot inherit this decision from
+// the environment and an operator reading a log line sees the choice the command
+// made.
+func TestSnapshotConsistencyFlagFace(t *testing.T) {
+	f := exportCmd.Flags().Lookup("snapshot-consistency")
+	if f == nil {
+		t.Fatal("export has no --snapshot-consistency")
+	}
+	if f.Value.Type() != "bool" {
+		t.Errorf("--snapshot-consistency type = %q, want bool", f.Value.Type())
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--snapshot-consistency default = %q, want false", f.DefValue)
+	}
+	if f.Shorthand != "" {
+		t.Errorf("--snapshot-consistency has shorthand %q, want none", f.Shorthand)
+	}
+	for _, c := range []*cobra.Command{importCmd} {
+		if c.Flags().Lookup("snapshot-consistency") != nil {
+			t.Errorf("%s carries --snapshot-consistency, which only the export read path can honour", c.Name())
+		}
+	}
+	for _, parent := range []*cobra.Command{newListCmd(), newShowCmd()} {
+		for _, sub := range parent.Commands() {
+			if sub.Flags().Lookup("snapshot-consistency") != nil {
+				t.Errorf("%s %s carries --snapshot-consistency", parent.Name(), sub.Name())
+			}
+		}
+	}
+	for _, s := range connEnvSources {
+		if s.env == "IMEX_SNAPSHOT_CONSISTENCY" {
+			t.Fatalf("contract face ④ grew an environment source for --snapshot-consistency: %+v", connEnvSources)
+		}
+	}
+	if len(connEnvSources) != 6 {
+		t.Errorf("connection environment sources = %d, want 6: %+v", len(connEnvSources), connEnvSources)
+	}
+}
+
+// TestSnapshotConsistencyValueReachesConfig pins the wiring between the flag and
+// the exporter's decision: parsing the flag sets the config field the two read
+// paths consult, and leaving it out clears it again.
+func TestSnapshotConsistencyValueReachesConfig(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{}, false},
+		{[]string{"--snapshot-consistency"}, true},
+		{[]string{"--snapshot-consistency=true"}, true},
+		{[]string{"--snapshot-consistency=false"}, false},
+	} {
+		// The command tree is package-level and flag values survive a Parse, so
+		// each case starts from the documented default rather than whatever the
+		// previous case left behind.
+		exportCfg.SnapshotConsistency = false
+		resetChangedFlags(exportCmd, importCmd, rootCmd)
+		if err := exportCmd.Flags().Parse(tc.args); err != nil {
+			t.Fatalf("parse %v: %v", tc.args, err)
+		}
+		if exportCfg.SnapshotConsistency != tc.want {
+			t.Errorf("%v sets SnapshotConsistency = %v, want %v", tc.args, exportCfg.SnapshotConsistency, tc.want)
+		}
+	}
+}

@@ -69,11 +69,13 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 	// Configure connection pool for optimal performance
 	db.SetMaxOpenConns(1) // Single-threaded export uses one connection
 	db.SetMaxIdleConns(1)
-	// The consistent snapshot is started with a raw START TRANSACTION, so the
-	// connection carrying it goes back to the idle pool between statements.
-	// Ageing it would let database/sql close it as "idle", which silently rolls
-	// the snapshot back and continues reading without consistency. Export pools
-	// are therefore not aged; only import pools are (see common.ApplyPoolHardening).
+	// The consistent snapshot, when --snapshot-consistency asked for one, is
+	// started with a raw START TRANSACTION, so the connection carrying it goes back
+	// to the idle pool between statements. Ageing it would let database/sql close
+	// it as "idle", which silently rolls the snapshot back and continues reading
+	// without consistency. Export pools are therefore not aged in either mode — the
+	// option can be turned on by any run; only import pools are (see
+	// common.ApplyPoolHardening).
 	db.SetConnMaxIdleTime(0)
 	db.SetConnMaxLifetime(0)
 
@@ -91,10 +93,13 @@ func NewExporter(cfg *config.ExportConfig) (*Exporter, error) {
 		return nil, pingErr
 	}
 
-	// Open the consistent read. Each engine names its own steps, and each step
-	// carries the warning wording the tool has always used for it, so a MySQL
-	// run logs exactly what it logged before this indirection existed.
-	for _, step := range be.SnapshotSteps() {
+	// Open the consistent read, but only when the run asked for one: the default
+	// sends no isolation statement at all (see config.ExportConfig.SnapshotConsistency),
+	// because the read is one statement and the server takes its snapshot there
+	// anyway. When it is on, each engine names its own steps and each step carries
+	// the warning wording the tool has always used for it, so an opted-in MySQL run
+	// logs exactly what it logged before the option existed.
+	for _, step := range snapshotSteps(be, cfg.SnapshotConsistency) {
 		common.LogInteractionSQL(step.SQL)
 		if _, err := db.Exec(step.SQL); err != nil {
 			common.Logger.Warn(step.Warn, "error", err)
@@ -119,6 +124,19 @@ func (e *Exporter) backend() backend.Backend {
 		return backend.Must(backend.EngineMySQL)
 	}
 	return e.be
+}
+
+// snapshotSteps resolves what one connection runs to open a consistent read:
+// the engine's own steps when the run opted into --snapshot-consistency, and
+// nothing when it did not, which is the default. Returning the empty list rather
+// than branching at the call sites keeps the two loops — the main export pool and
+// every shard connection — in one shape, so an opted-in run logs and warns exactly
+// as it did before the option existed.
+func snapshotSteps(be backend.Backend, enabled bool) []backend.SnapshotStep {
+	if !enabled {
+		return nil
+	}
+	return be.SnapshotSteps()
 }
 
 // sqlDialect resolves --sql-dialect for a `-f sql` run. An explicit mysql, pg or
@@ -994,8 +1012,9 @@ func (e *Exporter) createShardConnection(workerID, shardIdx int) (*sql.DB, error
 	if err != nil {
 		return nil, err
 	}
-	// Same reason as the main export pool: this connection carries a consistent
-	// snapshot opened with a raw START TRANSACTION, so it must not be aged.
+	// Same reason as the main export pool: with --snapshot-consistency this
+	// connection carries a consistent snapshot opened with a raw START TRANSACTION,
+	// so it must not be aged.
 	db.SetConnMaxIdleTime(0)
 	db.SetConnMaxLifetime(0)
 
@@ -1005,9 +1024,10 @@ func (e *Exporter) createShardConnection(workerID, shardIdx int) (*sql.DB, error
 		return nil, err
 	}
 
-	// Open the shard's consistent read, attributing both the interaction log and
-	// any warning to the worker and shard that ran them.
-	for _, step := range e.backend().SnapshotSteps() {
+	// Open the shard's consistent read when the run asked for one, attributing
+	// both the interaction log and any warning to the worker and shard that ran
+	// them.
+	for _, step := range snapshotSteps(e.backend(), e.config.SnapshotConsistency) {
 		if common.InfoEnabled() {
 			common.Logger.Info("db interaction", "worker", workerID, "shard", shardIdx, "sql", step.SQL)
 		}

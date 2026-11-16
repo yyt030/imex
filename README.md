@@ -2,7 +2,7 @@
 
 名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度逻辑导入导出工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，通过 `--engine` 支持 MySQL（含 MariaDB 与 OceanBase MySQL 模式）、PostgreSQL、达梦 DM8（Oracle 兼容模式）与 GaussDB / openGauss。
 
-> **当前版本 `v0.44.1`**（2026-11-16，**Z 档纯测试资产轮发版**：一笔结清 **190**／**191** 两轮累计的测试资产——①边界矩阵固化：`ParseCharDelimiter`/`ParseEscape` 空值放行单测、CLI 解析层 42 断言矩阵、走 `rootCmd.Execute()` 的旧 flag exit 2 契约、真库 DEL 边界 7 子用例往返与裸字段 NULL/空串语义钉死；②数据值边界：数值极值（TINYINT～BIGINT UNSIGNED/DECIMAL/DOUBLE/FLOAT 极值与最小次正规数，FLOAT 极值用 `CAST AS CHAR` 文本比较绕 `<=>` 提升为 DOUBLE 的位级误报）、时间边界（DATE/DATETIME/TIMESTAMP 最大最小，零日期按严格模式改 NULL）、CHAR(n) 右填充与 VARCHAR 首尾空格（左右对齐语义）、控制字符/引号/反斜杠/分隔符、无效 UTF-8 与 emoji；③异常路径：DEL 扁平字段流语义（短行静默错位、1366 兜底、表 0 行）、中途失败全量回滚、DEL 格式主键冲突（insert 报 1062 表原状／insert_update 吸收）、连接拒绝 fail fast、黑洞握手超时 `context deadline exceeded` ~5s 防挂起）。**0 生产代码改动**：help、CLI 行为、DEL 产物、`--config` 回显全部不变，`docs/cli-oracle.txt` 22 个 live 正文节 22/22 drift 0。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要）。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179／181／189 既定口径，本轮当前行为由本文 DEL 相关各节描述、设计与取证由 `docs/requirements.md` 变更记录 **190**／**191**／**192**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
+> **当前版本 `v0.45.0`**（2026-11-16，**Y 档：导出的引擎一致性快照改为可选项、默认关闭**——v0.44.1 及以前每条读连接建立后都无条件下发各引擎自己的快照语句（mysql 两条、pg／gauss 一条、dm 一条），真库实测一次 `--threads 1` 导出在服务端留下 4 条语句（其中 2 条只为快照而发）、`--threads 4` 留下 42 条（其中 18 条），代价是那条只读事务横跨整个运行（`information_schema.innodb_trx` 实测 `trx_started` 与运行同龄、工具不发 `COMMIT`，PG 侧同理且会阻 vacuum 回收死元组），而并行路径每个分片在自己的时刻取自己的快照（实测 9 个连接相差约 6.7 ms），跨分片一致性从未兑现。新增 **`--snapshot-consistency`**：纯布尔、默认 `false`、无简写、**不引入任何 `IMEX_*` 环境变量**——关闭时一条都不发，打开时逐条照旧、顺序不变。面① export help 增 1 行且列位不动（22 个 live 正文节 22/22 drift 0，`docs/cli-oracle.txt` note 41）；面② `export config` 记录新增 `snapshot_consistency` 键、产物字节与开关及并发度无关（同一张 20,000 行表在开／关 × `--threads 1`／`4` 四种组合下的 DEL 产物均为 317,797 B 且逐字节相同）；面⑤ 默认不再下发隔离级别语句；面③ 退出码与文案、面④ 六个 `IMEX_*` 变量不变。旧默认行为完全等价于显式 `--snapshot-consistency`，无选项删除、无文案改动。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要）。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179／181／189 既定口径，本轮当前行为由本文「导出的一致性快照」节与命令选项表描述、设计与取证由 `docs/requirements.md` 变更记录 **193**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
 
 ## 目录
 
@@ -292,6 +292,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 | `--no-overwrite` | | 拒绝覆盖已存在的输出文件（默认允许覆盖；原名 `--no-replace`，已改名且不留别名） | `false` |
 | `--threads` | | 并行导出任务数（1=不并行；上限 256）。每个 worker 全程一条连接，worker 数 + 1 超过服务端 `@@max_connections` 时在数据移动前记一条 `warn` | `1` |
 | `--shard-key` | | 分片键列名（空=自动检测主键/唯一键）；**只有并行导出读取并校验它**——显式给出的列在表里不存在时为用法错误、退出码 2，自动检测失败仍回落单线程；`--threads 1` 或并行请求回落到单线程时该值不起作用，运行记一条 `warn` 并在配置记录标 `shard_key_ignored=true`（不改变退出码与产物） | 空 |
+| `--snapshot-consistency` | | 读取前是否先在每条读连接上开启一致性快照。**默认关闭＝一条隔离级别语句都不发**（v0.45.0 起）：MySQL 不发 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` 与 `START TRANSACTION WITH CONSISTENT SNAPSHOT`，pg／gauss 不发 `BEGIN ISOLATION LEVEL REPEATABLE READ`，dm 不发 `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`。理由见「导出的一致性快照」段；给出该选项即回到旧行为，服务端可见语句数为 `2×(1+分片数)`（`--threads 4` 实测 18 条） | 关 |
 | `--batch-size` | | 读→写交接每批的行数（仅单线程导出流水线；与 `--threads>1` 同时显式给出即用法错误，退出码 2） | `1000` |
 | `--pipeline-buffer` | | 读→写交接队列深度（批数；0=同步交接；仅单线程导出，与 `--threads>1` 同时显式给出即用法错误，退出码 2） | `10` |
 | `--default-charset` | | 连接与输出文件字符集（见上方说明；utf8mb4/utf8/latin1/ascii/gbk/gb18030。`--engine pg` 时它映射为 `client_encoding`，只认五个名字，见「PostgreSQL 引擎」；`--engine dm` 时它只管产物文件的文本编码，连接串里没有对应参数，见「达梦引擎」） | `utf8mb4` |
@@ -591,7 +592,7 @@ imex list tab -D shop -u root -p pass 2>/dev/null | awk 'NR > 1 { print $2 }' |
 ```
 
 - 换成 SQL 产物就把 `-o` 的后缀改为 `.sql` 并加 `-f sql`；建表语句另用 `imex show tab $t -o …` 取，两个文件 `cat` 起来才等价于过去带 `--create` 的单个文件；`--pattern 'order%'` 可以直接加在 `imex list tab` 上做名字过滤。
-- 每条 `imex export` 各开一次 `START TRANSACTION WITH CONSISTENT SNAPSHOT`，**表与表的时点不一致**（v0.14.0 的 `general_log` 取证见变更记录 112 ⑦）。要整库一致快照属于尚未实现的数据库级批量导出，见变更记录 111 之后的功能差距讨论。
+- **默认不发任何隔离级别语句**（v0.45.0 起，逐引擎语句与理由见「导出的一致性快照」段）；给出 `--snapshot-consistency` 后，每条 `imex export` 的每个连接才各开一次 `START TRANSACTION WITH CONSISTENT SNAPSHOT`，**表与表的时点不一致**（v0.14.0 的 `general_log` 取证见变更记录 112 ⑦）。要整库一致快照属于尚未实现的数据库级批量导出，见变更记录 111 之后的功能差距讨论。
 - 表名或库名本身含连续空格时，`awk` 按「两个及以上空格」切列无法把它与列分隔区分——这是 `list` 对齐输出的固有性质，这类对象请改用 `--pattern` 分批或直接调用 `imex export`。
 - 想把枚举结果落成文件再慢慢用：`imex list tab -D shop -o names.txt`（重跑默认覆盖，怕踩到已有文件就加 `--no-overwrite`，命中时退出 1 且原文件不动）。取每张表的建表语句用 `imex show tab`，见「show - 对象定义导出」的循环示例。
 
@@ -782,6 +783,29 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
 >
 > 失败时（分片报错、磁盘写满等）不保留半截产物：已写出的输出文件会被删除并记一条 `incomplete output file removed` 警告，其余分片立即解除阻塞。单线程导出同样如此——此前它只在报错信息里承认失败，磁盘上仍留着已经写出的部分（实测 20 万行表在第 20 万零一行被拒时留下 21 MB），现在两条路径统一为**要么完整、要么没有**。未安装信号处理器，`Ctrl-C` 仍会直接终止进程并留下一个不完整的输出文件，需要自行删除。
 
+### 导出的一致性快照（`--snapshot-consistency`）
+
+v0.45.0 起，导出**默认不执行任何隔离级别语句**。此前每条读连接建立后都会先发一遍引擎各自的一致性快照语句，现在必须由 `--snapshot-consistency` 显式要求：
+
+| 引擎 | 默认（关） | `--snapshot-consistency` 打开后 |
+|------|--------|------|
+| `mysql` | 一条都不发 | `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` ＋ `START TRANSACTION WITH CONSISTENT SNAPSHOT` |
+| `pg` / `gauss` | 一条都不发 | `BEGIN ISOLATION LEVEL REPEATABLE READ` |
+| `dm` | 一条都不发 | `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE` |
+
+为什么默认关（下列数字均为 MariaDB 10.6.23 真库 `general_log` 与 `information_schema.innodb_trx` 实测，夹具 20,000 行表）：
+
+- **单线程导出买不到任何东西**：取数就是一条 SELECT，快照在语句开始时就已由服务端固定。旧默认让一次 `--threads 1` 导出在服务端留下 4 条语句（`SET NAMES utf8mb4` ＋ 两条隔离语句 ＋ SELECT），新默认只剩 2 条。
+- **代价是真实的**：那两条语句把事务一直开着，实测 `innodb_trx` 里那条只读事务的 `trx_started` 与整个运行同龄，而工具不发 `COMMIT`/`ROLLBACK`，它只在进程退出、连接关闭时隐式回滚。PostgreSQL 侧同理，且横跨整个导出的快照会阻 vacuum 回收死元组。
+- **并行导出本来就没有跨分片的一致快照**：每个分片连接在自己的时刻取自己的快照（实测 `--threads 4` 的 9 个连接，快照起始时间相差约 6.7 ms），发不发都一样。
+
+什么时候仍要打开：
+
+- 服务端会话默认是 `READ COMMITTED`，而你要把这次运行的隔离级别钉成 `REPEATABLE READ`（dm 钉成 `SERIALIZABLE`）；
+- 并行导出的分片边界是**采样**出来的（`SELECT k … WHERE k > ? ORDER BY k LIMIT 1 OFFSET n`，共 `分片数−1` 条，走主连接），打开后这些探针读同一个快照，边界更均衡。关闭时边界仍按「大于前一个边界」链式生成，取值域覆盖不变，**不会重复也不会漏行**，只可能让某一段偏空或偏满。
+
+语句数与产物：打开后是 `2×(1+分片数)`（分片数 = `min(2×threads, 64)`），实测 `--threads 4` 为 18 条（服务端总语句 42 条 vs 关闭时 24 条），`--threads 32` 会到 130 条；开关与并发度都不影响产物字节——同一张表在开／关 × `--threads 1`／`4` 四种组合下的 DEL 产物均为 317,797 B 且逐字节相同。
+
 ### 流水线与内存控制
 
 导出/导入内部是「读 goroutine → 缓冲 channel → 写 goroutine」的两段流水线（并行导入再加 N 个写 worker）。`--batch-size` 与 `--pipeline-buffer` 控制这条交接管道的**粒度**，从而**可预测地**影响峰值内存：
@@ -895,9 +919,9 @@ imex import -h 127.0.0.1 -u root -p password -D mydb \
 - **事务空闲提交**：导入的写入端（单线程管线与每个并行 worker）在 30s 内没有收到新批次时，主动 `COMMIT` 当前已写入的部分事务并开启下一个，缩短未提交窗口和重放集合；`--commit-count` 到期或重放缓冲达到 64 MiB 字节预算时同样提交。
 - **瞬断自动重试**：对 `driver.ErrBadConn` / `invalid connection` / `io.EOF` / 网络超时 / `broken pipe` / `connection reset` / `server has gone away`(2006) / `lost connection`(2013) 等连接级错误，默认最多 3 次尝试，指数退避约 1s→2s（上限 4s，带 20% 向下抖动，避免多个 worker 同时重连）。重连后**先回放当前事务内所有已执行但未提交的批次，再重试失败批次**——连接断开时 MySQL 已回滚整个事务，只重试单批会静默丢掉同事务中先前的行。回放缓冲同时受 `--commit-count`（1000 行）与 64 MiB 字节预算约束，任一触顶即提交，避免宽 BLOB/TEXT 行撑爆内存。`COMMIT` 本身不重试（响应丢失时无法判断是否已生效，重放可能重复写入），直接报错。`context.Canceled`、语法/约束类错误以及 `1213` 死锁 / `1205` 锁等待超时不重试。 能挺过的停机窗口是**有量值的**：三次尝试之间只有两次退避（1s、2s，各带最多 20% 向下抖动），所以**从第一次失败到放弃实测约 2.4–3 秒**（`-P 3399` 无人听那次整跑 2.675 s），目标库重启或 LB 切换只要在这个窗口内恢复，本次运行就自行接上，超过则整跑失败、退出 1；两个退避参数是编译期常量，**不做成选项**——每次重试都要回放未提交事务，窗口越长重复写入的风险面越大。实测：停 1.5 s 后拉起的一次 10 万行并行导入 exit 0、8 条 retrying、最高只到 attempt 2、落库 10 万行且不重不漏。 同一条判据也管住**开局建连的那次 ping**（`common.PingWithRetry`，导出与导入共用）：以前是两个构造器里各写一遍的 `for i := 0; i < 3`，不看错误性质，于是密码写错（1045）、库不存在（1049）、`--session-var` 写了服务端不认识的变量（1193）都要跑满三次尝试、固定等 6.0 s，末条还写成 `failed to ping database after 3 attempts`，把服务端给的真实原因挤到句尾。现在永久拒绝一次即返回（实测 5–6 ms）、文案按实际尝试次数写（`after 1 attempt`），连接级故障照旧重试到三次，而 `database ping failed, retrying` 只在还有重试时出现（三次尝试配两条告警，最后一次失败不再谎称 retrying）。上面那些 `2006`/`2013` 一类的服务端错误码表属于 MySQL 方言（`internal/backend/dberr_mysql.go`，132 轮自 `internal/common` 下沉），由连接建立时选出的方言以函数值交给重试层；`--engine pg` 自 134 轮起也有一张 SQLSTATE 表（`internal/backend/dberr_postgres.go`）：`08001`/`08003`/`08006`/`08P01`/`53300`/`57P01`/`57P02`/`57P03`/`57P05` 判为瞬态，`08007`（提交结果未知）、`08004`（服务端拒绝建连）、`57P04`（库被删）、`58030`（服务端 I/O）、`57014`/`40001`/`40P01`（取消与并发争用）以及 `28xxx`（认证）刻意不重试——理由与 MySQL 侧 `1213`/`1205` 相同：盲目重放可能重复写入。实测：`ALTER ROLE … CONNECTION LIMIT 2` 下第三条连接报 `SQLSTATE 53300`，旧行为 1 次尝试 0.01 s 失败，新行为 3 次尝试 2.68 s 后失败；导入 50 万行途中 `pg_terminate_backend` 回报 `SQLSTATE 57P01`，旧行为退出 1（27.9 万行已落库），新行为重连回放后 3.011 s 完成 50 万行、退出 0。
 
-对导出而言，主连接与分片连接都保留 `SetConnMaxLifetime(0)` 且 `SetConnMaxIdleTime(0)`（不因 TTL 关闭，保证一致性快照期间连接稳定）；读写超时对每条连接独立生效，长时间零字节的响应（如大 result set 起始阶段）会命中 `socket-read-timeout`，请按需调大。
+对导出而言，主连接与分片连接都保留 `SetConnMaxLifetime(0)` 且 `SetConnMaxIdleTime(0)`（不因 TTL 关闭：`--snapshot-consistency` 打开时，带快照的连接在语句之间会回到空闲池，老化它等于静默回滚快照）；读写超时对每条连接独立生效，长时间零字节的响应（如大 result set 起始阶段）会命中 `socket-read-timeout`，请按需调大。
 
-正因为导出的连接不做老化，"读完就放"成了它唯一的释放时机：并行导出的每个分片在自己的行全部读完后立刻结束快照并关闭该分片连接，之后才把剩余字节交给按序写出的那个 goroutine。反过来说，先前完成的分片不会一边占着连接和快照、一边等前面的分片腾出写出位置——云 LB/NAT 回收的空闲 socket 正是打在这种"不再产出任何数据、却仍打开"的连接上。导入侧不需要对应措施：并行 worker 由单个读取 goroutine 经共享队列动态派工，拿不到活就提交、关闭自己的连接后退出（实测 `--threads 5` 全程恰 6 条连接，结束时全部消失）。
+正因为导出的连接不做老化，"读完就放"成了它唯一的释放时机：并行导出的每个分片在自己的行全部读完后立刻结束快照（`--snapshot-consistency` 打开时才有快照可结束）并关闭该分片连接，之后才把剩余字节交给按序写出的那个 goroutine。反过来说，先前完成的分片不会一边占着连接和快照、一边等前面的分片腾出写出位置——云 LB/NAT 回收的空闲 socket 正是打在这种"不再产出任何数据、却仍打开"的连接上。导入侧不需要对应措施：并行 worker 由单个读取 goroutine 经共享队列动态派工，拿不到活就提交、关闭自己的连接后退出（实测 `--threads 5` 全程恰 6 条连接，结束时全部消失）。
 
 ### 参数边界校验
 
@@ -979,7 +1003,7 @@ imex export -h 127.0.0.1 -u root -p password -D mydb \
 
 导出/导入的运行日志同时打印**行数**与**文件字节数**，行数据全部来自服务端/驱动的真实反馈：导出侧行数按**实际写入文件的行数**统计；导入侧 `read` 按**进入写入管道的文件行数**统计（不含 `--skip-count` 跳过与被 `--row-count` 截断的行），并按每批的 `RowsAffected` 拆成互斥的 `inserted` / `updated` / `unchanged` 三个计数（`insert_update` 模式下一条新行贡献 1、一条被实际改动的已存在行贡献 2、一条写入相同值的行贡献 0，因此 `updated = max(0, affected - rows)`、`unchanged = max(0, rows - affected)`、`inserted = rows - updated - unchanged`，三者之和恒等于该批行数）；`insert`/`replace` 模式的 affected 恒等于行数，全部计入 `inserted`——`replace` 是先把目标表清空再插入，所以文件里每一行都是新插入。批次执行失败的行计入 `failed`。导入、导出均每隔 `--progress-interval`（默认 **5 秒**）打印一次进度：`rate` 是**自开始以来的总速率**（已处理 ÷ 已用时长，平滑，反映整体快慢），`interval_rate` 是**上一个进度点到这一个进度点之间的区间速率**（两次快照之差，反映此刻吞吐与抖动；两者无倍率关系，长跑时看 `interval_rate` 判断当前快不快、看 `rate` 判断整体多少），另打印已处理条数与 `elapsed`。所有耗时字段（进度里的 `elapsed` 与汇总里的 `duration`）固定以**秒**为单位、保留**三位小数**（`842ms` 写成 `0.842s`、90 秒写成 `90.000s`），不再随量级在 `ms`/`s`/`m` 之间切换，跨记录可以直接相减比较。结束日志打印总条数、`bytes`、`duration` 与总速率；运行中止时打印 `import aborted` 汇总（含 `failed`）。**汇总恒为本次运行的最后一条记录**：写汇总之前先停掉进度计时器，而停止会等待正在写的那条进度落笔，因此不会再出现 `completed` 之后跟一条 `progress` 的读感。反过来说，**运行时长不足一个间隔时一条进度也不会打印**：首个计时点要等满一个间隔才触发，停止只等在写的那条记录、不空等剩余间隔，所以一个 3 行的小表 6 ms 就结束，日志里只有横幅、配置与汇总（实测），把间隔调成 `200ms` 后同一类长跑（100 万行）则每 200 ms 一条、共 29 条进度，最后一条仍是 `export completed`。
 
-**阶段计时**：汇总里的 `duration` 不再是一个笼统总数。单线程导出拆成 `connect`（拨号 + ping + 一致性快照，在 `Export` 之前发生，故不计入 `duration`）、`setup`、`first_row`（发起查询到第一行返回，含建文件与写表头——大表的 filesort、锁等待、冷缓冲池都在这里现形）、`write`（第一行到写最后一行）、`finish`（footer + close，parquet 的末段编码也在这一段）；这四段相加即为 `duration`（毫秒取整）。单线程导入拆成 `connect`、`setup`、`header`（打开文件到解析完表头）、`read`（读文件并解析，不含等队列）、`send`（执行 INSERT）、`wait_empty`（写侧等数据）、`wait_full`（读侧等空位）：`read+wait_full` 是读协程的视角、`send+wait_empty` 是写侧的视角，两组各自接近 `duration`，**不能四段相加**。并行导出的每个分片记 `rows`/`duration`/`rate`，并行导入的每个 worker 同样记 `rows`/`duration`/`rate`。实测 20 万行 DEL：导出 `duration=0.160s connect=0.001s setup=0.000s first_row=0.004s write=0.152s finish=0.003s`；导入 `duration=1.875s read=0.409s send=1.391s wait_full=1.364s wait_empty=0.002s`（读侧 `0.409+1.364≈1.77s`，写侧 `1.391+0.002≈1.39s`）。
+**阶段计时**：汇总里的 `duration` 不再是一个笼统总数。单线程导出拆成 `connect`（拨号 + ping，`--snapshot-consistency` 打开时还含一致性快照，在 `Export` 之前发生，故不计入 `duration`）、`setup`、`first_row`（发起查询到第一行返回，含建文件与写表头——大表的 filesort、锁等待、冷缓冲池都在这里现形）、`write`（第一行到写最后一行）、`finish`（footer + close，parquet 的末段编码也在这一段）；这四段相加即为 `duration`（毫秒取整）。单线程导入拆成 `connect`、`setup`、`header`（打开文件到解析完表头）、`read`（读文件并解析，不含等队列）、`send`（执行 INSERT）、`wait_empty`（写侧等数据）、`wait_full`（读侧等空位）：`read+wait_full` 是读协程的视角、`send+wait_empty` 是写侧的视角，两组各自接近 `duration`，**不能四段相加**。并行导出的每个分片记 `rows`/`duration`/`rate`，并行导入的每个 worker 同样记 `rows`/`duration`/`rate`。实测 20 万行 DEL：导出 `duration=0.160s connect=0.001s setup=0.000s first_row=0.004s write=0.152s finish=0.003s`；导入 `duration=1.875s read=0.409s send=1.391s wait_full=1.364s wait_empty=0.002s`（读侧 `0.409+1.364≈1.77s`，写侧 `1.391+0.002≈1.39s`）。
 
 三个阈值告警只在异常时出现，健康运行一行都不多：`export scan stalled`（扫描连续 **10 秒**取不到行，每 64 行读一次时钟；实测把 `SLEEP(12)` 夹在第 500 行得到 `gap=12.000s` 且这 12 秒记为 `write` 而不是 `first_row`）、`slow insert batch`（**单批**超过 **5 秒**，带 `rows`/`bytes`/`duration`；实测触发器每行 `SLEEP(0.002)`、`--batch-size 5000` 记 `duration=10.430s`，而同样的数据用默认 `--batch-size 1000` 分成 5 批各约 2 秒就不告警）、`slow commit`（单次提交超过 **5 秒**，带 `session`/`rows`/`duration`）。
 

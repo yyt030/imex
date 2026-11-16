@@ -279,6 +279,21 @@ type ExportConfig struct {
 	// Parallel export options
 	Threads  int    // number of parallel export threads (1 = no parallelism)
 	ShardKey string // column name for sharding (auto-detect primary key if empty; only exportParallel reads it — a single-threaded run warns that it is ignored)
+
+	// SnapshotConsistency is --snapshot-consistency: whether each read connection
+	// first opens a repeatable-read consistent snapshot with the engine's own
+	// statements (MySQL: SET TRANSACTION ISOLATION LEVEL REPEATABLE READ then
+	// START TRANSACTION WITH CONSISTENT SNAPSHOT; PostgreSQL and GaussDB: BEGIN
+	// ISOLATION LEVEL REPEATABLE READ; Dameng: SET TRANSACTION ISOLATION LEVEL
+	// SERIALIZABLE). The default is false: the read that follows is one statement,
+	// and the server fixes that statement's snapshot at its start, so on the
+	// single-threaded path the pair bought nothing, and on the parallel one each
+	// shard connection still took its own snapshot at its own start time. Sending
+	// them also leaves a read transaction open for the whole run, which is what
+	// holds back InnoDB purge and blocks vacuum. A caller that wants the historical
+	// behaviour, or wants the level pinned against a session default of READ
+	// COMMITTED, turns it on.
+	SnapshotConsistency bool
 }
 
 // ImportConfig holds import-specific options.

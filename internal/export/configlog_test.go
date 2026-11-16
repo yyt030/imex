@@ -43,7 +43,7 @@ var (
 	commonKeys        = []string{
 		"host", "port", "user", "database",
 		"output", "format", "query", "no_overwrite",
-		"threads", "shard_key", "batch_size", "pipeline_buffer",
+		"threads", "shard_key", "batch_size", "pipeline_buffer", "snapshot_consistency",
 		"default_charset",
 		"log_level", "progress_interval",
 	}

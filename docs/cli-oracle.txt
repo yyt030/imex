@@ -618,6 +618,21 @@
 # identical=22, drift=0, every generated line <= 118 bytes. The `## version`
 # body is still the 4934dd2 snapshot and was not regenerated. See
 # requirements.md 188.
+# Re-baselined note 41 (2026-11-16): export gained --snapshot-consistency and the
+# snapshot statements stopped being unconditional. Before this round every read
+# connection opened with the engine's own isolation statements (MySQL: SET
+# TRANSACTION ISOLATION LEVEL REPEATABLE READ, then START TRANSACTION WITH
+# CONSISTENT SNAPSHOT) whether or not the run asked for them: a single-threaded
+# export paid 2 extra round-trips and kept a read-only transaction open for the
+# whole run, and a --threads>1 run never got cross-shard consistency anyway,
+# because every shard dials its own connection and takes its own snapshot. The
+# flag is a plain bool, default false: off, the exporter sends none of those
+# statements; on, it sends exactly what it sent before, in the same order. No
+# IMEX_* variable was added, so face ④ stays at six. The `## export` body gained
+# one line with no column moved, and the other 21 live bodies re-diffed
+# identical=21, drift=0, every generated line <= 118 bytes. The `## version`
+# body is still the 4934dd2 snapshot and was not regenerated. See
+# requirements.md 193.
 
 ## export
 Export data from a MySQL, PostgreSQL, Dameng or GaussDB database to a DEL
@@ -688,6 +703,7 @@ Flags:
       --row-del string                  Row delimiter (only with --format del) (default "\n")
       --session-var stringArray         Set a session variable (repeatable), e.g. sql_mode=STRICT_TRANS_TABLES
       --shard-key string                Column used to shard a parallel export; defaults to the primary key
+      --snapshot-consistency            Open a consistent snapshot on each read connection before the query
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
       --sql-dialect string              SQL dump grammar (auto/mysql/pg/dm) (only with --format sql) (default "auto")

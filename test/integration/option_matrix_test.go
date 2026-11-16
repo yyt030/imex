@@ -855,10 +855,12 @@ func TestOptionMatrixEchoesInteractionSQL(t *testing.T) {
 	// The info level — what the CLI defaults to, spelled out here because the
 	// shared base flags pin --log-level error to keep the other cases quiet — now
 	// carries the trace: an operator reading a failed run has to see what was sent
-	// without re-running it under --log-level debug.
+	// without re-running it under --log-level debug. The two snapshot statements
+	// only appear because the run asked for them with --snapshot-consistency; the
+	// default run is checked without the flag below.
 	infoOut, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
 		"-o", filepath.Join(env.dir, "dbgsql_info.sql"), "--threads", "4",
-		"--log-level", "info")
+		"--snapshot-consistency", "--log-level", "info")
 	if code != 0 {
 		t.Fatalf("info-level parallel export: exit %d\n%s", code, infoOut)
 	}
@@ -881,7 +883,7 @@ func TestOptionMatrixEchoesInteractionSQL(t *testing.T) {
 	// --log-level warn is the off switch, and the only one.
 	warnOut, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
 		"-o", filepath.Join(env.dir, "dbgsql_warn.sql"), "--threads", "4",
-		"--log-level", "warn")
+		"--snapshot-consistency", "--log-level", "warn")
 	if code != 0 {
 		t.Fatalf("warn-level parallel export: exit %d\n%s", code, warnOut)
 	}
@@ -890,7 +892,8 @@ func TestOptionMatrixEchoesInteractionSQL(t *testing.T) {
 	}
 
 	out, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
-		"-o", filepath.Join(env.dir, "dbgsql_debug.sql"), "--threads", "4", "--log-level", "debug")
+		"-o", filepath.Join(env.dir, "dbgsql_debug.sql"), "--threads", "4",
+		"--snapshot-consistency", "--log-level", "debug")
 	if code != 0 {
 		t.Fatalf("debug parallel export: exit %d\n%s", code, out)
 	}
@@ -913,6 +916,25 @@ func TestOptionMatrixEchoesInteractionSQL(t *testing.T) {
 	// (1) the completion total is fixed-unit seconds with three decimals.
 	if !regexp.MustCompile(`duration=[0-9]+\.[0-9]{3}s`).MatchString(out) {
 		t.Errorf("completion duration not rendered as N.NNNs:\n%s", out)
+	}
+
+	// The default is the other face of the same contract: with no
+	// --snapshot-consistency, a run echoes its read but sends no isolation
+	// statement at all, on the main pool or on a shard connection. This is the
+	// server-visible-SQL change the option exists to make, so it is pinned here
+	// rather than only in the unit test over the step list.
+	defaultOut, code := env.runExportCLI(t, "-q", "SELECT * FROM `"+src+"`", "-f", "sql",
+		"-o", filepath.Join(env.dir, "dbgsql_default.sql"), "--threads", "4", "--log-level", "info")
+	if code != 0 {
+		t.Fatalf("default parallel export: exit %d\n%s", code, defaultOut)
+	}
+	if !strings.Contains(defaultOut, "db interaction") {
+		t.Errorf("the default run echoed no read statement at all:\n%s", defaultOut)
+	}
+	for _, absent := range []string{"SET TRANSACTION ISOLATION LEVEL", "START TRANSACTION WITH CONSISTENT SNAPSHOT"} {
+		if strings.Contains(defaultOut, absent) {
+			t.Errorf("the default run sent %q, which only --snapshot-consistency asks for\n%s", absent, defaultOut)
+		}
 	}
 
 	// list runs its metadata query through the same recorder, and its rows still

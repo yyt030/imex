@@ -84,6 +84,11 @@ func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 		{"batch-size", "batch_size", cfg.BatchSize},
 		{"pipeline-buffer", "pipeline_buffer", cfg.PipelineBuffer},
 
+		// Read consistency: whether the engine's snapshot statements were sent on
+		// each read connection. The record has to say it, because the value decides
+		// what the server saw.
+		{"snapshot-consistency", "snapshot_consistency", cfg.SnapshotConsistency},
+
 		// Charset
 		{"default-charset", "default_charset", cfg.DefaultCharset},
 

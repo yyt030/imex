@@ -83,6 +83,12 @@ func registerExportFlags(cmd *cobra.Command) {
 	f.IntVar(&exportCfg.Threads, "threads", 1, "Number of parallel export tasks (1 = no parallelism)")
 	f.StringVar(&exportCfg.ShardKey, "shard-key", "", "Column used to shard a parallel export; defaults to the primary key")
 
+	// Read consistency. Off by default: the read is one statement, and the server
+	// fixes that statement's snapshot at its start, so the extra statements bought
+	// nothing while leaving a read transaction open for the whole run.
+	f.BoolVar(&exportCfg.SnapshotConsistency, "snapshot-consistency", false,
+		"Open a consistent snapshot on each read connection before the query")
+
 	// Append each format-scoped option's scope to its own help text, from the
 	// registry cmd/validate.go rejects with.
 	annotateOptionScopes(cmd, config.ExportOptionScopes())
