@@ -957,3 +957,21 @@ done
 - **QA 与凭据**：gofmt 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、`make build` 0。
 - **待办**：release 提交 + 附注 tag `v0.47.0` → 推 main 与 tag → 同轮第二笔纯 docs 收口补记（仅 `CONTEXT.md`）。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`。
 - **推成真值（2026-11-16 收口）**：远端 `main` = `a927d0b`、`refs/tags/v0.47.0` = `cf57fa3`、peeled = `a927d0b`，与本地 `rev-parse` 三项逐项相等，`ls-remote` 穿透验证通过；v0.47.0 发布完成。推送过程中 GitHub TLS 连接多次非正常终止（`GnuTLS recv error -110`、timeout 124），经重试推成；沿用会话内 PAT 文件 `/root/.gh_pat_session`，未写入任何仓库文件。二十九节「待办」三项全部完成。
+
+## 三十、200 轮状态快照（2026-11-16，代码轮；show --sql-dialect 扩展到视图 —— 已随 201 轮 v0.48.0 发版）
+
+- **指令与裁定**：用户「给个show选项，能按要求转换成目标的语法，比如查看dm的show object出来MySQL的」。两轮 AskUserQuestion 先定「全部对象、只 dm→mysql」，再据真实 DM8 采集的全部 GET_DDL 样本二次裁定「只做可靠的表+视图」。
+- **实证驱动**：连真实 dm8 容器（SYSDBA/SYSDBA001/DMPROBE）采到 6 类对象 GET_DDL：表/视图可精确转，触发器的 INSTEAD OF／多事件、过程函数的 PL/SQL 块、schema 的脱敏口令＋语义错位、event 无源——均为硬障碍，按 ddl 包「无法渲染即拒绝」铁律只明确拒绝不猜。
+- **改动**：新增 `internal/ddl/view.go`（视图解析＋词法级受控转换＋Oracle 构造点名拒绝）；`ddl.go` 加 `ConvertibleKind`／`ConvertObject`／`convertView`（字符串 kind 分派避免循环依赖）；`cmd/show.go` 与 `internal/show/show.go` 从「table only」改为按 kind 放行/拒绝；README 跨语法段补视图说明。
+- **真库验证**：3 个真实视图转出的 MySQL DDL 在真实 MySQL 8.0 全部建成且查询返回正确行；带 `||` 的视图被点名拒绝（Oracle 拼接 vs MySQL 逻辑 OR）。活体测试 `TestDMLive_ViewToMySQLRebuild` 固化此路径。
+- **QA**：单测 ddl/cmd/show 全绿、视图活体真库 PASS、gofmt 0、diff-check 0、vet 净、`go test -race ./...` 12 包 ok、oracle 基线不受影响。既有欠账（干净 HEAD worktree 已证非本轮引入）：表活体测试 `TestDMLive_DMToMySQLDefinitionRebuild` 在当前 dm8 实例建夹具报 `-6119`（卡在 `NOT CLUSTER PRIMARY KEY`），未改动该测试。
+- **边界**：视图转换是受控文本转换，拒绝清单是「已知危险」非穷举，后续遇新 Oracle 专有语法须补表；其余五 kind 明确拒绝、未实现。本轮改动已随 201 轮发版兑现（`Makefile` 进位 **0.48.0**），详见三十一节。
+
+## 三十一、201 轮发版快照（2026-11-16；v0.48.0 — 结清 200 轮 show 跨语法扩展到表＋视图，Y 档）
+
+- **指令与判档**：用户「发版」。兑现 200 轮能力增量——`show --sql-dialect mysql` 由「仅表 tab」扩展到「表＋视图 vws」：新增视图受控方言转换（GET_DDL 原文解析、双引号标识符→反引号、`NVL`→`COALESCE`、Oracle 构造点名拒绝），其余五 kind 按具体障碍明确拒绝。动面③（视图由退 2 翻为放行输出、错误文案点名障碍）与面⑤（新增视图 `GET_DDL` 查询），面① help 未动、oracle 22/22 drift 0、面②④⑤ 既有面不变 ⇒ **Y 档，0.47.0 → 0.48.0**（与 v0.46.0 show 跨语法同档）。
+- **发版记账三处**：`Makefile` 首行 0.48.0；README 横幅改写为 v0.48.0（描述视图转换与拒绝清单）；`docs/requirements.md` 新增 **201** 条；本文追加三十一节并就地更新三十节状态。`docs/CHANGELOG.md` 22 节与 README 摘要表不新增节（纪律 12）。
+- **一笔结清的内容**：变更记录 200 的全部代码、测试与文档 —— 新增 `internal/ddl/view.go`／`view_test.go`，改 `internal/ddl/ddl.go`／`cmd/show.go`／`internal/show/show.go`／`cmd/show_dialect_test.go`／`test/integration/dm_live_test.go`／README。真库验证 3 个视图转出的 MySQL DDL 在真实 MySQL 8.0 建成＋查询正确行、带 `||` 视图被拒绝。既有欠账（干净 HEAD worktree 已证非本轮引入）：表活体测试 `TestDMLive_DMToMySQLDefinitionRebuild` 在当前 dm8 实例建夹具报 `-6119`，未改动该测试。
+- **QA 与凭据**：gofmt 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、over118 0、`make build` 0、bin 版本 0.48.0。
+- **交付面**：11 个文件改动（代码 7＋记账 4），`go.mod`／`go.sum`／`docs/cli-oracle.txt` 一字未动、零新依赖；`git tag -l` 53 → 54。
+- **待办**：release 提交 + 附注 tag `v0.48.0` → 推 main 与 tag → 同轮第二笔纯 docs 收口补记（仅 `CONTEXT.md`）。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`。

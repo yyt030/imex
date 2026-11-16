@@ -625,3 +625,89 @@ func readDEL(t *testing.T, path string) ([]string, [][]string) {
 	}
 	return rows[0], rows[1:]
 }
+
+// TestDMLive_ViewToMySQLRebuild proves a view definition converted with
+// `--sql-dialect mysql` is not just plausible text but a statement a real MySQL
+// server accepts and can query. It walks the same shape as the table rebuild:
+// build the source fixture in DM, print its definition in MySQL grammar, replay
+// it on a real MySQL target (creating the base table there first), and read rows
+// back through the view. A second fixture whose SELECT uses Oracle's ||
+// concatenation must be refused, because in MySQL || is logical OR — printing it
+// unchanged would silently change the view's meaning.
+func TestDMLive_ViewToMySQLRebuild(t *testing.T) {
+	e := newDMLive(t)
+
+	const base = "GTVBASE"
+	const view = "GTVV"
+	const badView = "GTVBAD"
+	e.dmDropIfExists(t, badView)
+	e.dmDropIfExists(t, view)
+	e.dmDropIfExists(t, base)
+	e.dmRun(t, "CREATE TABLE "+e.schema+"."+base+" (ID INT PRIMARY KEY, A INT, B VARCHAR(20))")
+	e.dmRun(t, "INSERT INTO "+e.schema+"."+base+" VALUES (1,10,'aa'),(2,20,'bb')")
+	e.dmRun(t, "CREATE VIEW "+e.schema+"."+view+" AS SELECT ID, A FROM "+e.schema+"."+base)
+	e.dmRun(t, "CREATE VIEW "+e.schema+"."+badView+" AS SELECT A || B AS X FROM "+e.schema+"."+base)
+	t.Cleanup(func() {
+		for _, obj := range []string{badView, view, base} {
+			_, _ = e.dm.Exec("DROP VIEW " + e.schema + "." + obj)
+			_, _ = e.dm.Exec("DROP TABLE " + e.schema + "." + obj)
+		}
+	})
+
+	t.Run("print and replay", func(t *testing.T) {
+		out, code := e.run(t, append([]string{"show", "vws", view}, e.dmFlags("--sql-dialect", "mysql")...)...)
+		if code != 0 || strings.Contains(out, "ERROR") {
+			t.Fatalf("show vws --sql-dialect mysql: exit %d\n%s", code, out)
+		}
+		// The version banner is printed before --log-level is applied, so strip
+		// that one line before replaying the DDL on MySQL.
+		ddl := ""
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.Contains(line, "imex starting") {
+				ddl += line + "\n"
+			}
+		}
+		ddl = strings.TrimSpace(ddl)
+		if !strings.Contains(ddl, "CREATE") || !strings.Contains(ddl, "VIEW") || !strings.Contains(ddl, " AS SELECT") {
+			t.Fatalf("converted definition is not a CREATE VIEW: %q", ddl)
+		}
+		if strings.Contains(ddl, "\"") {
+			t.Errorf("converted definition still carries Oracle double-quote identifiers: %q", ddl)
+		}
+
+		if _, err := e.my.Exec("CREATE DATABASE IF NOT EXISTS `" + e.schema + "`"); err != nil {
+			t.Fatalf("create target database: %v", err)
+		}
+		if _, err := e.my.Exec("DROP TABLE IF EXISTS `" + e.schema + "`.`" + base + "`"); err != nil {
+			t.Fatalf("drop target base: %v", err)
+		}
+		if _, err := e.my.Exec("CREATE TABLE `" + e.schema + "`.`" + base +
+			"` (ID INT PRIMARY KEY, A INT, B VARCHAR(20))"); err != nil {
+			t.Fatalf("create target base: %v", err)
+		}
+		if _, err := e.my.Exec("INSERT INTO `" + e.schema + "`.`" + base + "` VALUES (1,10,'aa'),(2,20,'bb')"); err != nil {
+			t.Fatalf("seed target base: %v", err)
+		}
+		// The converted DDL must run on a real MySQL server.
+		if _, err := e.my.Exec(ddl); err != nil {
+			t.Fatalf("replay converted view DDL on MySQL: %v\nDDL: %s", err, ddl)
+		}
+		var n int
+		if err := e.my.QueryRow("SELECT COUNT(*) FROM `" + e.schema + "`.`" + view + "`").Scan(&n); err != nil {
+			t.Fatalf("query rebuilt view: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("rebuilt view returned %d rows, want 2", n)
+		}
+	})
+
+	t.Run("refuses Oracle-only constructs", func(t *testing.T) {
+		out, code := e.run(t, append([]string{"show", "vws", badView}, e.dmFlags("--sql-dialect", "mysql")...)...)
+		if code == 0 {
+			t.Fatalf("a view using || must be refused, got:\n%s", out)
+		}
+		if !strings.Contains(out, "||") || !strings.Contains(out, "logical OR") {
+			t.Errorf("refusal does not explain the || hazard: %s", out)
+		}
+	})
+}

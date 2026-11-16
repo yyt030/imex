@@ -25,9 +25,12 @@ package ddl
 import (
 	"context"
 	"database/sql"
+	"strings"
 
 	"github.com/pkg/errors"
 
+	"github.com/imex/internal/backend"
+	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
 )
 
@@ -175,6 +178,51 @@ func Convert(ctx context.Context, db *sql.DB, engine, schema, table string, targ
 	return RenderMySQL(desc)
 }
 
+// ConvertibleKind answers whether one object kind has a faithful rendering in
+// the target grammar, and — when it does not — the reason shown to the operator
+// before the run dials. Keeping the allowed set and its reasons here, next to
+// ConvertObject's switch, means a new kind cannot be advertised by validate and
+// then refused by the renderer (or vice versa).
+func ConvertibleKind(kind string) (reason string, ok bool) {
+	switch kind {
+	case "table", "view":
+		return "", true
+	case "trigger":
+		return "a trigger's PL/SQL body (BEGIN/END, INSTEAD OF, multiple events) has no faithful MySQL translation", false
+	case "procedure", "function":
+		return "a stored routine's PL/SQL declaration and control flow have no faithful MySQL translation", false
+	case "schema":
+		return "a schema is a user in Dameng but a database in MySQL, and its password is masked in the catalogue", false
+	case "event":
+		return "Dameng has no event scheduler, so there is no source definition to convert", false
+	default:
+		return "this object kind has no catalogue rebuild in this build", false
+	}
+}
+
+// ConvertObject prints schema.name's CREATE statement for one object kind in
+// the target grammar. kind is the object's full name ("table", "view", ...),
+// taken from show.Kind.Full by the caller — this package keeps no dependency on
+// internal/show, which already depends here.
+//
+// Only the kinds this build can restate without a gap are converted. Every
+// other kind is refused by name with the reason, never printed with a guess:
+// a trigger's PL/SQL body, a routine's declaration section, and a schema's
+// masked password have no faithful MySQL spelling this build can produce.
+func ConvertObject(ctx context.Context, db *sql.DB, engine, schema, name, kind string, target config.SQLDialect) (string, error) {
+	if !SupportedPair(engine, target) {
+		return "", errors.Errorf("converting a %s definition from engine %s to grammar %s is not supported", kind, engine, target)
+	}
+	switch kind {
+	case "table":
+		return Convert(ctx, db, engine, schema, name, target)
+	case "view":
+		return convertView(ctx, db, engine, schema, name, target)
+	default:
+		return "", errors.Errorf("--sql-dialect %s cannot convert a %s: this build converts only tables and views (a %s definition has no faithful MySQL rendering)", target, kind, kind)
+	}
+}
+
 // describe reads the catalogue in the source engine's own vocabulary.
 func describe(ctx context.Context, db *sql.DB, engine, schema, table string) (*Table, error) {
 	switch engine {
@@ -182,6 +230,43 @@ func describe(ctx context.Context, db *sql.DB, engine, schema, table string) (*T
 		return describeDameng(ctx, db, schema, table)
 	}
 	return nil, errors.Errorf("converting a table definition from engine %s is not supported: only dm converts to mysql", engine)
+}
+
+// convertView reads one view's GET_DDL text from the source and renders it in
+// MySQL grammar. The query comes from the engine's own ShowDefinition contract,
+// so the DDL text and its column name stay in one place with every other kind.
+func convertView(ctx context.Context, db *sql.DB, engine, schema, name string, target config.SQLDialect) (string, error) {
+	if engine != "dm" {
+		return "", errors.Errorf("converting a view definition from engine %s is not supported: only dm converts to mysql", engine)
+	}
+	query, column, _, ok := backend.Must(backend.Engine(engine)).ShowDefinition("view", schema, name)
+	if !ok {
+		return "", errors.Errorf("view definition is not available from engine %s", engine)
+	}
+	common.LogInteractionSQL(query)
+	rows, err := db.QueryContext(ctx, common.TagSQL(query))
+	if err != nil {
+		return "", errors.Wrap(err, "view definition query failed")
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", errors.Wrap(err, "view definition query failed")
+		}
+		return "", ErrNotFound
+	}
+	var definition sql.NullString
+	if err := rows.Scan(&definition); err != nil {
+		return "", errors.Wrapf(err, "view definition column %q scan failed", column)
+	}
+	if !definition.Valid || strings.TrimSpace(definition.String) == "" {
+		return "", errors.Errorf("view %q returned an empty definition", name)
+	}
+	v, err := parseDamengView(definition.String)
+	if err != nil {
+		return "", errors.Wrapf(err, "cannot convert view %q", name)
+	}
+	return RenderMySQLView(v)
 }
 
 // Asked reports whether a run asked for a grammar other than the engine's own.

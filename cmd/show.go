@@ -263,21 +263,27 @@ func validateShowConfig(cfg *config.ShowConfig, kind show.Kind) error {
 // before the run dials.
 //
 // Two refusals, in this order, because each answers a different question an
-// operator can get wrong: the kind first (a view definition has no catalogue
-// rebuild at all, whatever the grammar), then the pair. `auto` and the engine's
+// operator can get wrong: the kind first (some objects have no faithful target
+// rendering at all, whatever the grammar), then the pair. `auto` and the engine's
 // own grammar pass silently — neither is a conversion, and the definition the
 // server returns already is that grammar.
+//
+// Tables (catalogue rebuild) and views (controlled SELECT-body rewrite) convert.
+// Every other kind is refused here, before a dial, with the reason it cannot be
+// restated in MySQL — a trigger's PL/SQL body, a routine's declaration section,
+// a schema's masked password and an event DM does not even have. The wording is
+// CLI contract (face ③) and each reason names the obstacle, not a generic
+// "table only" that would misdescribe a view.
 func validateShowDialect(e backend.Engine, kind show.Kind, dialect string) error {
 	target := config.SQLDialect(dialect)
 	if !ddl.Asked(string(e), target) {
 		return nil
 	}
-	if kind.Full != "table" {
-		return common.Usagef("--sql-dialect %s prints a table definition only: show %s has no catalogue rebuild",
-			dialect, kind.Short)
+	if reason, convertible := ddl.ConvertibleKind(kind.Full); !convertible {
+		return common.Usagef("--sql-dialect %s cannot convert show %s: %s", dialect, kind.Short, reason)
 	}
 	if !ddl.SupportedPair(string(e), target) {
-		return common.Usagef("--engine %s to --sql-dialect %s is not a conversion this build makes: only dm to mysql rebuilds a table definition",
+		return common.Usagef("--engine %s to --sql-dialect %s is not a conversion this build makes: only dm to mysql rebuilds a table or view definition",
 			string(e), dialect)
 	}
 	return nil

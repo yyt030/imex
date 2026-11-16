@@ -270,9 +270,8 @@ func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *co
 // the contract (face ③) and belongs to internal/ddl, which is the only place that
 // knows the catalogue number the refusal is about.
 func runConverted(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *config.ShowConfig, out io.Writer) (int, error) {
-	if kind.Full != "table" {
-		return 0, errors.Errorf("--sql-dialect %s prints a table definition only: show %s has no catalogue rebuild",
-			cfg.SQLDialect, kind.Short)
+	if reason, ok := ddl.ConvertibleKind(kind.Full); !ok {
+		return 0, errors.Errorf("--sql-dialect %s cannot convert show %s: %s", cfg.SQLDialect, kind.Short, reason)
 	}
 	schema := cfg.Schema
 	if schema == "" {
@@ -281,10 +280,10 @@ func runConverted(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind
 		// has no session to ask, so the resolution happens here and nowhere else.
 		schema = cfg.Database
 	}
-	text, err := ddl.Convert(ctx, db, string(be.Engine()), schema, cfg.Object, config.SQLDialect(cfg.SQLDialect))
+	text, err := ddl.ConvertObject(ctx, db, string(be.Engine()), schema, cfg.Object, kind.Full, config.SQLDialect(cfg.SQLDialect))
 	if err != nil {
 		if errors.Is(err, ddl.ErrNotFound) {
-			return 0, errors.Errorf("no table found: %s", qualify(be, cfg.Schema, cfg.Object))
+			return 0, errors.Errorf("no %s found: %s", kind.Full, qualify(be, cfg.Schema, cfg.Object))
 		}
 		return 0, err
 	}

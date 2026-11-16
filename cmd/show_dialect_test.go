@@ -81,6 +81,11 @@ func TestShowSQLDialectFlagFace(t *testing.T) {
 func TestShowDialectScopeRefusals(t *testing.T) {
 	tableKind, _ := show.Lookup("tab")
 	viewKind, _ := show.Lookup("vws")
+	triggerKind, _ := show.Lookup("trg")
+	prcKind, _ := show.Lookup("prc")
+	fcnKind, _ := show.Lookup("fcn")
+	schKind, _ := show.Lookup("sch")
+	evtKind, _ := show.Lookup("evt")
 	for _, tc := range []struct {
 		name    string
 		engine  backend.Engine
@@ -99,11 +104,20 @@ func TestShowDialectScopeRefusals(t *testing.T) {
 			"--engine mysql to --sql-dialect pg is not a conversion this build makes"},
 		{"dm to pg is not a pair", backend.EngineDM, tableKind, "pg",
 			"--engine dm to --sql-dialect pg is not a conversion this build makes"},
-		{"a view is refused before the pair", backend.EngineDM, viewKind, "mysql",
-			"--sql-dialect mysql prints a table definition only"},
-		{"a view of an unsupported pair names the kind", backend.EnginePG, viewKind, "mysql",
-			"--sql-dialect mysql prints a table definition only"},
+		{"dm to mysql converts a view too", backend.EngineDM, viewKind, "mysql", ""},
+		{"a view of an unsupported pair hits the pair check", backend.EnginePG, viewKind, "mysql",
+			"--engine pg to --sql-dialect mysql is not a conversion this build makes"},
 		{"auto never reaches the kind check", backend.EngineDM, viewKind, "auto", ""},
+		{"a trigger names its PL/SQL body", backend.EngineDM, triggerKind, "mysql",
+			"cannot convert show trg: a trigger's PL/SQL body"},
+		{"a procedure names its declaration", backend.EngineDM, prcKind, "mysql",
+			"cannot convert show prc: a stored routine's PL/SQL"},
+		{"a function names its declaration", backend.EngineDM, fcnKind, "mysql",
+			"cannot convert show fcn: a stored routine's PL/SQL"},
+		{"a schema names the user/database mismatch", backend.EngineDM, schKind, "mysql",
+			"cannot convert show sch: a schema is a user in Dameng but a database in MySQL"},
+		{"an event names the missing source", backend.EngineDM, evtKind, "mysql",
+			"cannot convert show evt: Dameng has no event scheduler"},
 	} {
 		err := validateShowDialect(tc.engine, tc.kind, tc.dialect)
 		if tc.want == "" {
