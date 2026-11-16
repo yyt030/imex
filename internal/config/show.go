@@ -20,9 +20,16 @@ type ShowConfig struct {
 	Output      string // --output file path, empty when the result has no file
 	NoOverwrite bool   // refuse to truncate an existing --output file
 	Header      string // --header: on or off; a definition has no header row
+
+	// SQLDialect is --sql-dialect: the grammar the definition is printed in.
+	// "auto" (the default) and the connected engine's own grammar both mean
+	// "copy the server's text"; any other name asks for a conversion, which
+	// `show` answers from the catalogue rather than from the server's own DDL
+	// text. See docs/requirements.md 2.1.6.
+	SQLDialect string
 }
 
 // NewShowConfig returns a ShowConfig with the shipped defaults.
 func NewShowConfig() *ShowConfig {
-	return &ShowConfig{Config: defaultConfig(), Header: string(HeaderOn)}
+	return &ShowConfig{Config: defaultConfig(), Header: string(HeaderOn), SQLDialect: string(SQLDialectAuto)}
 }

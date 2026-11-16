@@ -2,7 +2,7 @@
 
 名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度逻辑导入导出工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，通过 `--engine` 支持 MySQL（含 MariaDB 与 OceanBase MySQL 模式）、PostgreSQL、达梦 DM8（Oracle 兼容模式）与 GaussDB / openGauss。
 
-> **当前版本 `v0.45.0`**（2026-11-16，**Y 档：导出的引擎一致性快照改为可选项、默认关闭**——v0.44.1 及以前每条读连接建立后都无条件下发各引擎自己的快照语句（mysql 两条、pg／gauss 一条、dm 一条），真库实测一次 `--threads 1` 导出在服务端留下 4 条语句（其中 2 条只为快照而发）、`--threads 4` 留下 42 条（其中 18 条），代价是那条只读事务横跨整个运行（`information_schema.innodb_trx` 实测 `trx_started` 与运行同龄、工具不发 `COMMIT`，PG 侧同理且会阻 vacuum 回收死元组），而并行路径每个分片在自己的时刻取自己的快照（实测 9 个连接相差约 6.7 ms），跨分片一致性从未兑现。新增 **`--snapshot-consistency`**：纯布尔、默认 `false`、无简写、**不引入任何 `IMEX_*` 环境变量**——关闭时一条都不发，打开时逐条照旧、顺序不变。面① export help 增 1 行且列位不动（22 个 live 正文节 22/22 drift 0，`docs/cli-oracle.txt` note 41）；面② `export config` 记录新增 `snapshot_consistency` 键、产物字节与开关及并发度无关（同一张 20,000 行表在开／关 × `--threads 1`／`4` 四种组合下的 DEL 产物均为 317,797 B 且逐字节相同）；面⑤ 默认不再下发隔离级别语句；面③ 退出码与文案、面④ 六个 `IMEX_*` 变量不变。旧默认行为完全等价于显式 `--snapshot-consistency`，无选项删除、无文案改动。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要）。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179／181／189 既定口径，本轮当前行为由本文「导出的一致性快照」节与命令选项表描述、设计与取证由 `docs/requirements.md` 变更记录 **193**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
+> **当前版本 `v0.46.0`**（2026-11-16，**Y 档：`show --sql-dialect` 跨语法定义输出**——`show` 的七个 kind 在 `--engine dm` 下给出另一套语法时不再抄回服务器原文，而是**由系统目录重建**定义：`auto`（默认）逐字节不变，`mysql` 是第一格实现，只覆盖 `tab`；目录暴露而打印不了的一格（分区、外键、生成列、带偏移时间类型、自增列不独占主键、非字面量默认值、`CHECK`、禁用约束、临时表、隐藏列、超 64 字符索引名、超 3072 字节的键）一律**点名对象报错**而非静默省略。落点：新建 `internal/ddl` 一包 **4** 文件 **1,931** 行（`ddl.go` 中性类型、`catalog_dameng.go` 六条目录语句、`mysql.go` 渲染与拒绝、`mysql_test.go` 用例），**`Backend` 接口一字未动仍是 36 个方法**，`config.NativeDialect(engine)` 成为「引擎→原生语法」唯一事实源（`export`／`import` 的 `auto` 分支同读它）。**五面逐面**：面① 七个 `show` 叶子各 **+1** 行 help 且列位不动、选项名与枚举完全复用既有 `--sql-dialect`（`auto|mysql|pg|dm`，不新造第三个名字），oracle 重基线 note 42 后 `sections=23 identical=23 drift=0`、**1,544** 行；面② `show config` 记录新增 `dialect` 键，定义文本实测 **641 B**（194 轮手工夹具 `DDL194OK`）／**648 B**（195 轮固化门夹具 `GT194OK`），打印出的字节可直接 `imex exec -E mysql -f` 建表；面③ 两格连库前用法（不支持的目标语法、不支持的 kind）退 **2**、一类目录拒绝退 **1**；面④ 六个 `IMEX_*` 一字未动，`--sql-dialect` 仍没有环境变量；面⑤ dm 侧 `show tab` 由 **1** 条 `DBMS_METADATA.GET_DDL` 变 **6** 条目录语句，`export`／`import` 路径下发的 SQL 逐字不变。同一批发版的 **195 轮**把 194 轮那七步真库取证做成仓库内第三个活体门 `test/integration/dm_live_test.go`（**627** 行、**2** 条顶层 + **7** 条子用例，需同时给 `IMEX_TEST_DM_DSN` 与 `IMEX_TEST_DSN`），产品代码零改动。发版前 QA（进位后树实跑）：`gofmt -l .` **0**、`git diff --check` **0**、`go vet ./...` 净、`go test -race -count=1 ./...` **11 包 ok** ＋ `test/integration` 单测位 **51** 条顶层／**142** 条含子失败（**98** 条 `--engine is required` 签名，与 HEAD 基线逐名相同、未改任何断言），三门真库 live **256 PASS／12 FAIL／0 SKIP**（`top=105`、`sub1=143`、`sub2=8`、`mtop=30`、`pgtop=20`、`dmtop=2`）、oracle **23/23 drift 0**、over118 **0**、`statementCapSlack` **3**、`make build` **0**、产物 **29,855,906 B**、`imex version` **0.46.0**、测试资产 **102** 个 `_test.go`／**624** 个 `Test*`。**判档**：面①②③⑤ 变、面④ 不变 ⇒ **Y 档 `0.45.0 → 0.46.0`**，一次结清 194 轮挂账。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要）。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179／181／186／189／192／193 既定口径，本轮当前行为由本文「跨语法定义输出（`show --sql-dialect mysql`）」一节与命令选项表描述、设计与取证由 `docs/requirements.md` 变更记录 **194**（代码）／**195**（固化）／**196**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
 
 ## 目录
 
@@ -84,6 +84,18 @@ IMEX_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/imex_it' make test-live
 ```
 
 覆盖 DEL/SQL/Parquet 往返、insert/insert_update/replace 模式、列映射、并行导出与并行导入、日志文件。
+
+另有两个可选的活体门，各自覆盖一条只在真床上才成立的路径；两个都给了就在同一次 `make test-live` 里一起跑，没给的用例自己跳过：
+
+```bash
+# PostgreSQL 端到端（URL 形式，必须带口令与库名）
+IMEX_TEST_PG_DSN='postgres://user:pass@127.0.0.1:5432/db?sslmode=disable' make test-live
+# 达梦 → MySQL 的跨语法定义重建（变更记录 194 那七步；源与目标两侧都要有床）
+IMEX_TEST_DM_DSN='dm://SYSDBA:pass@127.0.0.1:5236/IMEXIT' \
+IMEX_TEST_DSN='root:secret@tcp(127.0.0.1:3306)/imex_it' make test-live
+```
+
+`IMEX_TEST_DM_DSN` 的形状就是工具自己写出的达梦 DSN（用户名与口令原样、不做百分号解码，因此口令含字面 `?` 无法表示；path 是夹具所在的 schema）。该门自己建 18 列夹具与五枚拒绝夹具：打印定义 → 让真 MySQL 收下那份字节 → 数据搬迁 → 两份 DEL 逐格比对 → 五格「打印不了就点名」的拒绝。MySQL 侧账号需要对一个与达梦 schema 同名的库有建库权限，因为重建出的 `CREATE TABLE` 自带源 schema 限定（那正是 `-o` 产物能直接喂给客户端的前提）。
 
 ### 交叉编译
 
@@ -331,7 +343,7 @@ SQL 格式还会在文件头写出**自描述字符集**语句 `/*!40101 SET NAM
 |------|------|--------|
 | `--statement-size` | 单条 INSERT 语句最大字节数（只有 `--extended-insert` 时是攒批上限；默认单行布局下一行无法再拆，超过它只记一次告警） | `8388608`（8MiB） |
 | `--extended-insert` | 把多行合并进一条 INSERT（按 `--statement-size` 分组，等价 mysqldump 默认行为）；若 `--statement-size` 低于单行语句宽度则一条也合不成，产物退回每行一条 INSERT 并记一次告警 | `false` |
-| `--sql-dialect` | 指定 `-f sql` 产物写哪种 SQL 语法：`auto`（默认）跟随所连引擎——MySQL 引擎逐字节保持既有 MySQL 语法、PostgreSQL 与 GaussDB 引擎写 pg 语法、达梦写 dm 语法；`mysql`/`pg` 显式指定，**与连的哪个引擎无关**（一个 MySQL 库可以刻意产出 pg dump）。pg 语法用双引号标识符、`'\x..'::bytea` 表二进制、含控制字符的串写 `E'..'`、布尔写 `true`/`false`；MySQL 语法用反引号、`0x` 十六进制、反斜杠转义；dm 语法用双引号标识符、二进制 `HEXTORAW('..')`、串字面量只翻倍单引号且反斜杠与控制字符原样、布尔写 `1`/`0`。仅 `--format sql` 生效（其它格式下传入是用法错误退出 2）；非法值 `invalid --sql-dialect "x": must be one of auto/mysql/pg/dm` 退出 2。`--engine dm` 连接时 `auto` 落 dm 语法，`export -f sql` 与 `import -f sql` 双向可用（见「达梦引擎」） | `auto` |
+| `--sql-dialect` | 指定 `-f sql` 产物写哪种 SQL 语法：`auto`（默认）跟随所连引擎——MySQL 引擎逐字节保持既有 MySQL 语法、PostgreSQL 与 GaussDB 引擎写 pg 语法、达梦写 dm 语法；`mysql`/`pg` 显式指定，**与连的哪个引擎无关**（一个 MySQL 库可以刻意产出 pg dump）。pg 语法用双引号标识符、`'\x..'::bytea` 表二进制、含控制字符的串写 `E'..'`、布尔写 `true`/`false`；MySQL 语法用反引号、`0x` 十六进制、反斜杠转义；dm 语法用双引号标识符、二进制 `HEXTORAW('..')`、串字面量只翻倍单引号且反斜杠与控制字符原样、布尔写 `1`/`0`。仅 `--format sql` 生效（其它格式下传入是用法错误退出 2）；非法值 `invalid --sql-dialect "x": must be one of auto/mysql/pg/dm` 退出 2。`--engine dm` 连接时 `auto` 落 dm 语法，`export -f sql` 与 `import -f sql` 双向可用（见「达梦引擎」）。**同一个选项名 `show` 也在用、但问的是另一件事**：那里它选定义打印成的语法（见「跨语法定义输出」） | `auto` |
 
 > SQL 导出只写数据语句：逐行 `INSERT`，**不含任何前导，也不含任何 DDL**（历史上的 `SET NAMES` 前导已移除，以便同一份文件跨 MySQL/PostgreSQL/达梦 通用回放）。文件的另一半——建表语句——由 `imex show tab` 交回，它是本工具唯一读 `SHOW CREATE TABLE` 的地方，两者拼起来就是自带结构的 dump（见上文自带结构 SQL 示例与「show - 对象定义导出」一节）。`--create` 与 `--no-data` 已直接删除、不留别名，传入即 `unknown flag: --create` / `unknown flag: --no-data` 并退出 2（`--no-create`、`--single-row-insert` 此前已按同一口径移除）。因为产物只描述数据，`--format sql` 仍只接受单表查询：JOIN、`FROM a, b`、派生表 `FROM (SELECT …) t`、`WITH` CTE 都会在解析阶段报错并提示改用 `--format del`/`--format parquet`，报错发生在输出文件创建之前。`-q`（含 `-q @file` 从文件读入的语句）里若表名带了 schema（`db.tbl`），导出只按裸表名写 `INSERT`，并行路径的分片键探测、统计读取与采样边界仍以查询点名的 schema 为准（见「并行导出」一节），因此不会再出现把连接的 `--database` 二次拼接导致的 `Error 1054/1146`。导入侧 `--mode create` 已连同其建表语义一并移除（传入即 `invalid --mode "create"`，退出码 2）：imex 不重放 DDL，导入 SQL 文件时它跳过 `CREATE` 语句只灌 `INSERT`，要建表就先用 `show tab` 产出的 DDL 在目标库建好、再以 `--mode insert` 导入；`mysqldump` 等外部工具含 `CREATE TABLE` 的文件同样照此处理，建表交给标准客户端、imex 只负责数据。
 
@@ -505,11 +517,14 @@ imex show <kind> <对象名> [连接选项] [-D 库名] [-o 文件]
 
 `show` 与其它四个命令一样接受 `--header=on/off`（默认 `on`，非法值退出码 2），但它写的是单条 CREATE 定义文本而不是表格，没有表头行，因此取值只做校验、不改变产物；旧的 `--no-col-names` 已删除且不留别名。
 
+`show` 另有 **`--sql-dialect`**（`auto`/`mysql`/`pg`/`dm`，默认 `auto`，无简写，与其余四个命令同一个枚举、同一句非法值文案 `invalid --sql-dialect "oracle": must be one of auto/mysql/pg/dm` 退出 2）。七个 kind 都接受它，因为它是注册在 kind 上的同一个选项；`auto` 就是上面那一套「逐字节抄回服务器文本」。给出与所连引擎原生语法不同的取值时，目前只有 **`--engine dm` ＋ `mysql` ＋ `tab`** 这一格有实现——定义不再抄服务器，而由系统目录重建（`internal/ddl`，设计与取证见「跨语法定义输出」一节）。其余两种情形在**连库之前**退出 `2`，并且各自说明缺的是哪一格：kind 不是 `tab` → `--sql-dialect mysql prints a table definition only: show vws has no catalogue rebuild`；pair 不是 dm→mysql → `--engine dm to --sql-dialect pg is not a conversion this build makes: only dm to mysql rebuilds a table definition`。同一个选项名在这里是第三种含义：`export`/`import` 那里它选 `-f sql` 产物的语法，这里它选定义打印成的语法。
+
 ```bash
 imex show tab users -D mydb                     # 打到 stdout
 imex show vws v_orders -D mydb -o /backup/v_orders.sql
 imex show prc build_etl -D mydb -o /backup/etl.sql
 imex show tab mydb.users                        # 名字自带库，不需要 -D
+imex show tab t_order -E dm -D APP --sql-dialect mysql   # 达梦的表、MySQL 的语法
 imex list tab -D mydb --header=off | awk '{print $2}' | while read -r t; do
   imex show tab "$t" -D mydb -o "/backup/ddl/$t.sql" -m /backup/ddl/run.log
 done
@@ -714,6 +729,22 @@ imex list --engine dm -h 127.0.0.1 -u dmprobe -p pass -D DMPROBE tables
 瞬断重试只认驱动自己那四个连接层错误码（`6001` 通信异常、`9007` 未知网络、`9008` 无效连接、`20001` 连接切换失败），其余一律终态；`6001` 这一条是在沙箱里对着无人监听的 5236 端口实测出来的，其余三个照驱动源码收录。负数码与超出 16 位的正码不参与匹配，免得截断后把一条注定失败的语句误判成可重试。
 
 **已知风险**：① 达梦手册言明多行插入「不支持列存储表」，向列存表导入时攒批 INSERT 可能报错——第一版不特化，遇到就原样透传服务端错误；② `V$DM_INI` 与 `DBA_*` 的可见性依角色权限而定，读不到时连接上限与探列各走自己既有的失败路径。
+
+### 跨语法定义输出（`show --sql-dialect mysql`）
+
+`show` 的默认口径是「服务器存的是什么就打印什么」，一条字节都不改。`--sql-dialect` 是这套口径上目前唯一承认的例外，也是唯一一个**由系统目录重建**、而不是**改写原文**的转换：工具读达梦 Oracle 模式的目录视图，自己拼一条 MySQL 的 `CREATE TABLE`。
+
+为什么不改写原文：本轮把达梦 `GET_DDL` 的原文（一张 18 列表，521 B）直接喂给 `imex exec -E mysql`，服务端第一件事就是把它退回——`Error 1064 (42000) ... right syntax to use near '"IMEXIT"."DDL194OK"'`。达梦的 `IDENTITY(1, 1)`、`"双引号"."对象"`、`STORAGE(ON "MAIN", CLUSTERBTR)`、`NOT CLUSTERBTR` 这些形态在 MySQL 里没有一个同义写法，逐 token 改写等于把「读不懂」换成「读得懂但猜」，猜错的一方永远是拿这份 DDL 建表的人。由目录重建则相反：每一格事实都来自服务器的目录，打印不出来的一格就报错、不静默省略。
+
+**读的六条目录语句**（面⑤，每条都照 `db interaction` 回显并带参数标记，实现见 `internal/ddl/catalog_dameng.go`）：`ALL_TABLES`＋`ALL_TAB_COMMENTS`（表名、分区/临时表两个形状、表注释）、`ALL_TAB_COLS`（列名、类型词、字节长与字符长、精度与标度、可空、默认值原文、虚拟列与隐藏列）、`SYS.SYSCOLUMNS`＋`SYS.SYSOBJECTS`（自增列标记——Oracle 兼容视图里没有这个事实，实测 `ALL_TAB_COLUMNS` 无自增列、`ALL_TAB_IDENTITY_COLS` 报 `-2106`，而 `INFO2=1` 恰好只指标记列；`IDENTITY(种子, 增量)` 的种子与增量在目录里读不到，因此打印 `AUTO_INCREMENT` 时记一条 `WARN`，不编一个起点）、`ALL_COL_COMMENTS`、`ALL_CONSTRAINTS`＋`ALL_CONS_COLUMNS`（主键/唯一/外键/检查四类，先按约束名聚列再分类，并记下约束已占用哪个索引）、`ALL_INDEXES`＋`ALL_IND_COLUMNS`（约束占过的索引在此扣掉，不重复打印；`INDEX_TYPE='CLUSTER'` 是达梦给每张表自己的聚簇存储键、每表恰一条——实测全库 **343** 条 CLUSTER 对 **59** 条 NORMAL 与 **8** 条 VIRTUAL，连没有任何约束的 `T_ID_B` 也有一条——而 InnoDB 的主键本就是同一件东西，故这一条扣掉不打印；其余非 `NORMAL` 的写法一律拒绝，`VIRTUAL` 就是这台服务器上外键支撑索引的写法）。`ALL_PART_TABLES`／`ALL_TAB_PARTITIONS` 刻意不读：`ALL_TABLES.PARTITIONED` 在这台服务器上已经回答了分区这个问题，一个事实放两处就是两处会不一致。
+
+**允许放大与重述**（不损失任何已存事实，故不拒绝）：`REAL`→`double`、`FLOAT`→`double`（`BINARY_FLOAT`→`float`）、`NUMBER`/`DECIMAL`/`NUMERIC` 按标度 0 落整数类型（≤3→`tinyint`、≤5→`smallint`、≤7→`mediumint`、≤9→`int`、≤18→`bigint`、其余 `decimal(p,0)`）、按字节定宽的 `VARCHAR` 用同一个数字当 MySQL 字符数、超过 16383 字符的 `VARCHAR`→`longtext`、超过 65535 字节的 `VARBINARY`→`longblob`、达梦 `DATE`（本带时分秒）→`datetime`、`DATETIME`→`datetime(6)`。
+
+**拒绝清单**（每条都点名对象，本轮真库实测文案）：分区表 ``IMEXIT`.`T_PART194` is a partitioned table: the partition rule is not printed, so a MySQL copy of its columns would not be the same table``；带外键的表 ``IMEXIT`.`X142_FK_CHILD` carries a referential constraint (FK_CH -> CONS134218807): show prints one table, and a foreign key would point at a table this statement does not create``；生成列 ``column `FULLNAME` is generated from ((CODE || '-') || CODE): a generation expression is Oracle grammar, and this build does not rewrite expressions``；带偏移的时间类型 ``column `TSTZ` has type DATETIME WITH TIME ZONE: MySQL has no datetime type that carries an offset, and dropping one changes what an instant means``；自增列不是整个主键 ``column `A` is an IDENTITY column but is not the whole primary key: MySQL requires an auto-increment column to stand alone in the key``；以及默认值不是可打印的字面量、`CHECK` 约束、禁用中的约束、临时表、隐藏列、目录里读到的未知列标记、索引名超 64 字符、键列宽度超 InnoDB 的 3072 字节。
+
+**真库往返取证**（DM8 夹具 `IMEXIT.DDL194OK`：18 列、`IDENTITY` 主键、唯一索引、两列普通索引、表注释与带引号的列注释，3 行数据 `ID` = 1、2、7）：打印的定义 **641 B**，`imex exec -E mysql -f` 在 MariaDB 10.6.23 上退出 **0**（一条 `CREATE TABLE` 建出同名同列的表）；`imex export -E dm` 取该表 3 行、`imex import -E mysql` 落进刚建的表得 `read=3 inserted=3 failed=0 bytes=400`；两侧各以 `--blob-encoding hex` 导出一份 DEL 后逐格比对，**3 行 × 18 列 = 54 格全部相等**（三处按文档化的渲染差归一：`3.5` 对 `3.5000` 的标度补零、`10:11:12` 对 `10:11:12.000000` 的秒尾零、空字段与 `NULL` 同义），其余一律逐字节相同。同一条命令不加 `--sql-dialect` 时仍是 1 条 `DBMS_METADATA.GET_DDL` 语句、达梦原文；加上之后是 6 条目录语句，`show config` 记录多一个 `dialect=mysql` 键。
+
+`auto` 的判定与 `export`/`import` 的 `-f sql` 共用同一个函数（`config.NativeDialect(engine)`）：引擎→原生语法的对应表只有一处，`--sql-dialect auto` 在三条路径上说的是同一件事。
 
 ### GaussDB / openGauss 引擎（`--engine gauss`）
 
@@ -1314,6 +1345,7 @@ imex/
 │   └── integration/             # 集成测试
 │       ├── roundtrip_test.go    # 离线往返（导出写入器→导入读取器：转义/换行/0x/NULL 与空串/单行 INSERT/DEL 修饰符）
 │       ├── live_mysql_test.go   # 真实 MySQL 端到端（默认跳过，需 IMEX_TEST_DSN）
+│       ├── dm_live_test.go      # 达梦→MySQL 跨语法定义重建端到端（需 IMEX_TEST_DM_DSN 与 IMEX_TEST_DSN 两个门）
 │       ├── option_matrix_test.go # 真实 CLI 交叉选项矩阵（argv 驱动编译出的二进制，同上门控）
 │       ├── list_test.go         # list 八类对象、table 格式、stdout/stderr 分离与用法错误
 │       ├── show_test.go         # show 六个 kind 的定义文本、库限定名、别名与回放

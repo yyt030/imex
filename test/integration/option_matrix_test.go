@@ -47,7 +47,8 @@ import (
 var cliBinary string
 
 func TestMain(m *testing.M) {
-	if os.Getenv("IMEX_TEST_DSN") == "" && os.Getenv("IMEX_TEST_PG_DSN") == "" {
+	if os.Getenv("IMEX_TEST_DSN") == "" && os.Getenv("IMEX_TEST_PG_DSN") == "" &&
+		os.Getenv("IMEX_TEST_DM_DSN") == "" {
 		// Library-level tests skip themselves; nothing to build.
 		os.Exit(m.Run())
 	}

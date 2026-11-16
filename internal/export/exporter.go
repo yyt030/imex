@@ -147,10 +147,10 @@ func snapshotSteps(be backend.Backend, enabled bool) []backend.SnapshotStep {
 // round-trips back into Dameng.
 //
 // Gauss speaks the PostgreSQL wire protocol and its SQL dump is a pg dump: gauss
-// joins EnginePG in the auto branch rather than falling through to MySQL. This is
-// paired with the same case in the importer's sqlDialect — a dump written with
-// double-quoted identifiers must be read back with the pg grammar, or the
-// round-trip breaks on the first quoted name.
+// joins pg in config.NativeDialect rather than falling through to MySQL. The
+// importer's sqlDialect reads the same helper — a dump written with double-quoted
+// identifiers must be read back with the pg grammar, or the round-trip breaks on
+// the first quoted name.
 func (e *Exporter) sqlDialect() config.SQLDialect {
 	switch config.SQLDialect(e.config.SQLDialect) {
 	case config.SQLDialectPG:
@@ -160,13 +160,7 @@ func (e *Exporter) sqlDialect() config.SQLDialect {
 	case config.SQLDialectMySQL:
 		return config.SQLDialectMySQL
 	default: // auto — follow the connected engine's own grammar
-		switch e.backend().Engine() {
-		case backend.EnginePG, backend.EngineGauss:
-			return config.SQLDialectPG
-		case backend.EngineDM:
-			return config.SQLDialectDM
-		}
-		return config.SQLDialectMySQL
+		return config.NativeDialect(string(e.backend().Engine()))
 	}
 }
 

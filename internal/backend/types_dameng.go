@@ -263,3 +263,23 @@ func dmBoolText(v []byte) []byte {
 	}
 	return v
 }
+
+// NormalizeDamengTypeName is normalizeDamengTypeName for callers outside this
+// package: the catalogue's DATA_TYPE word and the driver's type name arrive in
+// different spellings, and a comparison made without folding them first is a
+// comparison against one of the two vocabularies by accident.
+func NormalizeDamengTypeName(name string) string { return normalizeDamengTypeName(name) }
+
+// DamengTypeNames returns every Dameng type word damengTypes knows, in no
+// particular order. It exists for one caller: internal/ddl prints the same words
+// into a MySQL type, and its test asks that every name here has either a printed
+// spelling or a recorded refusal. Without the exported list the DDL map could
+// quietly fall behind the data path, which is how a new type ends up rendered as
+// something other than what was measured.
+func DamengTypeNames() []string {
+	out := make([]string, 0, len(damengTypes))
+	for name := range damengTypes {
+		out = append(out, name)
+	}
+	return out
+}

@@ -15,6 +15,12 @@
 // than what was typed. The only bytes this package adds are one terminating
 // semicolon and one newline, folded to exactly one from whatever the server
 // returned, because `imex import -f sql` reads statements that end with one.
+//
+// One option breaks the verbatim rule on purpose: --sql-dialect naming a grammar
+// the connected engine does not speak. That path prints a rebuild from the
+// catalogue (internal/ddl) instead of the server's text, and it covers a table
+// only, because a rebuild is the one thing a definition statement cannot do for
+// another dialect. Everything else this package says about copying still holds.
 package show
 
 import (
@@ -28,6 +34,7 @@ import (
 	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
+	"github.com/imex/internal/ddl"
 )
 
 // Kind is one object type `show` can print.
@@ -178,7 +185,18 @@ func qualify(be backend.Backend, schema, object string) string {
 //
 // Like `list`, the statement is recorded through common.LogInteractionSQL before
 // it goes out, so a default-level log shows what was asked of the server.
+//
+// Two ways of printing exist. With --sql-dialect left at auto, or set to the
+// grammar the connected engine writes itself, the server's own definition text
+// is copied — the path every released version took. A grammar the server does
+// not speak is a rebuild from the catalogue instead (internal/ddl), because no
+// engine returns another dialect's DDL, and rewriting one engine's reconstructed
+// text loses what the first reconstruction already lost. Both ways end in the
+// same two bytes this package owns: one semicolon and one newline.
 func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *config.ShowConfig, out io.Writer) (int, error) {
+	if ddl.Asked(string(be.Engine()), config.SQLDialect(cfg.SQLDialect)) {
+		return runConverted(ctx, db, be, kind, cfg, out)
+	}
 	query, column, hasTerminator, ok := be.ShowDefinition(kind.Full, cfg.Schema, cfg.Object)
 	if !ok {
 		// Unreachable through the CLI: cmd asks Refusals(CmdShow) before it dials,
@@ -238,6 +256,39 @@ func Run(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *co
 		return n, errors.Wrap(err, "definition query failed")
 	}
 	return n, nil
+}
+
+// runConverted prints one table rebuilt from the catalogue in the grammar
+// --sql-dialect named.
+//
+// The not-found case keeps this package's own words: an object that is not in
+// the catalogue is the same fact as an object the server's definition query found
+// no row for, and an operator reading `no table found: "IMEXIT"."T"` should not
+// have to know which of the two paths printed it.
+//
+// Every other error is the rebuild's refusal, returned unchanged. Its wording is
+// the contract (face ③) and belongs to internal/ddl, which is the only place that
+// knows the catalogue number the refusal is about.
+func runConverted(ctx context.Context, db *sql.DB, be backend.Backend, kind Kind, cfg *config.ShowConfig, out io.Writer) (int, error) {
+	if kind.Full != "table" {
+		return 0, errors.Errorf("--sql-dialect %s prints a table definition only: show %s has no catalogue rebuild",
+			cfg.SQLDialect, kind.Short)
+	}
+	schema := cfg.Schema
+	if schema == "" {
+		// An unqualified reference means the connection's own schema, which is
+		// what the server's definition query resolves against too. The catalogue
+		// has no session to ask, so the resolution happens here and nowhere else.
+		schema = cfg.Database
+	}
+	text, err := ddl.Convert(ctx, db, string(be.Engine()), schema, cfg.Object, config.SQLDialect(cfg.SQLDialect))
+	if err != nil {
+		if errors.Is(err, ddl.ErrNotFound) {
+			return 0, errors.Errorf("no table found: %s", qualify(be, cfg.Schema, cfg.Object))
+		}
+		return 0, err
+	}
+	return out.Write([]byte(normalizeDefinition(text, false)))
 }
 
 // normalizeDefinition returns the exact bytes show writes for one definition:

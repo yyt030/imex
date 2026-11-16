@@ -10,6 +10,7 @@ import (
 	"github.com/imex/internal/backend"
 	"github.com/imex/internal/common"
 	"github.com/imex/internal/config"
+	"github.com/imex/internal/ddl"
 	"github.com/imex/internal/show"
 )
 
@@ -30,6 +31,14 @@ The definition goes to --output when it names a file, and to stdout otherwise.
   imex show tab users -D mydb
   imex show vws v_orders -D mydb -o /backup/v_orders.sql
   imex show sch appdb
+  imex show tab t_order -E dm -D APP --sql-dialect mysql
+
+--sql-dialect prints a grammar other than the server's own. Today that is one
+pair: a Dameng table into MySQL, rebuilt from the catalogue rather than rewritten
+from the server's text. A fact the rebuild cannot express — a partition, a
+generated column, a foreign key, an offset-bearing timestamp — stops the run and
+is named in the message, so a printed statement never quietly means less than the
+table it came from.
 
 A name may carry its own schema qualifier (mydb.users); otherwise --database
 supplies it, so one of the two is required. A schema name stands alone and takes
@@ -93,6 +102,14 @@ func registerShowFlags(cmd *cobra.Command, cfg *config.ShowConfig) {
 	// is still validated, but it cannot change the bytes this command emits.
 	f.StringVar(&cfg.Header, "header", string(config.HeaderOn),
 		"Include the header row (on/off); a definition has none")
+
+	// The same option name export takes, with the same four values: here it names
+	// the grammar the definition is *printed* in rather than the grammar a dump is
+	// written in. One name for one question — "speak this in another dialect" —
+	// because a second option that asks it per command is two vocabularies to
+	// learn and a contract to keep in step.
+	f.StringVar(&cfg.SQLDialect, "sql-dialect", string(config.SQLDialectAuto),
+		"Grammar to print the definition in ("+enumNames(config.SQLDialects())+")")
 }
 
 func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref string) error {
@@ -142,6 +159,7 @@ func runShow(cmd *cobra.Command, cfg *config.ShowConfig, kind show.Kind, ref str
 		"schema", cfg.Schema,
 		"name", cfg.Object,
 		"output", cfg.Output,
+		"dialect", cfg.SQLDialect,
 	)
 
 	db, err := openDatabase(e, &cfg.Config)
@@ -229,7 +247,40 @@ func validateShowConfig(cfg *config.ShowConfig, kind show.Kind) error {
 	if !kind.SingleName() && cfg.Schema == "" && cfg.Database == "" {
 		return common.Usagef("--database is required for show unless the object name carries a schema qualifier")
 	}
+	// --sql-dialect comes last, after every check an older build already made: a
+	// run that is missing --password still hears about --password first, and the
+	// new option cannot shuffle an existing message earlier or later.
+	if err := validateSQLDialect(cfg.SQLDialect); err != nil {
+		return err
+	}
+	if err := validateShowDialect(e, kind, cfg.SQLDialect); err != nil {
+		return err
+	}
 	return validateDistinctPaths("output", cfg.Output, true)
+}
+
+// validateShowDialect refuses a conversion ask that this build cannot serve,
+// before the run dials.
+//
+// Two refusals, in this order, because each answers a different question an
+// operator can get wrong: the kind first (a view definition has no catalogue
+// rebuild at all, whatever the grammar), then the pair. `auto` and the engine's
+// own grammar pass silently — neither is a conversion, and the definition the
+// server returns already is that grammar.
+func validateShowDialect(e backend.Engine, kind show.Kind, dialect string) error {
+	target := config.SQLDialect(dialect)
+	if !ddl.Asked(string(e), target) {
+		return nil
+	}
+	if kind.Full != "table" {
+		return common.Usagef("--sql-dialect %s prints a table definition only: show %s has no catalogue rebuild",
+			dialect, kind.Short)
+	}
+	if !ddl.SupportedPair(string(e), target) {
+		return common.Usagef("--engine %s to --sql-dialect %s is not a conversion this build makes: only dm to mysql rebuilds a table definition",
+			string(e), dialect)
+	}
+	return nil
 }
 
 func init() {

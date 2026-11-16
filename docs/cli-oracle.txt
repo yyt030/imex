@@ -633,6 +633,24 @@
 # identical=21, drift=0, every generated line <= 118 bytes. The `## version`
 # body is still the 4934dd2 snapshot and was not regenerated. See
 # requirements.md 193.
+# Re-baselined note 42 (2026-11-16): show gained --sql-dialect, and it is the
+# one option that breaks show's verbatim rule on purpose. It is the same option
+# name and the same auto|mysql|pg|dm enum as the SQL-format option of note 27
+# and note 31, but a third meaning: there it selects the grammar of an export
+# file, here it selects the grammar a definition is printed in. Today exactly
+# one pair is implemented — a Dameng table rebuilt from the catalogue into MySQL
+# grammar — so --sql-dialect was added to all seven show leaves (the flag is
+# registered once per kind, and a kind that has no rebuild, or a pair this build
+# does not make, is a usage error that names what is missing rather than a
+# silently verbatim print). Each of the 7 leaf bodies gained exactly that one
+# flag row and nothing else; the `## show` parent body, which owns the long help
+# and therefore the examples, gained the new example line, the blank after it and
+# the six-line paragraph that states the refusal rule. Eight live bodies moved,
+# the other 14 re-diffed unchanged, so all 22 live bodies are identical with
+# drift=0 (the tool's own count reads sections=23 identical=23, the extra one
+# being the frozen body); 15 lines added, 0 removed, every generated line
+# <= 118 bytes. The `## version` body is still the 4934dd2 snapshot and was not
+# regenerated. See requirements.md 194.
 
 ## export
 Export data from a MySQL, PostgreSQL, Dameng or GaussDB database to a DEL
@@ -1153,6 +1171,14 @@ The definition goes to --output when it names a file, and to stdout otherwise.
   imex show tab users -D mydb
   imex show vws v_orders -D mydb -o /backup/v_orders.sql
   imex show sch appdb
+  imex show tab t_order -E dm -D APP --sql-dialect mysql
+
+--sql-dialect prints a grammar other than the server's own. Today that is one
+pair: a Dameng table into MySQL, rebuilt from the catalogue rather than rewritten
+from the server's text. A fact the rebuild cannot express — a partition, a
+generated column, a foreign key, an offset-bearing timestamp — stops the run and
+is named in the message, so a printed statement never quietly means less than the
+table it came from.
 
 A name may carry its own schema qualifier (mydb.users); otherwise --database
 supplies it, so one of the two is required. A schema name stands alone and takes
@@ -1209,6 +1235,7 @@ Flags:
   -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+      --sql-dialect string              Grammar to print the definition in (auto/mysql/pg/dm) (default "auto")
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
@@ -1242,6 +1269,7 @@ Flags:
   -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+      --sql-dialect string              Grammar to print the definition in (auto/mysql/pg/dm) (default "auto")
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
@@ -1275,6 +1303,7 @@ Flags:
   -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+      --sql-dialect string              Grammar to print the definition in (auto/mysql/pg/dm) (default "auto")
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
@@ -1308,6 +1337,7 @@ Flags:
   -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+      --sql-dialect string              Grammar to print the definition in (auto/mysql/pg/dm) (default "auto")
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
@@ -1341,6 +1371,7 @@ Flags:
   -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+      --sql-dialect string              Grammar to print the definition in (auto/mysql/pg/dm) (default "auto")
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
@@ -1374,6 +1405,7 @@ Flags:
   -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+      --sql-dialect string              Grammar to print the definition in (auto/mysql/pg/dm) (default "auto")
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:
@@ -1407,6 +1439,7 @@ Flags:
   -P, --port int                        TCP/IP port(s): 1 or one per host (also IMEX_PORT) (default 3306)
       --socket-read-timeout duration    Per-read socket timeout (default 5m0s)
       --socket-write-timeout duration   Per-write socket timeout (default 5m0s)
+      --sql-dialect string              Grammar to print the definition in (auto/mysql/pg/dm) (default "auto")
   -u, --user string                     Database username (also IMEX_USER) (default "root")
 
 Global Flags:

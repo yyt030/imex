@@ -48,6 +48,29 @@ func ValidSQLDialect(name string) bool {
 	}
 }
 
+// NativeDialect answers which --sql-dialect grammar one engine's own SQL is.
+//
+// Three commands ask the same question in different directions: export resolves
+// `auto` to a grammar, import has no --sql-dialect at all and reads a `-f sql`
+// file in the grammar its target engine writes, and show refuses a conversion
+// that would ask an engine to re-render its own dialect. The pairing lives here
+// because both vocabularies -- the engine names and the SQLDialect constants --
+// are already this package's, and a fourth caller must not become a fourth copy.
+//
+// gauss answers pg because a dump produced through `--engine gauss` carries
+// PostgreSQL grammar: the wire protocol and the server's own text are pg's, and
+// the round-trip tests that pair the two spellings are the reason that fact is
+// measured rather than assumed.
+func NativeDialect(engine string) SQLDialect {
+	switch engine {
+	case "pg", "gauss":
+		return SQLDialectPG
+	case "dm":
+		return SQLDialectDM
+	}
+	return SQLDialectMySQL
+}
+
 // HeaderMode is --header, shared by export, import, list, show and exec. "on"
 // writes/reads the column-name row, "off" omits it. One spelling now covers
 // both a DEL file's first record and a result set's header; the effective value
