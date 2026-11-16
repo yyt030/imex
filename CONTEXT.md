@@ -931,3 +931,28 @@ done
 - **真库实测（本机 DM8 `dm8_20241022_rev244896` ＋ MariaDB 10.6.23 同床）**：打印 **648 B**（194 轮手工夹具是 641 B，差的 **7** 字节全在约束名与索引名长度上，不是渲染变更）→ `imex exec -E mysql -f` 退 **0** 且错误行 **0** → `information_schema` 复核 **18** 列、`COUNT(DISTINCT INDEX_NAME)` **3** 索引 → `export -E dm -f del --blob-encoding hex` **3** 行 → `import -E mysql` 计数 `inserted=3`、`failed=0` → 再导出、两侧 DEL 逐格比对 **18 × 3 = 54** 格 **0** 差（三处归一与 194 轮同口径：数值按值比、秒尾零不算差、空字段与 `NULL` 同义；`--blob-encoding` 必须显式给 hex）→ **5** 格拒绝各退 **1** 且文案点名对象（`is generated from`／`carries a referential constraint`／`is a partitioned table`／`is not the whole primary key`／`has type DATETIME WITH TIME ZONE`）。逐格比对器是 `<tmp>/cmp194.py` 的 Go 移植（`compareDELCells`／`sameCell`／`readDEL`，头行不一致直接 `t.Fatalf`）。
 - **三门并跑后的套件规模**：live **256 PASS／12 FAIL／0 SKIP**（`top=105`、`sub1=143`、`sub2=8`、`mtop=30`、`pgtop=20`、`dmtop=2`）；12 条 FAIL 与 `f1ef18c` 基线**逐名同数**（四条顶层 `TestCLIChannelMatrix`／`TestCLIMessagesStaysAppendOnlyAcrossRuns`／`TestListCLIUsageErrors`／`TestShowCLIUsageErrors`，既债自 167／168 轮起）；单测位 **51** 顶层／**142** 含子、**98** 条 `--engine is required` 签名同样与基线逐名相同。测试资产现查 **102** 个 `_test.go`／**624** 个 `Test*`（11.1 首句已按 `^func Test` 更正，分包加总恰 624：`cmd` 109、`internal/common` 51、`internal/config` 8、`internal/backend` 80、`internal/export` 127、`internal/import` 67、`internal/list` 45、`internal/show` 13、`internal/exec` 5、`internal/ddl` 8、`test/integration` 110、根包 1）。
 - **文档四处**：`docs/requirements.md` 2.6.1 末段改写为「195 轮已固化」并记本轮实测值、11.1 首句更正＋新增 `test/integration/dm_live_test.go` 一行、11.2 达梦格加「那句自 195 轮起不再成立」的同格内注、变更记录 **195**；README「测试」节给出两条活体门用法与 `IMEX_TEST_DM_DSN` 需 MySQL `CREATE` 权限的说明、项目树补 `dm_live_test.go`；本文件 4.3 加 195 轮床面现查注、二十五节 ⑤ 就地标注已被本轮推翻、并新增本节。**里程碑表与版本速查不动**（无新 tag；纪律 12，README 摘要表与 `docs/CHANGELOG.md` 22 节也不新增节，延续 172／174／177／179／181／186／189／192 口径）。
+
+## 二十七、197 轮状态快照（2026-11-16，代码轮，**未发版**；PBKDF2 迭代 60 万→20 万，接受历史 ENC 密码失效）
+
+- **指令与裁定**：用户问「exec 日志 imex starting 与 exec config 差 300ms 原因」→「能优化加快些吗」；两轮 AskUserQuestion 先定「降迭代次数到 20 万」，再定「直接改，接受历史密码失效」（第二轮专门叫停确认不可逆后果，因首轮选项描述里"旧密文解密结果不变"一句自相矛盾）。
+- **根因**：这段间隔是 `common.ResolvePassword`（`cmd/exec.go:104`，位于 `imex starting` 与 `exec config` 之间）对 `ENC:` 密码做 PBKDF2-HMAC-SHA256 派生；明文密码直接返回。`kdfIterations=600000` 本机约 120 ms、端到端 ~102 ms（注释记载 4 核沙箱约 310 ms）。慢是刻意安全设计（离线猜测约 3 次/秒）。
+- **改动两处**：`internal/common/password.go` 常量 **600000 → 200000** ＋ 注释改写；`internal/common/password_test.go` 新增 `TestIterationChangeRejectsOldCipher`（含 `oldIterationsEncrypt` 复刻 60 万派生），钉死新迭代往返正常、旧 60 万密文认证失败返回空、错误文案不外泄。
+- **不兼容后果（用户明确接受）**：迭代次数不写进密文，改动前所有 `ENC:` 密码即日起解密失败，须用新版 `imex encrypt` 重新生成；格式与 `ENC:` 前缀未变。
+- **加速与 QA**：端到端 `imex starting`→`exec config` 由 ~102 ms 降到 ~40 ms（约 2.5×），benchmark 60 万 120 ms / 20 万 40 ms；gofmt 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 12 包 ok、`make build` 0。
+- **工作树**：`internal/common/password.go`、`internal/common/password_test.go` ＋ 本轮记账 `docs/requirements.md`、`CONTEXT.md`；生产代码有改动（常量与注释）；`Makefile` 仍 **0.46.0**；**未 commit／tag／push**，等用户发版指令。
+
+## 二十八、198 轮状态快照（2026-11-16，代码轮，**未发版**；PBKDF2 迭代 20 万→10 万）
+
+- **指令**：用户「再降到10w次」，承接 197 轮 60 万→20 万的同方向优化。沿用上轮已明确接受的不兼容口径，本轮未重复 AskUserQuestion，但在结果中说明「20 万次历史密文也随之失效」。
+- **改动两处**：`internal/common/password.go` 常量 **200000 → 100000** ＋ 注释改写（三档线性实测、裁定链、离线猜测约 6 倍速、不兼容）；`internal/common/password_test.go` 把 `oldIterationsEncrypt` 参数化，`TestIterationChangeRejectsOldCipher` 的旧密文失效子用例表驱动覆盖 **600000 与 200000 两档**，新增 `fmt` import。
+- **不兼容后果**：迭代次数不进密文，改动前所有 `ENC:` 密码（含上一轮 20 万产物）即日起解密失败、须新版 `imex encrypt` 重生成；格式与前缀不变。
+- **加速与 QA**：端到端 `imex starting`→`exec config` ~40ms → **~20ms**（三跑稳定），CPU user 0.02s、单核满载约 20ms、system≈0；gofmt 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 12 包 ok、`make build` 0。
+- **工作树**：叠加在 197 轮未发版改动之上（共 4 文件：password.go／password_test.go／requirements.md／CONTEXT.md）；`Makefile` 仍 **0.46.0**；**未 commit／tag／push**，等用户发版指令。
+
+## 二十九、199 轮发版快照（2026-11-16；v0.47.0 — 结清 197／198 两轮 PBKDF2 降迭代，Y 档）
+
+- **指令与判档**：用户「发版」。197／198 两轮改的是 KDF 迭代常量（60 万→20 万→10 万）＋注释＋回归测试；五面契约全不变（help/CLI/产物格式/退出码/环境变量/服务端语句）、oracle 22/22 drift 0，唯一变化是历史 ENC 密文失效（用户两轮明确接受）。按 0.x 期惯例与用户历史裁决「X 先不升、推高 y 版本」记 **Y 档，0.46.0 → 0.47.0**。
+- **发版记账三处**：`Makefile` 首行 0.47.0；README 横幅改写为 v0.47.0；`docs/requirements.md` 新增 **199** 条。
+- **一笔结清的内容**：197 轮 kdfIterations 600000→200000 ＋ 新测试钉死旧密文失效；198 轮 200000→100000 ＋ 旧迭代测试表驱动扩为 60 万/20 万两档。端到端提速 ~118ms→~20ms（约 6.4×），安全代价是离线破解约 6 倍速，历史 ENC 密文须新版 `imex encrypt` 重生成。
+- **QA 与凭据**：gofmt 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、`make build` 0。
+- **待办**：release 提交 + 附注 tag `v0.47.0` → 推 main 与 tag → 同轮第二笔纯 docs 收口补记（仅 `CONTEXT.md`）。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`。

@@ -3,9 +3,11 @@ package common
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -219,6 +221,71 @@ func TestLegacyBlobIsRejected(t *testing.T) {
 	}
 	if strings.Contains(got, plaintext) {
 		t.Errorf("旧明文被还原: %q", got)
+	}
+}
+
+// oldIterationsEncrypt 复刻降迭代之前的布局：结构与当前完全一致
+// （salt‖nonce‖ct+tag），唯一差别是 PBKDF2 用给定的旧 iterations 次派生。
+// 因为迭代次数不写进密文，解密端只会用当前的 kdfIterations 派生，所以任何
+// 旧迭代次数的密文都必然认证失败——本用例把"历史 ENC 密码在本版本失效、
+// 须重新 encrypt"钉成明确语义。
+func oldIterationsEncrypt(t *testing.T, plaintext, key string, oldIterations int) string {
+	t.Helper()
+	salt := make([]byte, kdfSaltSize)
+	if _, err := rand.Read(salt); err != nil {
+		t.Fatalf("old salt: %v", err)
+	}
+	aesKey, err := pbkdf2.Key(sha256.New, key, salt, oldIterations, kdfKeySize)
+	if err != nil {
+		t.Fatalf("old pbkdf2: %v", err)
+	}
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		t.Fatalf("old aes: %v", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("old gcm: %v", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("old nonce: %v", err)
+	}
+	blob := append(append([]byte{}, salt...), nonce...)
+	blob = gcm.Seal(blob, nonce, []byte(plaintext), nil)
+	return EncryptedPasswordPrefix + base64.StdEncoding.EncodeToString(blob)
+}
+
+func TestIterationChangeRejectsOldCipher(t *testing.T) {
+	const plaintext = "pre-iteration-change-secret"
+
+	t.Run("新迭代次数往返正常", func(t *testing.T) {
+		blob, err := EncryptPassword(plaintext, testKey)
+		if err != nil {
+			t.Fatalf("encrypt: %v", err)
+		}
+		got, err := DecryptPassword(blob, testKey)
+		if err != nil || got != plaintext {
+			t.Errorf("往返失败: got %q err %v", got, err)
+		}
+	})
+
+	// 2026-11-16 两轮降迭代（600000 → 200000 → 100000）之前生成的所有
+	// ENC 密码都必须在本版本失效；两档旧值都测，防止只覆盖其中一档。
+	for _, oldIterations := range []int{600000, 200000} {
+		t.Run(fmt.Sprintf("旧 %d 次密文在本版本失效", oldIterations), func(t *testing.T) {
+			old := oldIterationsEncrypt(t, plaintext, testKey, oldIterations)
+			got, err := DecryptPassword(old, testKey)
+			if err == nil {
+				t.Fatalf("旧 %d 次密文竟然可解，与不兼容口径矛盾: %q", oldIterations, got)
+			}
+			if got != "" {
+				t.Errorf("拒绝解密时仍返回了内容: %q", got)
+			}
+			if !strings.Contains(err.Error(), "wrong key or corrupted data") {
+				t.Errorf("错误文案外泄了解密失败的具体原因: %v", err)
+			}
+		})
 	}
 }
 
