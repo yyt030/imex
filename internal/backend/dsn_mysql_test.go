@@ -154,3 +154,113 @@ func TestReservedMySQLDSNParams(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildMySQLConfigKeepsSpecialUser pins the fix for usernames/passwords that
+// contain DSN metacharacters (':' and '@'). The old path rendered a DSN string and
+// handed it to sql.Open, which re-parsed `user:pass@` and truncated a user like
+// `test@SERVICE:attest` at the colon (the tail glued onto the password). The
+// direct Config path must keep User and Passwd byte-for-byte, because Open now
+// uses mysql.NewConnector and never re-parses them.
+func TestBuildMySQLConfigKeepsSpecialUser(t *testing.T) {
+	cases := []struct {
+		name, user, pass string
+	}{
+		{"plain", "root", "s3cret"},
+		{"user with at", "root@sys", "s3cret"},
+		{"oceanbase full", "root@sys#obcluster", "s3cret"},
+		{"user with colon", "test:SERVICE", "s3cret"},
+		{"user with at and colon", "test@SERVICE:attest", "s3cret"},
+		{"password with colon", "root", "a:b:c"},
+		{"password with at", "root", "p@ss:word"},
+		{"both exotic", "test@SERVICE:attest", "p@ss:word"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := dsnCfg(nil)
+			c.User, c.Password = tc.user, tc.pass
+			cfg, err := buildMySQLConfig(c)
+			if err != nil {
+				t.Fatalf("buildMySQLConfig: %v", err)
+			}
+			if cfg.User != tc.user {
+				t.Errorf("User = %q, want %q", cfg.User, tc.user)
+			}
+			if cfg.Passwd != tc.pass {
+				t.Errorf("Passwd = %q, want %q", cfg.Passwd, tc.pass)
+			}
+		})
+	}
+}
+
+// TestDirectConfigDoesNotMangleWhereDSNDoes documents the exact regression: the
+// string form loses a colon-bearing username on the round trip, while the direct
+// Config does not. Keeping both assertions here stops anyone from "simplifying"
+// Open back to sql.Open(buildMySQLDSN(...)).
+func TestDirectConfigDoesNotMangleWhereDSNDoes(t *testing.T) {
+	c := dsnCfg(nil)
+	c.User, c.Password = "test@SERVICE:attest", "attest123"
+
+	parsed, err := mysql.ParseDSN(buildMySQLDSN(c))
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	if parsed.User == c.User && parsed.Passwd == c.Password {
+		t.Fatal("expected the DSN round trip to mangle this user — the regression this test guards no longer reproduces; update the test")
+	}
+
+	direct, err := buildMySQLConfig(c)
+	if err != nil {
+		t.Fatalf("buildMySQLConfig: %v", err)
+	}
+	if direct.User != c.User || direct.Passwd != c.Password {
+		t.Errorf("direct Config mangled user: got %q/%q want %q/%q",
+			direct.User, direct.Passwd, c.User, c.Password)
+	}
+}
+
+// TestBuildMySQLConfigDriverFields pins that the direct path consumes every
+// tool-owned parameter into the driver's typed fields, so none is left in Params
+// to be replayed as `SET <name> = <value>` (which the server rejects as an
+// unknown system variable). Only real --session-var names may remain in Params.
+func TestBuildMySQLConfigDriverFields(t *testing.T) {
+	c := dsnCfg(parseVars(t, "foreign_key_checks=0", "sql_mode=STRICT_ALL_TABLES"))
+	c.Host, c.Port, c.Database = "db.example", 3307, "mydb"
+	c.DefaultCharset = "utf8mb4"
+	c.ConnectTimeout, c.SocketReadTimeout, c.SocketWriteTimeout = 3*time.Second, 4*time.Second, 5*time.Second
+
+	cfg, err := buildMySQLConfig(c)
+	if err != nil {
+		t.Fatalf("buildMySQLConfig: %v", err)
+	}
+	if cfg.Net != "tcp" || cfg.Addr != "db.example:3307" || cfg.DBName != "mydb" {
+		t.Errorf("address fields wrong: net=%q addr=%q db=%q", cfg.Net, cfg.Addr, cfg.DBName)
+	}
+	if cfg.ParseTime {
+		t.Error("ParseTime must stay false (raw bytes round-trip)")
+	}
+	if !cfg.InterpolateParams || cfg.MultiStatements || cfg.ClientFoundRows {
+		t.Errorf("driver settings wrong: interp=%v multi=%v cfr=%v",
+			cfg.InterpolateParams, cfg.MultiStatements, cfg.ClientFoundRows)
+	}
+	if cfg.Timeout != 3*time.Second || cfg.ReadTimeout != 4*time.Second || cfg.WriteTimeout != 5*time.Second {
+		t.Errorf("timeouts wrong: %v/%v/%v", cfg.Timeout, cfg.ReadTimeout, cfg.WriteTimeout)
+	}
+	// charset is consumed into the driver's private charsets field, not left in
+	// Params; FormatDSN must still render it so operators see the same string.
+	if _, ok := cfg.Params["charset"]; ok {
+		t.Error("charset leaked into Params (would be sent as a bogus SET)")
+	}
+	if !strings.Contains(cfg.FormatDSN(), "charset=utf8mb4") {
+		t.Error("charset lost from FormatDSN")
+	}
+	// Only the session vars remain, and they are the only things the driver will
+	// replay as SET on each new physical connection.
+	if cfg.Params["foreign_key_checks"] != "0" || cfg.Params["sql_mode"] != `'STRICT_ALL_TABLES'` {
+		t.Errorf("session vars missing from Params: %v", cfg.Params)
+	}
+	for _, reserved := range []string{"parseTime", "interpolateParams", "multiStatements", "clientFoundRows", "timeout", "readTimeout", "writeTimeout"} {
+		if _, ok := cfg.Params[reserved]; ok {
+			t.Errorf("driver-owned %q left in Params: %v", reserved, cfg.Params)
+		}
+	}
+}

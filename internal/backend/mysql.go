@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
 
 	"github.com/imex/internal/common"
@@ -25,14 +26,24 @@ func (mysqlBackend) Engine() Engine { return EngineMySQL }
 // --default-charset, parseTime, interpolateParams, session-variable and timeout
 // decisions live.
 //
-// The driver registers itself in this package and nowhere else: dsn_mysql.go and
-// dberr_mysql.go are the two files that import go-sql-driver/mysql (the DSN builder
-// and the server code table, split apart in round 132), and postgres.go does the
-// same with pgx's database/sql wrapper (a blank import). That symmetry is why
-// internal/export and internal/import carry no driver import of their own — a
-// command that opens a connection must name an engine, never a driver.
+// It hands the driver a Config through mysql.NewConnector rather than a DSN
+// string: FormatDSN writes User/Passwd verbatim, so a username containing ':'
+// (e.g. `test@SERVICE:attest`) or a password with ':' would be re-split by
+// sql.Open's DSN parser. NewConnector keeps the fields intact. dsn_mysql.go still
+// imports go-sql-driver/mysql for the Config type and dberr_mysql.go for the server
+// code table, and postgres.go does the same with pgx's database/sql wrapper. That
+// symmetry is why internal/export and internal/import carry no driver import of
+// their own — a command that opens a connection must name an engine, never a driver.
 func (mysqlBackend) Open(cfg *config.Config) (*sql.DB, error) {
-	return sql.Open("mysql", buildMySQLDSN(cfg))
+	driverCfg, err := buildMySQLConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	connector, err := mysql.NewConnector(driverCfg)
+	if err != nil {
+		return nil, err
+	}
+	return sql.OpenDB(connector), nil
 }
 
 // QuoteIdent backquotes one identifier, doubling any backquote inside it so a

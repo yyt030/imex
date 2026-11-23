@@ -976,3 +976,23 @@ done
 - **交付面**：11 个文件改动（代码 7＋记账 4），`go.mod`／`go.sum`／`docs/cli-oracle.txt` 一字未动、零新依赖；`git tag -l` 53 → 54。
 - **待办（已完成）**：release 提交 + 附注 tag `v0.48.0` → 推 main 与 tag → 同轮第二笔纯 docs 收口补记（仅 `CONTEXT.md`）。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`。
 - **推成真值（2026-11-16 收口）**：release 提交 `4df7cd3`、附注 tag 对象 `91354e8`（peeled `4df7cd3`）、`git tag -l` **53 → 54**、远端 `main` = `4df7cd3`、`refs/tags/v0.48.0` = `91354e8`、peeled = `4df7cd3`，与本地 `rev-parse` 三项逐项相等，`ls-remote` 穿透验证通过；v0.48.0 发布完成。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`（仅本地会话使用、未轮换、未写入任何仓库文件），本轮 TLS 一次推成。三十一节「待办」全部完成。
+- **追记（2026-11-20，用户后续指令）**：用户「tag 打到当前 head 上」——上方推成真值是**当时的历史状态**（tag→`4df7cd3`、HEAD=`0c2c647` 收口提交）。此后按用户明确要求把 `v0.48.0` 从 release 提交 `4df7cd3` **移到当前 HEAD `0c2c647`**，并因 annotated tag 对象无法字节级复刻而改为**轻量 tag（lightweight，直接指向 commit `0c2c647`）**：本地 `git tag` 重建、远端经 GitHub API（`git push` 走 443 持续超时，改用 REST 创建 tag 对象 + PATCH ref）把 `refs/tags/v0.48.0` 指向 `0c2c647` commit；最终本地与远端 tag、`main`、HEAD 四者同为 `0c2c647`。打包产物随之同步：后缀由 `4df7cd3` 改为 `0c2c647`，旧三件套已删。本追记只说明当前状态，不改写上方历史真值。
+
+
+## 三十二、202 轮状态快照（2026-11-23，修复 MySQL 特殊用户名连接 bug；已随 203 轮发版兑现，详见三十三节）
+
+- **指令与裁定**：用户报「MySQL 的用户名是 `test@SERVICE:attest` 不能连接数据库，测试下」→ AskUserQuestion 裁定「修复代码+回归测试」。
+- **复现与根因（实测）**：真 MySQL 8.0 建字面用户 `'test@SERVICE:attest'@'%'`，`list tables -u` 报 `Access denied for user 'test@SERVICE'`——用户名在 `:` 处被截断。根因：`dsn_mysql.go:buildMySQLDSN` 用 `mysql.Config.FormatDSN()`，v1.9.3 把 User/Passwd 原样拼进 `user:pass@`，`sql.Open` 再解析时含 `:` 的用户名被错分（`User="test@SERVICE"`、`Passwd="attest:..."`）；OceanBase 名 `root@sys#obcluster` 同类受害。对比验证：DSN 字符串路径 ping 失败、`mysql.NewConnector(Config)` 直连成功。
+- **改动（3 改 + 1 新建，未发版）**：`dsn_mysql.go` 新增 `driverDSN(c)`（渲染无 userinfo 的 DSN，让 `ParseDSN` 消费所有驱动内部参数为 typed 字段）与 `buildMySQLConfig(c) (*mysql.Config, error)`（ParseDSN 后以 typed 字段覆盖 User/Passwd）；`buildMySQLDSN` 保留原逻辑（golden 逐字节不变）；`mysql.go:Open` 改走 `mysql.NewConnector`+`sql.OpenDB`，用户名密码原样送达。五面契约全不变（oracle 22/22 drift 0），仅连接建立方式变。
+- **回归测试**：`dsn_mysql_test.go` 新增 `TestBuildMySQLConfigKeepsSpecialUser`（8 例含 `@`/`:` 用户名密码原样保留）、`TestDirectConfigDoesNotMangleWhereDSNDoes`（钉死 DSN 截断 vs 直连完好，防 Open 被改回）、`TestBuildMySQLConfigDriverFields`（内部参数全落 typed 字段、Params 只剩 session var）；新建 `test/integration/mysql_special_user_live_test.go` 活体门 `TestLive_MySQLSpecialCharUsernameConnects`（真库建特殊用户→走生产 backend.Open 连接→`CURRENT_USER()`+`SELECT 1`→cleanup，无 `IMEX_TEST_DSN` 则 skip）。
+- **QA**：gofmt 0、`git diff --check` 0、`vet` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、over118 0、`make build` 0；修复后真机特殊用户名列出 10 张表、root 回归正常、活体门真库 PASS。
+- **工作树**：4 文件改动（代码 2＋测试 2）＋记账 2（`docs/requirements.md` 变更记录 202、本文件本节）；本轮代码已随 203 轮发版兑现（`Makefile` 进位 **0.48.1**、tag `v0.48.1` 打到 release 提交即 HEAD），详见三十三节。
+
+
+## 三十三、203 轮发版快照（2026-11-23，「发版」；Z 档 patch 位进位 0.48.0 → 0.48.1）
+
+- **判档**：Z 档 patch 位进位——本轮修复 MySQL 特殊用户名连接 bug（202 轮），五面契约逐面不变（help／flag／产物格式／退出码／环境变量／发往服务端语句全不变，oracle 22/22 drift 0、over118 0），非能力增量，与 v0.44.1／v0.36.1 的 Z 档先例同类。
+- **新口径（用户 11/20 起）**：「发版＝commit/tag/push，tag 打到当前 HEAD，然后再显示本地 git hash」。据此本轮把全部代码／测试（202 轮 4 文件）与进位／记账（`Makefile`／`README`／`docs/requirements.md` 变更记录 203／本文件三十二＋三十三节）落在**同一笔** `release:` 提交（纪律 8），tag `v0.48.1` 直接打在该笔提交（＝HEAD）上——**不再追加第二笔纯 docs 收口**，从而 `git status` 短 hash／tag 所指／打包后缀三者一致，消解 v0.48.0 曾出现的「hash 不一致」困惑。tag 形态沿用用户 11/20 对 v0.48.0 的裁定（lightweight 指向 release 提交）。
+- **交付面**：8 文件（代码／测试 4：新增 `internal/backend/dsn_mysql.go` 的 `driverDSN`＋`buildMySQLConfig`、改 `internal/backend/mysql.go` 的 `Open` 直连、改 `internal/backend/dsn_mysql_test.go` 3 回归测试、新建 `test/integration/mysql_special_user_live_test.go` 活体门；记账 4：`Makefile`／`README`／`docs/requirements.md`／本文件）。`go.mod`／`go.sum`／`docs/cli-oracle.txt` 一字未动、零新依赖。
+- **QA**：gofmt 0、`git diff --check` 0、`go vet ./...` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、over118 0、`make build` 0（bin 报 0.48.1）；修复后真机特殊用户名列出 10 张表、root 回归正常、活体门真库 PASS。
+- **待办**：`release:` 提交＋tag `v0.48.1`（打在该提交＝HEAD）→ 推 main 与 tag → 显示本地 git hash → `ls-remote` 穿透验证。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`（仅本地会话使用、未轮换、未写入仓库文件）；Git 协议 443 不稳时走 GitHub API 兜底。
