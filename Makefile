@@ -1,4 +1,10 @@
-VERSION ?= 0.49.0
+# VERSION 自动派生自最近的 git tag，无需每次发版手改。
+# git describe 输出带 v 前缀（如 v0.49.0），这里用 $(TAG_DESC) 取回后以 make 的
+# patsubst 去掉首字符 v，保持版本号与此前 0.49.0 一致（docker tag 亦不带 v）。
+# --always：无 tag 时回退短 hash；--dirty：工作树有未提交改动时追加 -dirty；
+# git 不可用时回退 dev。仍可用 `make VERSION=x.y.z` 显式覆盖。
+TAG_DESC := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(patsubst v%,%,$(TAG_DESC))
 BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 

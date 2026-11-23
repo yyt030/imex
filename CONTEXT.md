@@ -1014,3 +1014,12 @@ done
 - **判档**：Y 档 minor `0.48.1 → 0.49.0`——产物格式（面④）行为破坏，但 0.x 期不兼容记 Y、X 位保持 0（先例 2.10／128 ①，历史唯一 X 档 1.0.0 已纠正回 0.6.0）；help 未动（oracle 22/22 drift 0、over118 0），其余四面不变。
 - **发版前 QA（进位后树实跑）**：gofmt 0、`git diff --check` 0、`go vet ./...` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、over118 0、`make build` 0（bin 报 0.49.0）。零新依赖，`go.mod`／`go.sum`／`docs/cli-oracle.txt` 未动。
 - **推成真值（2026-11-23 发版 / 2026-11-24 收口）**：`release:` 提交 `9885180`（全 `9885180ff6afd2d12d6a79fbdfa501ce3cd65d9f`）完成 DEL 按真实类型落盘改动与 0.49.0 进位；发版当日轻量 tag `v0.49.0` 指向该提交并推 main＋tag，`ls-remote` 三项当时逐项相等，推送因 443 两次 `GnuTLS recv error (-110)` 中断后改用 `http.version=HTTP/1.1` 一次推成，PAT 沿用会话内 `/root/.gh_pat_session`（仅本地会话使用、未轮换、未写入仓库）。用户 11/24 追加指令「commit tag push」后，本真值回填由一笔 `docs:` 收口提交固化；按用户「tag 打到当前 HEAD」口径，tag `v0.49.0` 从 release 提交 `9885180` 移到该收口提交（＝当前 HEAD，hash 见 `git rev-parse HEAD`，仍 lightweight），main 快进、tag 以 force 覆盖远端，使 status hash／tag 所指／打包后缀三者再度一致。`git tag -l` 共 56 个；`refs/tags/v0.49.0^{}`（peeled）为空系轻量 tag 无附注对象（N/A），非校验失败。
+
+
+## 三十六、206 轮状态快照（2026-11-24，代码轮；Makefile VERSION 自动从 git tag 派生）
+
+- **指令与裁定**：用户「makefile 的 version 不需要每次都修改，应该打包时自动获取当前 tag」，给出表达式 `$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)`。AskUserQuestion 裁定「去掉 v 前缀保持 0.49.0」＋「记账+commit（不带 tag/push）」。
+- **实现**：Makefile 顶部 `VERSION ?= 0.49.0` → `TAG_DESC := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)`＋`VERSION ?= $(patsubst v%,%,$(TAG_DESC))`。关键取舍：不用 `git describe | sed 's/^v//' || echo dev`——管道返回码取 sed（成功）会使 `|| echo dev` 回退失效、失败时得到空串；改用 make `patsubst v%,%` 在外层去 v，内层 `|| echo dev` 完整保留。`patsubst` 只去首个 v，`dev`／十六进制短 hash 不受影响；保留 `?=` 使命令行覆盖仍生效。加 4 行注释。
+- **行为**：干净树 `0.49.0`、脏树 `0.49.0-dirty`、无 tag 回退短 hash、无 git 回退 `dev`；`imex version` 与 docker tag 同用该值，不再每次发版手改 Makefile。tag 仍 `v0.49.0`，本轮非发版、不进位。
+- **QA**：`make -p` 展开（脏树 `VERSION=0.49.0-dirty`、`TAG_DESC=v0.49.0-dirty`、覆盖 `VERSION=9.9.9` 生效）、`make build`／`build-all` 0、二进制报 `0.49.0-dirty`（提交后转 `0.49.0`）、gofmt/vet/diff-check 净。零 Go 改动。
+- **收尾**：本轮记账＋commit（不带 tag/push），提交后工作树干净、打包得无 -dirty 版本；tag `v0.49.0` 保持指向 205 轮收口提交不动。
