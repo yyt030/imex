@@ -70,10 +70,16 @@ func (d *DelWriter) WriteHeader(columns []string) error {
 	// Column names are identifiers, never row data: the per-index binary/hex
 	// treatment that writeRow applies must not touch them, otherwise a
 	// --blob-encoding hex (or non-utf8mb4 charset) export writes header fields such as
-	// 0x7662 instead of "vb" and the file can no longer be imported.
+	// 0x7662 instead of "vb" and the file can no longer be imported. Likewise the
+	// per-column kinds must not apply: with the "number bare" default a header
+	// name sitting over a numeric column would otherwise be written bare, so a
+	// column literally named 123 would become indistinguishable from a value.
+	// Identifiers always go through the quoted string path.
 	hexBlob := d.hexBlob
 	d.hexBlob = false
-	defer func() { d.hexBlob = hexBlob }()
+	kinds := d.kinds
+	d.kinds = nil
+	defer func() { d.hexBlob = hexBlob; d.kinds = kinds }()
 
 	values := make([]interface{}, len(columns))
 	for i, col := range columns {
@@ -335,13 +341,19 @@ func (d *DelWriter) formatRawValue(val sql.RawBytes, idx int) {
 }
 
 // formatTypedString writes one wire-text field according to its column kind.
-// Numeric columns always output MySQL wire text: decimal point is '.', no
-// leading-zero stripping. Date/timestamp columns honor --date-fmt/--timestamp-fmt.
+// Numeric columns are written BARE (no --char-del): the value is MySQL wire
+// text whose decimal point is '.', with no leading-zero stripping, so it is a
+// literal the import reader can bind directly. Every other kind — strings,
+// enums, JSON (all KindUnknown) and the date/time families — is wrapped in
+// --char-del as before; date/timestamp columns honor --date-fmt/--timestamp-fmt.
+// This "number bare, everything else quoted" split is the default DEL layout.
 func (d *DelWriter) formatTypedString(s string, idx int) {
 	switch d.kind(idx) {
 	case common.KindNumber:
-		// Numeric columns: wire text passthrough, decimal point always '.'
-		d.formatString(s)
+		// Numeric columns: bare wire text, no character delimiter. Numeric wire
+		// text only ever contains [-+.eE0-9], never a structural delimiter, so
+		// writing it verbatim cannot corrupt the record layout.
+		d.bw.WriteString(s)
 	case common.KindDate:
 		if d.dateFormat != "" && d.dateFormat != "2006-01-02" {
 			if t, err := time.Parse("2006-01-02", s); err == nil {

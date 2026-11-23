@@ -168,12 +168,14 @@ func writeDmShapeDump(t *testing.T, cols []dmShapeCol) string {
 // row of boundary values. Every field spelling is the point: DATETIME and TIME
 // had no rewriter and left the file as ISO text with a zone, BOOLEAN came out as
 // "true", LONGVARBINARY was treated as text and wrote its raw bytes into a
-// quoted field, and a zone-bearing timestamp dropped its offset.
+// quoted field, and a zone-bearing timestamp dropped its offset. ID is the one
+// KindNumber column, so under the "number bare" default it is written without
+// quotes while every text/date/boolean field stays quoted.
 func TestExportDmBoundaryCellText(t *testing.T) {
 	got := writeDmShapeDump(t, dmShapeColumns(false))
 
 	wantHeader := `"ID","DT","TS","D","TM","TSTZ","FLAG","BOOL","LB","B","S"` + "\n"
-	wantRow := `"7","2024-05-06 07:08:09.123456","2024-05-06 07:08:09.123456",` +
+	wantRow := `7,"2024-05-06 07:08:09.123456","2024-05-06 07:08:09.123456",` +
 		`"2024-05-06 07:08:09","15:04:05","2024-05-06 07:08:09.123456+08:00",` +
 		`"1","1",0xff00,0x000161,"plain"` + "\n"
 	if got != wantHeader+wantRow {

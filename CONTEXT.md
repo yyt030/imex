@@ -995,4 +995,22 @@ done
 - **新口径（用户 11/20 起）**：「发版＝commit/tag/push，tag 打到当前 HEAD，然后再显示本地 git hash」。据此本轮把全部代码／测试（202 轮 4 文件）与进位／记账（`Makefile`／`README`／`docs/requirements.md` 变更记录 203／本文件三十二＋三十三节）落在**同一笔** `release:` 提交（纪律 8），tag `v0.48.1` 直接打在该笔提交（＝HEAD）上——**不再追加第二笔纯 docs 收口**，从而 `git status` 短 hash／tag 所指／打包后缀三者一致，消解 v0.48.0 曾出现的「hash 不一致」困惑。tag 形态沿用用户 11/20 对 v0.48.0 的裁定（lightweight 指向 release 提交）。
 - **交付面**：8 文件（代码／测试 4：新增 `internal/backend/dsn_mysql.go` 的 `driverDSN`＋`buildMySQLConfig`、改 `internal/backend/mysql.go` 的 `Open` 直连、改 `internal/backend/dsn_mysql_test.go` 3 回归测试、新建 `test/integration/mysql_special_user_live_test.go` 活体门；记账 4：`Makefile`／`README`／`docs/requirements.md`／本文件）。`go.mod`／`go.sum`／`docs/cli-oracle.txt` 一字未动、零新依赖。
 - **QA**：gofmt 0、`git diff --check` 0、`go vet ./...` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、over118 0、`make build` 0（bin 报 0.48.1）；修复后真机特殊用户名列出 10 张表、root 回归正常、活体门真库 PASS。
-- **待办**：`release:` 提交＋tag `v0.48.1`（打在该提交＝HEAD）→ 推 main 与 tag → 显示本地 git hash → `ls-remote` 穿透验证。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`（仅本地会话使用、未轮换、未写入仓库文件）；Git 协议 443 不稳时走 GitHub API 兜底。
+- **推成真值（2026-11-23 当日兑现）**：`release:` 提交 `41534b8`＋轻量 tag `v0.48.1`（打在该提交＝HEAD）已推 main 与 tag；本地 git hash 短 `41534b8`／全 `41534b87499774e3770576f00fb50306e1362c46`，`ls-remote` 三项目标逐项相等；Git 协议 443 本轮一次推成，无需 API 兜底。推送沿用会话内 PAT 文件 `/root/.gh_pat_session`（仅本地会话使用、未轮换、未写入仓库文件）。三十三节待办全部完成。
+
+
+## 三十四、204 轮状态快照（2026-11-23，代码轮；DEL 数字按真实类型裸写，**已由三十五节发版兑现**）
+
+- **指令与裁定**：用户先连问「exp 字段格式都是 string 吗／能否以字节落盘／能否从数据库返回知道 string 还是 number」（均为代码调查，零改动），随后指令「导出时按真实类型分别落盘。数字不加引号，字符串加引号」→ AskUserQuestion 裁定「直接改默认行为（非加开关）／日期时间当字符串带引号／单测+真库往返」。
+- **技术事实（调查所得）**：取数本就是字节——`Rows.Scan(&sql.RawBytes)`、`bytesToString` 零拷贝 unsafe.String；驱动列类型本就已在用——`rows.ColumnTypes().DatabaseTypeName()` 经 `backend.ColumnKinds` 翻成 `ColumnKind`（`KindNumber`／各时间型／`KindUnknown`＝字符串+enum+json+未知，无独立 KindString）；导入侧 `DelReader` 逐字段记 `quoted` 并据此解析，**天然接受混合布局**；Parquet 也统一落 UTF-8 BYTE_ARRAY（非原生 INT/DOUBLE），刻意求跨库无损。
+- **改动（2 生产文件 + 4 测试/记账）**：`del_writer.go:formatTypedString` 的 KindNumber 改裸写、其余维持带引号；`WriteHeader` 临时置 `kinds=nil` 防列名被数字列类型误裸写。改 golden 3 处＋dm 边界 1 处，新增 2 个单测。README DEL 示例本就是裸数字（实现回归文档承诺）、补判定说明；版本横幅记「Y 档在途未发版」。
+- **判档**：Y 档 minor `0.48.1 → 0.49.0`（本轮未发版、`Makefile` 仍 0.48.1）——产物格式（面④）行为破坏，但 0.x 期不兼容记 Y、X 位保持 0（先例 2.10／128 ①，历史唯一 X 档 1.0.0 已纠正回 0.6.0）；help 未动故 oracle 不重基线。
+- **验证**：真机 MySQL 8.0 导出数字极值表→全裸写、导回逐列文本比对 0 差异；字符串表往返 0 差异；`TestLive_RoundTripEveryFormat` del/sql/parquet 全 PASS。QA：gofmt 0、diff-check 0、vet 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、over118 0、make build 0。
+- **工作树**：产品代码 2 文件＋测试 2 文件＋记账 3（`docs/requirements.md` 变更记录 204、本文件本节、README）＋`Makefile` 未进位；本轮状态已随 205 轮发版兑现（进位 0.49.0、tag 打到 release 提交＝HEAD、显示 hash），详见三十五节。
+
+
+## 三十五、205 轮发版快照（2026-11-23，「发版 发版 发版」；Y 档 minor 进位 0.48.1 → 0.49.0）
+
+- **新口径（用户 11/20 起）**：「发版＝commit/tag/push，tag 打到当前 HEAD，然后再显示本地 git hash」。据此把 204 轮全部代码／测试（2 生产＋2 测试文件）与进位／记账（`Makefile` 首行 0.49.0、README 横幅、`docs/requirements.md` 变更记录 204＋205、本文件三十四＋三十五节）落在**同一笔** `release:` 提交（纪律 8），轻量 tag `v0.49.0` 直接打在该提交（＝HEAD），不追加第二笔纯 docs 收口，使 `git status` hash／tag 所指／打包后缀三者一致。
+- **判档**：Y 档 minor `0.48.1 → 0.49.0`——产物格式（面④）行为破坏，但 0.x 期不兼容记 Y、X 位保持 0（先例 2.10／128 ①，历史唯一 X 档 1.0.0 已纠正回 0.6.0）；help 未动（oracle 22/22 drift 0、over118 0），其余四面不变。
+- **发版前 QA（进位后树实跑）**：gofmt 0、`git diff --check` 0、`go vet ./...` 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、over118 0、`make build` 0（bin 报 0.49.0）。零新依赖，`go.mod`／`go.sum`／`docs/cli-oracle.txt` 未动。
+- **收口真值**：见本节末尾「推成真值」（发版命令执行后回填 release 提交 hash、tag 对象与 peeled、git tag 数、ls-remote 逐项相等）。

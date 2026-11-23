@@ -389,13 +389,13 @@ func TestDelWriter_RawRowWithKinds(t *testing.T) {
 		expected string
 	}{
 		{
-			name:  "number wire text preserved",
+			name:  "number written bare",
 			kinds: []common.ColumnKind{common.KindNumber},
 			mod: &config.DelModifier{
 				CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`,
 			},
 			values:   []sql.RawBytes{sql.RawBytes("1234.56")},
-			expected: "\"1234.56\"\n",
+			expected: "1234.56\n",
 		},
 		{
 			name:  "date reformat",
@@ -457,7 +457,7 @@ func TestDelWriter_RawRowWithKinds(t *testing.T) {
 			expected: "\"bin\x00data\"\n",
 		},
 		{
-			name:  "nil kinds keeps legacy passthrough for numbers",
+			name:  "nil kinds keeps numbers conservative quoted",
 			kinds: nil,
 			mod: &config.DelModifier{
 				CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`,
@@ -473,7 +473,7 @@ func TestDelWriter_RawRowWithKinds(t *testing.T) {
 				DateFmt: "yyyy/MM/dd",
 			},
 			values:   []sql.RawBytes{sql.RawBytes("1.5"), sql.RawBytes("2026-01-31"), nil},
-			expected: "\"1.5\",\"2026/01/31\",\n",
+			expected: "1.5,\"2026/01/31\",\n",
 		},
 	}
 
@@ -560,8 +560,8 @@ func TestDelWriter_NumericWireTextUnchanged(t *testing.T) {
 	w := NewDelWriter(&buf, mod, false, []common.ColumnKind{common.KindNumber})
 	w.WriteRawRow([]sql.RawBytes{sql.RawBytes("1234.56")})
 	w.Flush()
-	if buf.String() != "\"1234.56\"\n" {
-		t.Errorf("numeric wire text changed: got %q", buf.String())
+	if buf.String() != "1234.56\n" {
+		t.Errorf("numeric wire text should be bare: got %q", buf.String())
 	}
 }
 
@@ -788,5 +788,58 @@ func TestDelWriter_HeaderNotHexEncodedWithHexBlob(t *testing.T) {
 	// The header must keep the identifier; only the data row is hex-encoded.
 	if got, want := buf.String(), "\"id\",\"vb\"\n\"1\",0x7662\n"; got != want {
 		t.Errorf("output = %q, want %q", got, want)
+	}
+}
+
+// TestDelWriter_TypedQuotingDefault pins the default DEL layout introduced for
+// "number bare, everything else quoted": a KindNumber value is written without
+// --char-del, while strings, date/time families and identifiers in the header
+// stay quoted. It also guards the header-over-numeric-column trap: a column name
+// must never inherit its column's numeric kind and go bare.
+func TestDelWriter_TypedQuotingDefault(t *testing.T) {
+	mod := &config.DelModifier{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`}
+	// kinds: number, string(KindUnknown), date, time, timestamp
+	kinds := []common.ColumnKind{
+		common.KindNumber, common.KindUnknown, common.KindDate,
+		common.KindTime, common.KindTimestamp,
+	}
+
+	var buf bytes.Buffer
+	w := NewDelWriter(&buf, mod, true, kinds)
+	if err := w.WriteHeader([]string{"n", "s", "dt", "tm", "ts"}); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if err := w.WriteRawRow([]sql.RawBytes{
+		sql.RawBytes("-9223372036854775808"),
+		sql.RawBytes("a,b"),
+		sql.RawBytes("2026-03-15"),
+		sql.RawBytes("838:59:59"),
+		sql.RawBytes("2026-03-15 10:30:00"),
+	}); err != nil {
+		t.Fatalf("WriteRawRow: %v", err)
+	}
+	w.Flush()
+
+	want := `"n","s","dt","tm","ts"` + "\n" +
+		`-9223372036854775808,"a,b","2026-03-15","838:59:59","2026-03-15 10:30:00"` + "\n"
+	if got := buf.String(); got != want {
+		t.Errorf("typed quoting default:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestDelWriter_TypedQuotingNullAndEscapedString pairs with the above: a NULL
+// numeric stays an unquoted empty field (binds NULL on import), while a string
+// containing the character delimiter stays quoted with its escape intact.
+func TestDelWriter_TypedQuotingNullAndEscapedString(t *testing.T) {
+	mod := &config.DelModifier{CharDel: `"`, ColDel: ",", RowDel: "\n", Escape: `"`}
+	var buf bytes.Buffer
+	w := NewDelWriter(&buf, mod, false, []common.ColumnKind{common.KindNumber, common.KindUnknown})
+	if err := w.WriteRawRow([]sql.RawBytes{nil, sql.RawBytes(`say "hi"`)}); err != nil {
+		t.Fatalf("WriteRawRow: %v", err)
+	}
+	w.Flush()
+	want := `,"say ""hi"""` + "\n"
+	if got := buf.String(); got != want {
+		t.Errorf("null + escaped string:\n got %q\nwant %q", got, want)
 	}
 }

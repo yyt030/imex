@@ -2,7 +2,7 @@
 
 名称取自 **Im**port + **Ex**port（ImEx）。基于 Go 语言开发的表粒度逻辑导入导出工具，功能设计参考 IBM DB2 的 EXPORT/IMPORT，通过 `--engine` 支持 MySQL（含 MariaDB 与 OceanBase MySQL 模式）、PostgreSQL、达梦 DM8（Oracle 兼容模式）与 GaussDB / openGauss。
 
-> **当前版本 `v0.48.1`**（2026-11-23，**Z 档：修复含 `:`／`@` 特殊字符的 MySQL 用户名无法连接的 bug**（202 轮），五面契约逐面不变、patch 位进位）。用户报「MySQL 用户名 `test@SERVICE:attest` 不能连接」——实测复现为 `Access denied for user 'test@SERVICE'`，用户名在 `:` 处被截断、尾部拼进密码。根因是 go-sql-driver v1.9.3 的 `mysql.Config.FormatDSN()` 把 User/Passwd **原样**拼进 `user:pass@tcp(...)/db`（只对 DBName 做转义），`sql.Open` 再解析字符串时按 `:`／`@` 语法错位切分；OceanBase 名 `root@sys#obcluster` 同类受害。修复把连接建立从「DSN 字符串」改为「Config 直连」：新增 `driverDSN`（渲染**不含 userinfo** 的 DSN 让 `ParseDSN` 消费全部驱动内部参数为 typed 字段）与 `buildMySQLConfig`（`ParseDSN` 后以 typed 字段原样覆盖 User/Passwd），`Open` 改用 `mysql.NewConnector`＋`sql.OpenDB`，用户名密码原样送达、不再二次解析；`buildMySQLDSN` 保留原逻辑供 golden 测试逐字节比对。五面契约全不变——help 文本未动（`docs/cli-oracle.txt` 22 个 live 正文节 22/22 drift 0）、产物文件格式／退出码／环境变量／既有发往服务端语句均未变，仅连接建立方式改变；真机 `imex list tables -u 'test@SERVICE:attest'` 由失败翻为列出 10 张表、普通 root 回归正常。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要）。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179／181／189 既定口径，本轮当前行为由本文连接相关各节描述、设计与取证由 `docs/requirements.md` 变更记录 **202**／**203**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
+> **当前版本 `v0.49.0`**（2026-11-23，**Y 档：DEL 导出按真实列类型分别落盘——数字裸写、字符串／日期带引号**（204 轮），minor 位进位、X 位保持 0）。用户指令「导出时按真实类型分别落盘。数字不加引号，字符串加引号」，裁定「直接改默认行为（非加开关）／日期时间当字符串带引号／单测+真库往返」。改动只在 `internal/export/del_writer.go`：`formatTypedString` 的 `KindNumber` 分支由统一加 `--char-del` 改为裸写，其余 kind（字符串／enum／json＝KindUnknown、各日期时间型、二进制）维持带引号；`WriteHeader` 临时置 `kinds=nil`，防列名落在数字列上被误裸写（标识符恒带引号）。判定只依据驱动的列类型（`rows.ColumnTypes().DatabaseTypeName()` → `backend.ColumnKinds`），表达式列／类型未知仍保守带引号；导入侧 `DelReader` 逐字段按引号状态解析（裸空＝NULL、带引号空＝空串），**天然接受混合布局、无需改动**，NULL 与二进制 hex 语义不变。数值 wire text 只含 `[-+.eE0-9]`、不含结构分隔符，裸写不破坏行布局。这是产物格式（面④）的行为破坏，但按 0.x 期纪律「不兼容记 Y、X 位保持 0」（先例 2.10／128 ①，历史唯一 X 档 1.0.0 已纠正回 0.6.0）判 Y 档 minor `0.48.1 → 0.49.0`；其余四面未动——help 文本未动（`docs/cli-oracle.txt` 22 个 live 正文节 22/22 drift 0、over118 0）、退出码／环境变量／发往服务端语句不变。真机 MySQL 8.0 导出数字极值表（int／bigint／unsigned／decimal／double／float）→数字全裸写、建目标表导回逐列文本比对 0 差异，字符串表往返 0 差异，活体门 `TestLive_RoundTripEveryFormat` del／sql／parquet 三式全 PASS。从「特性」到「文件格式示例」描述**当前行为**；逐版「修复记录／功能记录」是**历史版本存档**，全文已外迁至 [`docs/CHANGELOG.md`](docs/CHANGELOG.md)（本文末尾只留最近三版摘要）。逐版功能记录的末版仍为 `v0.38.0`——按纪律 12「单一事实源、不长段复述」与 172／174／177／179／181／189／203／204 既定口径，本轮当前行为由本文「文件格式示例」DEL 节描述、设计与取证由 `docs/requirements.md` 变更记录 **204**／**205**（发版）单一承载，故 22 节历史存档与摘要表仍不新增节，也不破坏 B 外迁「22 节原样迁入、逐字节未改」承诺。完整设计理由与实测取证见 `docs/requirements.md` 十四节「变更记录」。
 
 ## 目录
 
@@ -1184,6 +1184,8 @@ done
 2,"Bob","bob@example.com","2026-01-02 11:00:00"
 3,"Charlie","charlie@example.com","2026-01-03 12:00:00"
 ```
+
+**字段按真实类型分别落盘**：数值列（`INT`／`BIGINT`／`DECIMAL`／`FLOAT`／`DOUBLE` 等，来自驱动列类型 `KindNumber`）裸写、不加字符定界符——如上面的 `1`；其余一切（字符串、枚举、`JSON`、日期时间各型、列名表头）仍用 `--char-del`（默认 `"`）包裹。判定只认列类型：查询里未经计算的表达式列、或类型未知（如 `SELECT 1+1`）时按保守的字符串处理、仍带引号。数值 wire text 只含 `[-+.eE0-9]`、不含结构分隔符，裸写不会破坏行布局；NULL 依旧是裸空字段（与空串 `""` 可分）。导入侧逐字段按自身引号状态解析，天然接受这种混合布局，三方格式往返实测无损。
 
 ### Parquet 格式
 
