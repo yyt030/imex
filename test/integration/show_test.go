@@ -277,9 +277,11 @@ func TestShowCLIUsageErrors(t *testing.T) {
 		want string
 		raw  bool
 	}{
-		{"no kind", nil, "show requires a kind", true},
-		{"unknown kind", []string{"tabel", "x"}, "unknown kind", true},
-		{"old plural names", []string{"tables", "x"}, "unknown kind", true},
+		// The parent dispatcher uses "object subcommand" wording (single-letter
+		// kind names since 185); "requires a kind"/"unknown kind" were the old text.
+		{"no kind", nil, "needs an object subcommand", true},
+		{"unknown kind", []string{"tabel", "x"}, "unknown object subcommand", true},
+		{"old plural names", []string{"tables", "x"}, "unknown object subcommand", true},
 		{"missing argument", []string{"tab"}, "accepts 1 argument", false},
 		{"two arguments", []string{"tab", "a", "b"}, "accepts 1 argument", false},
 		{"no database", []string{"tab", "-D", "", "x"}, "--database is required for show", false},

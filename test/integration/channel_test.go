@@ -124,32 +124,36 @@ func TestCLIChannelMatrix(t *testing.T) {
 				}
 			})
 
-			// Cell 4: --messages alone. Log and result share one file, the screen is
-			// silent, and the file reads as log first, result last.
+			// Cell 4: --messages alone. Log and result take SEPARATE channels:
+			// the result still goes to stdout, only the log goes to the message
+			// file. 3.6's original ruling folded the result into the message file;
+			// the revision of 2026-11-12 (变更记录 158) dropped that cell because a
+			// file carrying both log records and rows is neither a log nor data.
+			// The integration cell must agree with cmd/output_channel_test.go's
+			// "messages only" case, which pins want=stdout.
 			t.Run("messages only", func(t *testing.T) {
 				msg := filepath.Join(env.dir, cc.slug+"-4.log")
 				stdout, stderr, code := cc.run(withInfo("-m", msg)...)
 				if code != 0 {
 					t.Fatalf("exit %d, stderr:\n%s", code, stderr)
 				}
-				if stdout != "" || stderr != "" {
-					t.Errorf("--messages must silence the screen, stdout=%q stderr=%q", stdout, stderr)
+				if !strings.Contains(stdout, cc.expect) {
+					t.Errorf("--messages must not take the result off stdout:\n%s", stdout)
+				}
+				if stderr != "" {
+					t.Errorf("--messages must silence the screen, stderr=%q", stderr)
 				}
 				logText := readFile(t, msg)
-				idx := strings.Index(logText, cc.expect)
-				if idx < 0 {
-					t.Fatalf("message file missing the appended result:\n%s", logText)
-				}
-				done := strings.Index(logText, "completed")
-				if done < 0 {
-					t.Fatalf("message file missing the completion record:\n%s", logText)
-				}
-				if done > idx {
-					t.Errorf("the completion record must precede the result:\n%s", logText)
-				}
-				// Appending never truncates: the run's own banner still opens the file.
+				// The message file is the log's channel alone: banner + completion
+				// record present, result bytes absent.
 				if !strings.HasPrefix(logText, "20") || !strings.Contains(logText, "imex starting") {
 					t.Errorf("message file does not start with the log banner:\n%s", logText)
+				}
+				if !strings.Contains(logText, "completed") {
+					t.Errorf("message file missing the completion record:\n%s", logText)
+				}
+				if strings.Contains(logText, cc.expect) {
+					t.Errorf("--messages must not receive the result:\n%s", logText)
 				}
 			})
 
@@ -304,24 +308,34 @@ func TestCLINoOverwriteOnListAndShow(t *testing.T) {
 	}
 }
 
-// TestCLIMessagesStaysAppendOnlyAcrossRuns pins the other half of the --messages
-// ruling: a second run into the same message file keeps the first run's bytes.
-func TestCLIMessagesStaysAppendOnlyAcrossRuns(t *testing.T) {
+// TestCLIMessagesKeepsTheLogAppendOnly pins the other half of the 2026-11-12
+// revision (变更记录 158): --messages keeps appending the log across runs but
+// never receives the result. Each run's result goes to stdout, so the message
+// file holds two banners and zero result bodies. This is the integration-level
+// mirror of TestResultSinkLeavesMessagesFileToTheLog in cmd/output_channel_test.go.
+func TestCLIMessagesKeepsTheLogAppendOnly(t *testing.T) {
 	env := newCLILive(t)
 	fix := newShowFixtures(t, env)
 	msg := filepath.Join(env.dir, "append.log")
+	// A marker only the definition body carries; the log's db-interaction echo
+	// names the object but never the body, so the table name alone won't do.
+	const bodyMark = "ENGINE=InnoDB DEFAULT CHARSET"
 
 	for i := 0; i < 2; i++ {
-		if _, stderr, code := env.runShowCLI(t, "tab", fix.table, "-m", msg); code != 0 {
+		stdout, stderr, code := env.runShowCLI(t, "tab", fix.table, "-m", msg)
+		if code != 0 {
 			t.Fatalf("run %d exit %d, stderr:\n%s", i, code, stderr)
+		}
+		if !strings.Contains(stdout, bodyMark) {
+			t.Errorf("run %d: result must stay on stdout:\n%s", i, stdout)
 		}
 	}
 	text := readFile(t, msg)
-	if got := strings.Count(text, "CREATE TABLE `"+fix.table+"`"); got != 2 {
-		t.Errorf("appended results = %d, want 2:\n%s", got, text)
+	if got := strings.Count(text, bodyMark); got != 0 {
+		t.Errorf("results in the message file = %d, want 0:\n%s", got, text)
 	}
 	if got := strings.Count(text, "imex starting"); got != 2 {
-		t.Errorf("run banners = %d, want 2 (the file was never truncated):\n%s", got, text)
+		t.Errorf("run banners = %d, want 2 (the log file was never truncated):\n%s", got, text)
 	}
 }
 

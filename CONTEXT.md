@@ -484,7 +484,7 @@
 2. **档位与 tag 纪律**：一轮交付一个 tag，按命中的最高档进位；一律附注标签，名字 = `Makefile` 第 1 行的 `VERSION`，两处同一次提交里同步改；**不自动打、不自动推**，tag 不随 `git push` 走，需单独 `git push origin vX.Y.Z`；已推送的 tag 不可移动、不可删除重打；**纯文档 / 纯测试轮不单独打 tag**。tag 前置四件：提交已 push、工作树干净、QA 全绿、`grep -c statementCapSlack test/integration/option_matrix_test.go` = 3。
 3. **历史只追加**：`docs/CHANGELOG.md` 的逐版修复／功能记录（2026-11-14 由 README 外迁，见文首注）与 `docs/requirements.md` 变更记录不得回改；发现写错就在原行内加带日期的「注」。变更记录每行必须是**一个物理行、恰好 4 个竖线**。
 4. **帮助单行 ≤118 字节**（含 pflag 自动后缀），守卫面当前为 20 个 = oracle 的 20 段。`## encrypt` 与 `## help` 仍未入册；oracle 与二进制的一致性**目前靠人工重取比对，没有自动断言**。
-5. **通道模型的裁定**：结果与日志严格分路——结果进 `-o` 文件或 stdout，日志进 stderr，带 `-m` 时屏幕完全静默（含错误），结果在「无 `-o` 且有 `-m`」时追加到 `-m` 文件末尾；`-m` 恒为追加写；完成记录（`list completed`/`show completed`）在 `sink.Flush()` **之前**写，所以文件里日志在前、结果在后。
+5. **通道模型的裁定（含 2026-11-12 修订 / 变更记录 158）**：结果与日志严格分路——结果进 `-o` 文件或 stdout，日志进 stderr，带 `-m` 时屏幕完全静默（含错误）；`-m` 恒为追加写。**原「无 `-o` 且有 `-m` 时结果追加到 `-m` 文件末尾」那一格已废止**——结果永不进消息文件，无 `-o` 时去 stdout（`cmd/output_channel.go` 的 `resultSink` 无 messages 字段、`Flush` 只剩「`-o` 截断写」与「stdout」两路）。完成记录（`list completed`/`show completed`）在 `sink.Flush()` **之前**写，只进日志通道。
 6. **`show` 的产物规则**：逐字 DDL + `;\n`，不带 `sql_mode` 之类会话属性；定义列**按列名取**并以「值以 `CREATE` 开头」兜底，因为六个语句的列位不统一（表/视图第 2 列、触发器/例程第 3 列、事件第 4 列）；明确不用 `information_schema`（触发器丢头、例程丢参数与 `RETURNS`、视图是规范化文本）；`--raw` 按裁定 ④ 不做。
 7. **回放边界**：**只有 `tab` 的产物能直接回放**；`DELIMITER` 支持动的是 import reader（面⑤），属单独一轮，不进 0.17.0。
 8. **`-?` 的注册面**：只给 16 个叶子（那里 `-h` 让给 `--host`）；root 与 `list`/`show`/`version`/`encrypt`/`help` 保持 cobra 的 `-h, --help`，所以 `imex -?` 是 unknown-shorthand 用法错误（退出 2）。
@@ -1022,4 +1022,22 @@ done
 - **实现**：Makefile 顶部 `VERSION ?= 0.49.0` → `TAG_DESC := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)`＋`VERSION ?= $(patsubst v%,%,$(TAG_DESC))`。关键取舍：不用 `git describe | sed 's/^v//' || echo dev`——管道返回码取 sed（成功）会使 `|| echo dev` 回退失效、失败时得到空串；改用 make `patsubst v%,%` 在外层去 v，内层 `|| echo dev` 完整保留。`patsubst` 只去首个 v，`dev`／十六进制短 hash 不受影响；保留 `?=` 使命令行覆盖仍生效。加 4 行注释。
 - **行为**：干净树 `0.49.0`、脏树 `0.49.0-dirty`、无 tag 回退短 hash、无 git 回退 `dev`；`imex version` 与 docker tag 同用该值，不再每次发版手改 Makefile。tag 仍 `v0.49.0`，本轮非发版、不进位。
 - **QA**：`make -p` 展开（脏树 `VERSION=0.49.0-dirty`、`TAG_DESC=v0.49.0-dirty`、覆盖 `VERSION=9.9.9` 生效）、`make build`／`build-all` 0、二进制报 `0.49.0-dirty`（提交后转 `0.49.0`）、gofmt/vet/diff-check 净。零 Go 改动。
-- **收尾**：本轮记账＋commit（不带 tag/push），提交后工作树干净、打包得无 -dirty 版本；tag `v0.49.0` 保持指向 205 轮收口提交不动。
+- **收尾**：本轮记账＋commit（不带 tag/push），提交后工作树干净、打包得无 -dirty 版本；tag `v0.49.0` 保持指向 205 轮收口提交不动——该自动派生改动已在三十八节 208 轮随 Z 档发版兑现（`0.49.0 → 0.49.1`，Makefile 无需手改、tag 打出后版本自动派生）。
+
+
+## 三十七、207 轮状态快照（2026-11-24，纯测试＋文档同步轮；过时测试对齐当前契约）
+
+- **指令**：「过时测试同步」——承接 206 轮真库回归报告点明的两类历史欠账（均非本轮引入、均非数据问题），把过时断言对齐当前实现契约。
+- **欠账来源与同步**：① 158 轮（2026-11-12）把 `--messages` 改为「只收日志和错误、不收结果」时只同步单测（`cmd/output_channel_test.go`），漏改 `test/integration/channel_test.go` 的 Cell 4「messages only」与 append-only 两个等价用例——本轮改写为「结果留 stdout、-m 文件只含日志不含结果」，并镜像单测 `TestResultSinkLeavesMessagesFileToTheLog`（用例改名 `TestCLIMessagesKeepsTheLogAppendOnly`）。② 185 轮 kind 改短名／`dispatchParentHint` 后 `list`／`show` 用法错误文案变更，`list_test.go` no_object 与 `show_test.go` 三处 want 从旧文案改为 `needs an object subcommand`／`unknown object subcommand`，加注释标注来源。
+- **文档同步 3 处**：`requirements.md:993`（3.3.2）、`:1622`（8.3）与 `CONTEXT.md:487`（关键决策第 5 条）原仍描述「-m 无 -o 时结果追加进消息文件」，按 158 轮修订同步为「结果永不进消息文件、无 -o 时去 stdout」；993 的旧实测字节数保留并标注为 158 轮前存档。CHANGELOG 与 requirements 变更记录历史行按 append-only 纪律不回改。
+- **验证**：针对性真库用例全 PASS；离线 `go test -race ./...` 12 包 ok；带 DSN 全量 `go test ./test/integration -count=1` **ok 66.1s / 0 FAIL**（改前 5 FAIL 全消失）；gofmt 0、diff-check 0、竖线守恒。
+- **收尾**：零产品代码、非发版不进位（Makefile 0.49.0、tag `v0.49.0` 不动）；工作树留 5 文件改动（3 测试＋2 文档＋本文件/requirements 记账），待用户定 commit/tag/push——已由三十八节 208 轮发版收口（Z 档 `0.49.0 → 0.49.1`）。
+
+
+## 三十八、208 轮发版快照（2026-11-26，「发版」；Z 档 patch 进位 0.49.0 → 0.49.1）
+
+- **指令与判档**：用户「发版」——兑现 206（Makefile VERSION 自动从 git tag 派生）＋207（过时测试同步）两轮。两轮均五面契约逐面不变（纯工程改进），判 Z 档 patch `0.49.0 → 0.49.1`，延续 172／174／192 轮 Z 档先例；非 Y 非 X。
+- **特殊点（Makefile 自动派生的首次发版）**：Makefile 已在 206 轮改为 `TAG_DESC := $(shell git describe --tags --always --dirty …)` ＋ `VERSION ?= $(patsubst v%,%,$(TAG_DESC))`，本轮**不手改 Makefile**——lightweight tag `v0.49.1` 打出后，干净 HEAD 上 `git describe` 输出 `v0.49.1`、去 v 即 `0.49.1`，使 STATUS hash／tag 所指／打包后缀三者一致。
+- **交付结构**：206 轮已在 `976fe16` commit；207 轮工作树 5 文件（3 测试＋2 记账）＋本轮发版记账（README 横幅 v0.49.1、requirements 208 行、就地更新 206／207 行与三十六／三十七节、本节）全落在一笔 `release:` 提交（纪律 8）。
+- **发版前 QA**：gofmt 0、diff-check 0、vet 净、`go test -race ./...` 12 包 ok、oracle 22/22 drift 0、over118 0、`make build` 0；带 DSN 全量 `go test ./test/integration -count=1` 0 FAIL；六种数据库导出导入往返无损。
+- **收口真值**：见本节末尾「推成真值」（发版命令执行后回填 release 提交 hash、tag 对象与 peeled、git tag 数、ls-remote 逐项相等）。

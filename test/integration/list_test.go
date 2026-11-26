@@ -321,7 +321,9 @@ func TestListCLIUsageErrors(t *testing.T) {
 		{"missing database", []string{"indexes", "-D", ""}, "--database is required for list indexes", false},
 		{"unknown object", []string{"tabel"}, "unknown object", true},
 		{"old table alias", []string{"tbl"}, "unknown object", true},
-		{"no object", nil, "list requires an object", true},
+		// The parent dispatcher says "needs an object subcommand" (single-letter
+		// object names since 185); "list requires an object" was the pre-185 text.
+		{"no object", nil, "needs an object subcommand", true},
 		{"removed format flag", []string{"tables", "-f", "tsv"}, "unknown shorthand flag", false},
 		{"bad type", []string{"tables", "--type", "nonsense"}, "invalid --type", false},
 	}
