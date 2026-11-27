@@ -35,6 +35,47 @@ func effectiveHexBlob(cfg *config.ExportConfig) bool {
 	return config.HexBlobForCharset(cfg.DefaultCharset)
 }
 
+// resolveSQLDialect answers one question: which grammar does a -f sql dump get
+// written in. An explicit --sql-dialect wins; auto follows the grammar of the
+// engine the run talks to, which the caller passes in as the backend's own answer
+// (a library caller may leave cfg.Engine unset while naming a backend). Both the
+// writer and the binary-encoding rule read it here so they cannot drift apart.
+func resolveSQLDialect(cfg *config.ExportConfig, engine string) config.SQLDialect {
+	switch config.SQLDialect(cfg.SQLDialect) {
+	case config.SQLDialectPG, config.SQLDialectDM, config.SQLDialectMySQL:
+		return config.SQLDialect(cfg.SQLDialect)
+	default: // auto — follow the connected engine's own grammar
+		return config.NativeDialect(engine)
+	}
+}
+
+// dialectEngine is the auto answer for a caller that only has the config: the
+// recorded engine, folded through the same normalisation the backend lookup uses,
+// so --engine PG and --engine "  Pg  " get the pg grammar as they do when a
+// backend is connected.
+func dialectEngine(cfg *config.ExportConfig) string {
+	return string(backend.Normalize(cfg.Engine))
+}
+
+// sqlBinaryHex reports whether a -f sql dump has to write binary columns as the
+// dialect's hex literal. effectiveHexBlob answers for the source side, and pg and
+// dm add a target-side constraint the source cannot waive: neither grammar carries
+// a raw byte inside a text literal, so a dump that writes the stored bytes
+// verbatim does not load at all. Measured on PostgreSQL 14.24 with a MySQL BLOB
+// source and --sql-dialect pg: `ERROR: invalid byte sequence for encoding "UTF8":
+// 0xbe` on the first row; the dm grammar cannot represent the bytes either, which
+// is why its own literal is HEXTORAW('..').
+func sqlBinaryHex(cfg *config.ExportConfig, engine string, hex bool) bool {
+	if hex {
+		return true
+	}
+	switch resolveSQLDialect(cfg, engine) {
+	case config.SQLDialectPG, config.SQLDialectDM:
+		return true
+	}
+	return false
+}
+
 // logExportConfig writes the one record that says what the run is about to do.
 //
 // It is filtered by --format through the same registry cmd/validate.go rejects
@@ -55,6 +96,11 @@ func logExportConfig(cfg *config.ExportConfig) {
 // assertable without a logger.
 func exportConfigFields(cfg *config.ExportConfig) []interface{} {
 	hex := effectiveHexBlob(cfg)
+	if cfg.Format == "sql" {
+		// A SQL dump answers to the dialect too, so the record reports what that
+		// writer will actually do rather than what the source engine alone implies.
+		hex = sqlBinaryHex(cfg, dialectEngine(cfg), hex)
+	}
 
 	fields := []struct {
 		flag  string // the command-line option this field reports

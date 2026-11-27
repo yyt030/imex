@@ -345,10 +345,13 @@ func (postgresBackend) BatchRowCap(ncols int) (int, int) {
 // point an operator at a setting that does not exist.
 func (postgresBackend) BatchWords() BatchWords {
 	return BatchWords{
-		PacketCap:      "protocol_message_cap",
-		DriverCap:      "protocol_message_cap",
-		PacketUnknown:  "could not read the PostgreSQL protocol message cap, assuming conservative batch limit",
-		DriverOver:     "--statement-size is above the PostgreSQL protocol message limit, the server rejects a statement that large",
+		PacketCap:     "protocol_message_cap",
+		DriverCap:     "batch_statement_cap",
+		PacketUnknown: "could not read the PostgreSQL protocol message cap, assuming conservative batch limit",
+		// The bound a batch is kept under is the tool's own (pgBatchStatementCap),
+		// not the protocol's, so an explicit --statement-size above it is honoured
+		// rather than refused; only the protocol maximum is a hard server limit.
+		DriverOver:     "--statement-size is above the batch statement cap imex keeps PostgreSQL batches under; the protocol itself rejects a statement only past 1 GiB",
 		BatchSizeClamp: "lowering --batch-size to stay under the PostgreSQL parameter limit",
 	}
 }
@@ -454,15 +457,30 @@ func (postgresBackend) MaxConnectionsSQL() string {
 // through batchByteLimit, so a batch stays under 1 GiB by construction.
 const pgProtocolMessageCap int64 = 1 << 30
 
+// pgBatchStatementCap is the client-side bound a batch is kept under. pgx has no
+// interpolation ceiling to fall back from — it sends the statement and its
+// parameters as separate Bind values — so this is not a driver limitation but the
+// batching design's own one, deliberately the same 64 MiB the MySQL driver uses
+// (MySQLDriverInterpolationCap). Deriving it from the protocol maximum instead
+// made the default per-batch budget 966,367,641 B, so the default --pipeline-buffer
+// of 10 priced the hand-off queue at 9.3 GiB and *every* PostgreSQL import — a
+// four-row file included — logged that it might exceed the 1 GiB memory envelope.
+// A single statement approaching a gigabyte is also not worth building: it is one
+// round trip, one WAL burst and one transaction's worth of client memory per slot.
+const pgBatchStatementCap int64 = 64 << 20
+
 func (postgresBackend) PacketCeiling(context.Context, *sql.DB) (int64, error) {
 	return pgProtocolMessageCap, nil
 }
 
-// DriverStatementCap equals the protocol ceiling: pgx sends the statement and its
-// parameters as separate Bind values, so there is no client-side interpolation
-// ceiling to fall back from, and no prepared-statement penalty for a large
-// --statement-size either.
-func (postgresBackend) DriverStatementCap() int64 { return pgProtocolMessageCap }
+// DriverStatementCap is the batching design's own client-side bound, not a driver
+// limitation: pgx sends the statement and its parameters as separate Bind values,
+// so there is no interpolation ceiling to fall back from and no prepared-statement
+// penalty for a large --statement-size either. It is pgBatchStatementCap rather
+// than the protocol maximum, because the protocol maximum is 1 GiB and a budget
+// derived from it made every default-depth PostgreSQL import report a hand-off
+// queue cost it could never pay.
+func (postgresBackend) DriverStatementCap() int64 { return pgBatchStatementCap }
 
 // The import-side catalogue probes below share one scoping rule, and it is the
 // one thing PostgreSQL's two-level namespace forces: --database is already spent

@@ -283,47 +283,119 @@ func (mysqlBackend) CellFixups(colTypes []*sql.ColumnType) []func([]byte) []byte
 }
 
 // BindFixups answers per target column how an imported value has to reach the
-// driver. MySQL and PostgreSQL need nothing for their own dumps — the server
-// parses the text it is given for DECIMAL and integer types, and a binary target
-// (BIT or BLOB) is classified as binary, so the DEL reader decodes the 0x token
-// to bytes and the Parquet reader hands the payload over as bytes, which is what
-// those columns store.
+// driver. Nothing is needed for a MySQL file's own values — the server parses the
+// text it is given for DECIMAL and integer types, and a binary target (BIT or
+// BLOB) is classified as binary, so the DEL reader decodes the 0x token to bytes
+// and the Parquet reader hands the payload over as bytes, which is what those
+// columns store.
 //
-// The one column that is NOT already covered is a BIT target fed by another
-// engine's dump. MySQL writes its own BIT as an unquoted 0x token (bit1 is 0x01
-// in this round's measured dumps), so re-importing a MySQL file decodes it to
-// bytes and it binds as it always has. A PostgreSQL or Dameng dump, however,
-// writes the same one-bit column as the quoted text "1"/"0" (measured this round:
-// pg and dm both emit "1"), and the driver reads that 1-character text into a
-// BIT(1) as the ASCII digit byte 0x31 = 49, which the server rejects with
-// `Error 1406 (22001): Data too long for column 'bit1'` (the whole of the
-// pg→my and dm→my cross-engine failures this round measured). The adapter below
-// turns only that text into the byte payload a BIT column stores.
+// Two column shapes fed by another engine's file are NOT already covered, and each
+// gets one adapter:
 //
-// It is deliberately keyed to strings: the unquoted-hex form the same column
+//   - A BIT target. MySQL writes its own BIT as an unquoted 0x token (bit1 is
+//     0x01 in this round's measured dumps), so re-importing a MySQL file decodes
+//     it to bytes and it binds as it always has. A PostgreSQL or Dameng DEL /
+//     Parquet file writes the same one-bit column as the text "1"/"0" (measured:
+//     pg and dm both emit "1"), and the driver reads that 1-character text into a
+//     BIT(1) as the ASCII digit byte 0x31 = 49, which the server rejects with
+//     `Error 1406 (22001): Data too long for column 'bit1'`. mysqlBindBit turns
+//     only that text into the byte payload a BIT column stores.
+//   - A numeric target. A boolean column has no integer-literal spelling in the
+//     other engine's text: pg's DEL and Parquet files carry "t"/"f" and its SQL
+//     dump carries the word true (both measured this round), and each lands on a
+//     TINYINT(1) column as `Error 1366 (22007): Incorrect integer value: 't' for
+//     column ...` — through a placeholder MySQL parses neither the single letters
+//     nor the words. mysqlBindBoolText folds them to "1"/"0".
+//
+// Both are deliberately keyed to strings: the unquoted-hex form the same column
 // carries in a MySQL file reaches the placeholder as []byte (decodeHexField in
-// sql_reader.go runs first), and raw bytes are left exactly as they are, so a
-// real BIT(8) payload such as 0x30 is never mistaken for the text "0". Only the
-// four unambiguous boolean words move, so this changes nothing but the failing
-// cross-engine path.
+// sql_reader.go runs first), and raw bytes are left exactly as they are, so a real
+// BIT(8) payload such as 0x30 is never mistaken for the text "0". Only the boolean
+// spellings move — the four the numeric fold takes ("t"/"f"/"true"/"false") and the
+// six the BIT fold takes (those four plus "1"/"0") — so nothing but the failing
+// cross-engine path changes: a numeric column cannot store the text "t" or "true"
+// under any sql_mode, so every value the fold touches is one the server was about
+// to reject.
 func (mysqlBackend) BindFixups(dataTypes []string) []func(interface{}) interface{} {
 	fixups := make([]func(interface{}) interface{}, len(dataTypes))
 	for i, dt := range dataTypes {
-		if isMySQLBitType(dt) {
+		switch {
+		case isMySQLBitType(dt):
 			fixups[i] = mysqlBindBit
+		case isMySQLNumericType(dt):
+			fixups[i] = mysqlBindBoolText
 		}
 	}
 	return fixups
 }
 
-// isMySQLBitType reports a BIT target column from the catalogue DATA_TYPE word
-// (information_schema.DATA_TYPE is "bit"; a length suffix, if any, is dropped).
-func isMySQLBitType(dataType string) bool {
+// baseTypeName is the catalogue DATA_TYPE word on its own: case- and
+// space-insensitive, with any "(n)" length suffix dropped, because
+// information_schema reports TINYINT(1) and BIGINT(20) under the same base name.
+func baseTypeName(dataType string) string {
 	name := strings.ToUpper(strings.TrimSpace(dataType))
 	if p := strings.IndexByte(name, '('); p >= 0 {
 		name = strings.TrimSpace(name[:p])
 	}
-	return name == "BIT"
+	return name
+}
+
+// isMySQLBitType reports a BIT target column from the catalogue DATA_TYPE word
+// (information_schema.DATA_TYPE is "bit"; a length suffix, if any, is dropped).
+func isMySQLBitType(dataType string) bool {
+	return baseTypeName(dataType) == "BIT"
+}
+
+// isMySQLNumericType reports an integer, decimal or floating-point target column.
+// It reuses the export side's one type vocabulary (classifyColumnKind) rather than
+// a second list, so "is this column numeric to MySQL" has exactly one answer in
+// this codebase.
+func isMySQLNumericType(dataType string) bool {
+	return classifyColumnKind(baseTypeName(dataType)) == common.KindNumber
+}
+
+// mysqlBindBoolText folds the boolean spellings another engine writes for a boolean
+// column into the integer text a MySQL numeric target parses. Measured: a pg cell
+// carrying "t" (DEL and Parquet) or the word true (SQL dump) lands on a TINYINT(1)
+// column as `Error 1366 (22007): Incorrect integer value: 't' for column ...` and
+// the whole batch fails — PostgreSQL's boolean text has no form the placeholder
+// parses, which README 2.1.12 had recorded as a cross-engine boundary.
+//
+// The fold is safe by construction rather than a guess about intent: a numeric
+// MySQL column cannot store any of those four spellings under any sql_mode, so
+// every value this changes is one the server was about to reject. Character targets
+// keep their "t" verbatim (they are not numeric columns), NULL markers never reach
+// here as these words, and every other value passes through untouched.
+func mysqlBindBoolText(v interface{}) interface{} {
+	var s string
+	switch x := v.(type) {
+	case string:
+		s = x
+	case []byte:
+		s = string(x)
+	default:
+		return v
+	}
+	if folded, ok := boolTextFold(s); ok {
+		return folded
+	}
+	return v
+}
+
+// boolTextFold reports the integer text one boolean spelling means, and whether the
+// value was one of the four spellings at all: the two single letters pg's DEL and
+// Parquet files write, and the two words its SQL dumps write. Anything else keeps
+// the value — and its Go type, which decides how the driver quotes it — exactly as
+// the reader produced it, so a numeric column that was already receiving usable
+// text is unaffected.
+func boolTextFold(s string) (string, bool) {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "T", "TRUE":
+		return "1", true
+	case "F", "FALSE":
+		return "0", true
+	}
+	return "", false
 }
 
 // mysqlBindBit reduces the boolean text another engine writes for a one-bit
@@ -334,9 +406,9 @@ func mysqlBindBit(v interface{}) interface{} {
 	switch x := v.(type) {
 	case string:
 		switch strings.ToLower(strings.TrimSpace(x)) {
-		case "1", "true":
+		case "1", "true", "t":
 			return []byte{1}
-		case "0", "false":
+		case "0", "false", "f":
 			return []byte{0}
 		}
 		return x

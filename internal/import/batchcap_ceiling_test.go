@@ -95,10 +95,11 @@ func TestDriverBatchBudgetStaysInsideTheCap(t *testing.T) {
 		t.Fatalf("driver budget = %d, want the shared margin result %d", budget, want)
 	}
 
-	// The PostgreSQL ceiling is the protocol message cap, so the margin applies to
-	// a number the server itself enforces: the budget stays below 1 GiB by
-	// construction and never leaves the batch pipeline for a path the design does
-	// not target.
+	// The PostgreSQL ceiling is the batching design's own client-side bound rather
+	// than the 1 GiB protocol maximum, so the margin applies to a number the tool
+	// chose: the budget stays below it by construction, a default --pipeline-buffer
+	// stays inside the memory envelope, and no batch leaves the pipeline for a path
+	// the design does not target.
 	pg := backend.Must(backend.EnginePG)
 	pgBudget := driverBatchBudget(pg)
 	if want := batchByteLimit(pg.DriverStatementCap()); pgBudget != want {
@@ -218,4 +219,67 @@ func TestWarnIfReplayWindowScalesReportsEnvelope(t *testing.T) {
 	if strings.Contains(logged, "replay window") {
 		t.Errorf("a within-budget worker count was reported anyway:\n%s", logged)
 	}
+}
+
+// A default PostgreSQL run must not hear about the envelope. When the per-batch
+// budget was derived from the 1 GiB protocol maximum, the default depth of 10
+// priced the queue at 9.3 GiB and every pg import logged the warning — including a
+// four-row file, where nothing is retained at all. The budget the backend resolves
+// now keeps the default depth inside the envelope, and an explicit --statement-size
+// above the bound still gets the cost stated.
+func TestPostgresDefaultDepthStaysQuiet(t *testing.T) {
+	defer common.InitLogger(config.LogLevelInfo)
+	common.InitLogger(config.LogLevelInfo)
+
+	pg := backend.Must(backend.EnginePG)
+	budget, limiting, above := batchCeilings(pg, batchByteLimit(pgProtocolMessageCapForTest(t)), 0)
+	if above {
+		t.Fatal("the derived default is above the client ceiling, want the clamp applied")
+	}
+	if want := pg.BatchWords().DriverCap; limiting != want {
+		t.Errorf("limiting factor = %q, want %q", limiting, want)
+	}
+	if budget >= pg.DriverStatementCap() {
+		t.Fatalf("budget %d is not under the batch statement cap %d", budget, pg.DriverStatementCap())
+	}
+
+	cfg := config.NewImportConfig()
+	if cfg.PipelineBuffer != config.DefaultPipelineBuffer {
+		t.Fatalf("the test asks for the default depth, config gives %d", cfg.PipelineBuffer)
+	}
+	imp := &Importer{cfg: cfg}
+	logged := captureLog(t, func() { imp.resolveQueueDepth(budget) })
+	if strings.Contains(logged, "hand-off queue may retain") {
+		t.Errorf("a default PostgreSQL import reported an envelope cost:\n%s", logged)
+	}
+
+	// Above the bound the price is stated again, because the operator chose it:
+	// 200 MiB is below the server-side budget the protocol allows and above the
+	// cap the tool keeps a default batch under.
+	const explicit = 200 << 20
+	budget2, limiting2, above2 := batchCeilings(pg, batchByteLimit(pgProtocolMessageCapForTest(t)), explicit)
+	if !above2 {
+		t.Fatal("an explicit --statement-size above the bound was not reported")
+	}
+	if want := "statement-size"; limiting2 != want {
+		t.Errorf("limiting factor = %q, want %q", limiting2, want)
+	}
+	cfg2 := config.NewImportConfig()
+	imp2 := &Importer{cfg: cfg2}
+	logged2 := captureLog(t, func() { imp2.resolveQueueDepth(budget2) })
+	if !strings.Contains(logged2, "hand-off queue may retain") {
+		t.Errorf("the cost of an explicit oversized batch was not reported:\n%s", logged2)
+	}
+}
+
+// pgProtocolMessageCapForTest restates the protocol maximum the backend reports,
+// so the test cannot pass if the server-side answer and the batch bound collapse
+// into one number again.
+func pgProtocolMessageCapForTest(t *testing.T) int64 {
+	t.Helper()
+	v, err := backend.Must(backend.EnginePG).PacketCeiling(nil, nil)
+	if err != nil || v != 1<<30 {
+		t.Fatalf("PacketCeiling = (%d,%v), want the 1 GiB protocol maximum", v, err)
+	}
+	return v
 }

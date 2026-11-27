@@ -589,3 +589,134 @@ func TestSQLReader_DamengExtendedInsert(t *testing.T) {
 		}
 	}
 }
+
+// TestSQLReader_BindFixupsFoldRows pins the SQL format's half of the bind seam, and
+// in particular the ordering it has to survive: ReadHeader already parses the first
+// INSERT's rows, which is before the importer knows the target's type words. So the
+// adapter runs where a row leaves the reader, not where the statement is parsed —
+// otherwise the very first tuple of a pg dump would reach MySQL still spelled "true"
+// and take the batch down with Error 1366.
+func TestSQLReader_BindFixupsFoldRows(t *testing.T) {
+	// One header INSERT with two tuples (all buffered during ReadHeader), then a
+	// second statement parsed later, so both halves of the seam are covered.
+	input := "INSERT INTO `t` (`ID`,`FLAG`,`TXT`) VALUES (1,true,'a'),(2,false,'b');\n" +
+		"INSERT INTO `t` (`ID`,`FLAG`,`TXT`) VALUES (3,1,'t');\n"
+	r := NewSQLReader(bufio.NewReader(strings.NewReader(input)), config.SQLDialectPG)
+
+	// Only position 1 (the numeric target) has an adapter; a nil at the others is
+	// the "bind exactly what the parser produced" statement, and TXT must keep its
+	// 't' verbatim however the file spelled it.
+	r.SetBindFixups([]func(interface{}) interface{}{nil, func(v interface{}) interface{} {
+		if s, ok := v.(string); ok {
+			switch strings.ToUpper(s) {
+			case "TRUE", "T":
+				return "1"
+			case "FALSE", "F":
+				return "0"
+			}
+		}
+		return v
+	}, nil})
+
+	if _, err := r.ReadHeader(); err != nil {
+		t.Fatalf("ReadHeader: %v", err)
+	}
+	want := [][]interface{}{
+		{"1", "1", "a"},
+		{"2", "0", "b"},
+		{"3", "1", "t"},
+	}
+	for i, w := range want {
+		row, err := r.ReadRow()
+		if err != nil {
+			t.Fatalf("row %d: ReadRow: %v", i, err)
+		}
+		for j := range w {
+			if row[j] != w[j] {
+				t.Errorf("row %d position %d = %v, want %v", i, j, row[j], w[j])
+			}
+		}
+	}
+	if _, err := r.ReadRow(); err != io.EOF {
+		t.Errorf("expected io.EOF after the last row, got %v", err)
+	}
+}
+
+// TestSQLReader_WithoutBindFixupsBindsParsedText is the other half of the contract:
+// a reader nobody gave adapters to — every PostgreSQL and Dameng-targeted import,
+// and a MySQL target with only character columns — must hand back exactly what it
+// handed back before this seam existed: the numeric text, the word true, the
+// character text and the unquoted NULL all as the parser produced them.
+func TestSQLReader_WithoutBindFixupsBindsParsedText(t *testing.T) {
+	input := "INSERT INTO `t` (`ID`,`FLAG`,`TXT`) VALUES (1,true,'t'),(2,NULL,'u');\n"
+	r := NewSQLReader(bufio.NewReader(strings.NewReader(input)), config.SQLDialectPG)
+	if _, err := r.ReadHeader(); err != nil {
+		t.Fatalf("ReadHeader: %v", err)
+	}
+	row, err := r.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow: %v", err)
+	}
+	if row[0] != "1" || row[1] != "true" || row[2] != "t" {
+		t.Fatalf("no adapters must change nothing, got %#v", row)
+	}
+	row, err = r.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow: %v", err)
+	}
+	if row[0] != "2" || row[1] != nil || row[2] != "u" {
+		t.Fatalf("no adapters must change nothing, got %#v", row)
+	}
+}
+
+// TestSQLBindFixupsKeepsBytePayloadsOutOfTheFold pins the one place the SQL format
+// must NOT do what the DEL and Parquet formats do. A dump in MySQL's own grammar
+// writes a binary column as the stored bytes (--blob-encoding auto/raw) or as an 0x
+// token the reader already decoded (hex), so feeding that position through the
+// adapter written for another engine's boolean text turns the payload byte 0x30 into
+// the digit "0" and lands 0 where the source row held 48 — the live-bed measurement
+// that this skip exists for. The numeric fold is unaffected, and a pg or Dameng
+// dump keeps every adapter, because those spell a bit column as text.
+func TestSQLBindFixupsKeepsBytePayloadsOutOfTheFold(t *testing.T) {
+	mark := func(name string) func(interface{}) interface{} {
+		return func(v interface{}) interface{} { return name }
+	}
+	fresh := func() []func(interface{}) interface{} {
+		return []func(interface{}) interface{}{mark("a"), mark("bit"), mark("num")}
+	}
+	binaries := []bool{false, true, false}
+
+	got := sqlBindFixups(fresh(), binaries, config.SQLDialectMySQL)
+	if got[1] != nil {
+		t.Error("mysql-grammar dump: a binary target still has an adapter; its raw byte would be re-read as boolean text")
+	}
+	// The other two positions are not byte payloads in this grammar, so the fold
+	// they carry (if any) has nothing ambiguous to read.
+	if got[0] == nil || got[0]("v") != "a" {
+		t.Error("mysql-grammar dump: position 0 must keep its adapter")
+	}
+	if got[2] == nil || got[2]("v") != "num" {
+		t.Error("mysql-grammar dump: position 2 (a numeric target) must keep the boolean-text fold")
+	}
+
+	for _, d := range []config.SQLDialect{config.SQLDialectPG, config.SQLDialectDM} {
+		got := sqlBindFixups(fresh(), binaries, d)
+		for i, f := range got {
+			if f == nil {
+				t.Errorf("%s-grammar dump: position %d must keep its adapter (bit columns are text there)", d, i)
+			}
+		}
+	}
+
+	// Mismatched lengths must not panic: the catalogue answers one entry per file
+	// column, and a column it does not know yields "" and false.
+	if got := sqlBindFixups(fresh(), []bool{true}, config.SQLDialectMySQL); got[1] == nil {
+		t.Errorf("a short binary list must still clear the position it knows about")
+	}
+	if got := sqlBindFixups(fresh(), nil, config.SQLDialectMySQL); got[1] == nil {
+		t.Errorf("no binary flags must clear nothing")
+	}
+	if got := sqlBindFixups(nil, []bool{true, true, true}, config.SQLDialectMySQL); len(got) != 0 {
+		t.Errorf("no adapters must stay no adapters, got %d", len(got))
+	}
+}

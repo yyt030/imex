@@ -30,6 +30,11 @@ type DelWriter struct {
 	// binaryFlags[i] marks column i as binary; hexBlob controls 0x encoding.
 	binaryFlags []bool
 	hexBlob     bool
+	// numRisk says that at least one configured structural separator can appear
+	// inside bare numeric text ([-+.0-9eE]), so the fields the writer sends bare
+	// have to be checked before the row goes out. With the default ',' and '\n'
+	// it is false and the check costs nothing.
+	numRisk bool
 	// hexBuf is the scratch the 0x encoder writes into. hex.EncodeToString would
 	// allocate a new string per binary value; the buffer is reused across rows
 	// because one writer is only ever used by one goroutine.
@@ -50,7 +55,27 @@ func NewDelWriter(w io.Writer, mod *config.DelModifier, writeColumns bool, kinds
 		colDel:  mod.ColDel,
 		charDel: mod.CharDel,
 		escape:  mod.Escape,
+		numRisk: separatorInNumericText(mod.ColDel) || separatorInNumericText(mod.RowDel),
 	}
+}
+
+// separatorInNumericText reports whether a configured delimiter could occur
+// inside the bare numeric text the writer emits for a numeric column. That text
+// is digits, a sign, a decimal point and an exponent marker (a PostgreSQL or
+// MySQL wire rendering such as 1e+308 carries all four), plus the two spellings
+// a float8 column can actually hold — NaN and +Inf/-Inf, which pgx hands over as
+// a native float and formatFloat writes verbatim. A delimiter drawn from that
+// alphabet makes the record layout ambiguous, while the usual ',' or '\n' never
+// does, so the default run keeps the check free.
+func separatorInNumericText(delim string) bool {
+	for i := 0; i < len(delim); i++ {
+		switch delim[i] {
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+			'+', '-', '.', 'e', 'E', 'N', 'a', 'I', 'f':
+			return true
+		}
+	}
+	return false
 }
 
 // SetBinaryFormat configures binary column encoding. binaryFlags[i] marks
@@ -176,11 +201,19 @@ func (d *DelWriter) kind(i int) common.ColumnKind {
 	return d.kinds[i]
 }
 
+// needsLiteralCheck reports whether the field at idx has to be looked at before
+// it is written. A field that goes out quoted, with a working escape character,
+// is safe by construction; what is left is anything the writer sends bare — every
+// field in bare mode, and the numeric columns in any mode.
+func (d *DelWriter) needsLiteralCheck(idx int) bool {
+	return d.literalFields() || d.kind(idx) == common.KindNumber
+}
+
 // validateLiteralRow rejects values the writer cannot represent
 // unambiguously. Validation runs before anything is written so a rejected row
 // never leaves a half-written, corrupt record in the output.
 func (d *DelWriter) validateLiteralRow(values []interface{}) error {
-	if !d.literalFields() {
+	if !d.literalFields() && !d.numRisk {
 		return nil
 	}
 	for i, val := range values {
@@ -188,10 +221,11 @@ func (d *DelWriter) validateLiteralRow(values []interface{}) error {
 			// Hex-encoded binary fields cannot contain a raw delimiter.
 			continue
 		}
+		if val == nil {
+			continue
+		}
 		var text string
 		switch v := val.(type) {
-		case nil:
-			continue
 		case string:
 			text = v
 		case []byte:
@@ -199,8 +233,20 @@ func (d *DelWriter) validateLiteralRow(values []interface{}) error {
 		case time.Time:
 			text = v.Format(d.timeFormat)
 		default:
-			// Numbers and booleans format to digits/signs and cannot match a
-			// configured delimiter.
+			// Native numbers and booleans leave the writer bare whatever
+			// --char-del says, so their text has to clear the separators too.
+			if s, ok := numericFieldText(v); ok {
+				if !d.numRisk {
+					continue
+				}
+				if err := d.checkSeparators(s, i); err != nil {
+					return err
+				}
+				continue
+			}
+			text = fmt.Sprintf("%v", v)
+		}
+		if !d.needsLiteralCheck(i) {
 			continue
 		}
 		if err := d.checkLiteralText(text, i); err != nil {
@@ -212,11 +258,14 @@ func (d *DelWriter) validateLiteralRow(values []interface{}) error {
 
 // validateLiteralRaw is validateLiteralRow for the RawBytes fast path.
 func (d *DelWriter) validateLiteralRaw(values []sql.RawBytes) error {
-	if !d.literalFields() {
+	if !d.literalFields() && !d.numRisk {
 		return nil
 	}
 	for i, val := range values {
 		if d.hexBlob && i < len(d.binaryFlags) && d.binaryFlags[i] {
+			continue
+		}
+		if !d.needsLiteralCheck(i) {
 			continue
 		}
 		if err := d.checkLiteralText(bytesToString(val), i); err != nil {
@@ -243,18 +292,34 @@ func (d *DelWriter) literalFields() bool {
 	return d.bareFields() || d.escape == ""
 }
 
+// fieldBare reports whether the field at idx goes out without --char-del. Two
+// things make a field bare: an empty --char-del, and the numeric column kind,
+// which the writer renders bare whatever --char-del says.
+func (d *DelWriter) fieldBare(idx int) bool {
+	return d.bareFields() || d.kind(idx) == common.KindNumber
+}
+
 // checkLiteralText reports whether s can be written verbatim. A quoted field
 // (character delimiter in use, no escape) can contain the column and row
-// delimiters, but not the quote itself. An unquoted field has to avoid both
-// structural separators.
+// delimiters, but not the quote itself. A bare field — which includes every
+// numeric column — has to avoid both structural separators.
 func (d *DelWriter) checkLiteralText(s string, idx int) error {
 	if s == "" {
 		return nil
 	}
-	if !d.bareFields() {
+	if !d.fieldBare(idx) {
 		if strings.Contains(s, d.charDel) {
 			return d.unrepresentableError(idx, "character delimiter", d.charDel)
 		}
+		return nil
+	}
+	return d.checkSeparators(s, idx)
+}
+
+// checkSeparators rejects a bare field whose text carries a structural
+// separator: the reader would split the record where the value did not.
+func (d *DelWriter) checkSeparators(s string, idx int) error {
+	if s == "" {
 		return nil
 	}
 	if d.colDel != "" && strings.Contains(s, d.colDel) {
@@ -264,6 +329,44 @@ func (d *DelWriter) checkLiteralText(s string, idx int) error {
 		return d.unrepresentableError(idx, "row delimiter", d.mod.RowDel)
 	}
 	return nil
+}
+
+// numericFieldText renders a native numeric or boolean value exactly the way
+// formatValue writes it, so validation judges the bytes that actually go out.
+// The second result says whether the value is one of those types at all.
+func numericFieldText(val interface{}) (string, bool) {
+	switch v := val.(type) {
+	case int:
+		return strconv.FormatInt(int64(v), 10), true
+	case int8:
+		return strconv.FormatInt(int64(v), 10), true
+	case int16:
+		return strconv.FormatInt(int64(v), 10), true
+	case int32:
+		return strconv.FormatInt(int64(v), 10), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	case uint:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint8:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint16:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint64:
+		return strconv.FormatUint(v, 10), true
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 64), true
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	case bool:
+		if v {
+			return "1", true
+		}
+		return "0", true
+	}
+	return "", false
 }
 
 // unrepresentableError names the flag that made the field literal, so the user
@@ -277,6 +380,16 @@ func (d *DelWriter) unrepresentableError(idx int, kind, delim string) error {
 	if d.bareFields() {
 		flag = "--char-del"
 		remedy = "set --char-del to a character so fields are quoted, or choose delimiters absent from the data"
+	}
+	// A numeric column is bare even with a character delimiter in place, so the
+	// separators themselves are the only knobs that can help. Reaching this in
+	// quoted mode with a *separator* complaint can only mean such a field.
+	if !d.bareFields() && kind != "character delimiter" {
+		flag = "--col-del"
+		if kind == "row delimiter" {
+			flag = "--row-del"
+		}
+		remedy = fmt.Sprintf("numeric columns are written without a character delimiter, so choose a %s that cannot appear in numeric text (no digit, sign, point, exponent marker, and no letter of NaN/Inf; the default is a comma), or cast this column to a character type in the query", flag)
 	}
 	return fmt.Errorf("%s: column %d value contains the %s %q, which would corrupt the DEL record; %s", flag, idx+1, kind, delim, remedy)
 }

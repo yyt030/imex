@@ -3,6 +3,7 @@ package export
 import (
 	"bytes"
 	"database/sql"
+	"math"
 
 	"github.com/imex/internal/common"
 	"strings"
@@ -842,4 +843,112 @@ func TestDelWriter_TypedQuotingNullAndEscapedString(t *testing.T) {
 	if got := buf.String(); got != want {
 		t.Errorf("null + escaped string:\n got %q\nwant %q", got, want)
 	}
+}
+
+// TestDelWriter_BareNumericRejectsSeparators pins the guard for the fields the
+// writer sends bare even though a character delimiter is in use: a numeric column
+// whose wire text contains --col-del (or --row-del) would split the record where
+// the value did not, so the row is refused before anything is buffered. The
+// quoted text columns around it stay untouched, because escaping protects them.
+func TestDelWriter_BareNumericRejectsSeparators(t *testing.T) {
+	kinds := []common.ColumnKind{common.KindNumber, common.KindUnknown}
+	mod := func(colDel, rowDel string) *config.DelModifier {
+		return &config.DelModifier{CharDel: `"`, ColDel: colDel, RowDel: rowDel, Escape: `"`}
+	}
+
+	t.Run("raw numeric containing the column delimiter", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, mod(".", "\n"), false, kinds)
+		err := w.WriteRawRow([]sql.RawBytes{sql.RawBytes("123456.7890"), sql.RawBytes("safe")})
+		if err == nil {
+			t.Fatal("WriteRawRow() succeeded, want error")
+		}
+		for _, want := range []string{"--col-del", "column 1", "column delimiter"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %v, want it to name %q", err, want)
+			}
+		}
+		if buf.Len() != 0 {
+			t.Errorf("output was buffered despite the error: %q", buf.String())
+		}
+	})
+
+	t.Run("raw numeric containing the row delimiter", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, mod(",", "e"), false, kinds)
+		err := w.WriteRawRow([]sql.RawBytes{sql.RawBytes("-1.7e+308"), sql.RawBytes("no exponent")})
+		if err == nil || !strings.Contains(err.Error(), "--row-del") || !strings.Contains(err.Error(), "row delimiter") {
+			t.Fatalf("WriteRawRow() error = %v, want a --row-del error", err)
+		}
+	})
+
+	t.Run("quoted text may contain the separator", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, mod(".", "\n"), false, kinds)
+		if err := w.WriteRawRow([]sql.RawBytes{sql.RawBytes("7"), sql.RawBytes("a.b")}); err != nil {
+			t.Fatalf("WriteRawRow() error = %v, want none: the text column is quoted", err)
+		}
+		w.Flush()
+		if got, want := buf.String(), "7.\"a.b\"\n"; got != want {
+			t.Errorf("output = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("native numeric values are judged by what they format to", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, mod("-", "\n"), false, kinds)
+		if err := w.WriteRow([]interface{}{int64(-5), "text"}); err == nil {
+			t.Fatal("WriteRow() succeeded, want error")
+		} else if !strings.Contains(err.Error(), "column 1") {
+			t.Errorf("error = %v, want column 1", err)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("output was buffered despite the error: %q", buf.String())
+		}
+	})
+
+	t.Run("non-finite float text is judged the same way", func(t *testing.T) {
+		// pg float8 can hold NaN and Infinity, and formatFloat writes those
+		// spellings verbatim — the letters are part of the numeric alphabet.
+		for _, tc := range []struct {
+			colDel string
+			val    float64
+		}{{"a", math.NaN()}, {"f", math.Inf(1)}, {"I", math.Inf(-1)}} {
+			var buf bytes.Buffer
+			w := NewDelWriter(&buf, mod(tc.colDel, "\n"), false, kinds)
+			if err := w.WriteRow([]interface{}{tc.val, "text"}); err == nil {
+				t.Errorf("col-del %q: WriteRow() succeeded, want error", tc.colDel)
+			} else if !strings.Contains(err.Error(), "--col-del") {
+				t.Errorf("col-del %q: error = %v, want it to name --col-del", tc.colDel, err)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("col-del %q: output was buffered: %q", tc.colDel, buf.String())
+			}
+		}
+		// The same values with the default comma go out unremarked.
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, mod(",", "\n"), false, kinds)
+		if err := w.WriteRow([]interface{}{math.NaN(), "text"}); err != nil {
+			t.Fatalf("WriteRow() with default delimiters error = %v", err)
+		}
+		w.Flush()
+		if got, want := buf.String(), "NaN,\"text\"\n"; got != want {
+			t.Errorf("output = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("default delimiters stay on the fast path", func(t *testing.T) {
+		var buf bytes.Buffer
+		w := NewDelWriter(&buf, mod(",", "\n"), false, kinds)
+		if w.numRisk {
+			t.Fatal("numRisk is set with the default delimiters, want the check skipped")
+		}
+		if err := w.WriteRawRow([]sql.RawBytes{sql.RawBytes("1e+308"), sql.RawBytes("a,b")}); err != nil {
+			t.Fatalf("WriteRawRow() error = %v", err)
+		}
+		w.Flush()
+		if got, want := buf.String(), "1e+308,\"a,b\"\n"; got != want {
+			t.Errorf("output = %q, want %q", got, want)
+		}
+	})
 }

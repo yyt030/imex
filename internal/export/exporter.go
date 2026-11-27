@@ -152,16 +152,7 @@ func snapshotSteps(be backend.Backend, enabled bool) []backend.SnapshotStep {
 // identifiers must be read back with the pg grammar, or the round-trip breaks on
 // the first quoted name.
 func (e *Exporter) sqlDialect() config.SQLDialect {
-	switch config.SQLDialect(e.config.SQLDialect) {
-	case config.SQLDialectPG:
-		return config.SQLDialectPG
-	case config.SQLDialectDM:
-		return config.SQLDialectDM
-	case config.SQLDialectMySQL:
-		return config.SQLDialectMySQL
-	default: // auto — follow the connected engine's own grammar
-		return config.NativeDialect(string(e.backend().Engine()))
-	}
+	return resolveSQLDialect(e.config, string(e.backend().Engine()))
 }
 
 // Close closes the exporter and releases resources
@@ -338,7 +329,14 @@ func (e *Exporter) exportSingle(ctx context.Context, startTime time.Time) (err e
 			return errors.Wrap(err, "failed to extract table name")
 		}
 		sqlWriter := NewSQLWriter(outputFile, tableName, columns, e.config.StatementSize)
-		sqlWriter.SetBinaryFormat(binaryFlags, hex)
+		sqlHex := sqlBinaryHex(e.config, string(e.backend().Engine()), hex)
+		if sqlHex && !hex {
+			// The dialect, not the source engine, is what forced hex here; say so,
+			// because --blob-encoding raw reads like an instruction to keep bytes
+			// verbatim.
+			common.Logger.Info("binary columns encoded as hex literals for the SQL dialect", "dialect", string(e.sqlDialect()))
+		}
+		sqlWriter.SetBinaryFormat(binaryFlags, sqlHex)
 		sqlWriter.SetColumnKinds(e.backend().ColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		sqlWriter.SetDialect(e.sqlDialect())
@@ -892,7 +890,9 @@ func (e *Exporter) exportShard(ctx context.Context, workerID int, shardIdx int, 
 			return 0, errors.Wrap(err, "failed to extract table name")
 		}
 		sqlWriter := NewSQLWriter(out, tableName, columns, e.config.StatementSize)
-		sqlWriter.SetBinaryFormat(binaryFlags, hex)
+		// Same dialect-derived rule as the single-threaded path, so a sharded dump
+		// and a threads=1 dump stay byte-identical.
+		sqlWriter.SetBinaryFormat(binaryFlags, sqlBinaryHex(e.config, string(e.backend().Engine()), hex))
 		sqlWriter.SetColumnKinds(e.backend().ColumnKinds(colTypes))
 		sqlWriter.SetSingleRowInsert(!e.config.ExtendedInsert)
 		sqlWriter.SetDialect(e.sqlDialect())

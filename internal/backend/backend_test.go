@@ -485,8 +485,15 @@ func TestPacketCeilingWithoutConnection(t *testing.T) {
 	if err != nil || v != 1<<30 {
 		t.Fatalf("pg ceiling = (%d,%v), want the 1 GiB protocol cap", v, err)
 	}
-	if Must(EnginePG).DriverStatementCap() != v {
-		t.Fatal("pg has no separate client-side interpolation ceiling")
+	if Must(EnginePG).DriverStatementCap() != pgBatchStatementCap {
+		t.Fatalf("pg driver cap = %d, want the batching bound %d",
+			Must(EnginePG).DriverStatementCap(), pgBatchStatementCap)
+	}
+	// The protocol maximum stays the server-side answer; what a batch may reach is
+	// strictly lower, which is what keeps a default --pipeline-buffer inside the
+	// memory envelope instead of warning on every PostgreSQL import.
+	if Must(EnginePG).DriverStatementCap() >= v {
+		t.Fatalf("pg driver cap %d is not below the protocol cap %d", Must(EnginePG).DriverStatementCap(), v)
 	}
 	if Must(EngineMySQL).DriverStatementCap() != MySQLDriverInterpolationCap {
 		t.Fatal("mysql driver ceiling drifted")
@@ -874,11 +881,12 @@ func sameBind(got, want interface{}) bool {
 // path: one adapter per target column, in the order the reader's positions come
 // in, and the statement a nil carries. PostgreSQL answers nil for every column —
 // its bit input already takes the file's own text — while MySQL answers nil for
-// every column except a BIT target: a pg/Dameng dump writes a one-bit column as
-// the quoted text "1"/"0", which the driver reads into BIT(1) as the ASCII digit
-// byte 0x31 and the server rejects with Error 1406, so only that text is folded
-// back to the bit byte. Dameng answers per type name and leaves a binary or
-// unknown column alone.
+// every column except two shapes another engine's file gets wrong: a BIT target,
+// which a pg/Dameng dump writes as the quoted text "1"/"0" that the driver reads
+// into BIT(1) as the ASCII digit byte 0x31 (Error 1406), and a numeric target,
+// which a pg file writes as "t"/"f" (DEL, Parquet) or true (SQL dump) and the
+// placeholder rejects as an incorrect integer value (Error 1366). Dameng answers
+// per type name and leaves a binary or unknown column alone.
 //
 // The numbers are the defects this seam exists for, asserted through the
 // interface rather than through the helper: text that the driver's 64-bit parse
@@ -901,15 +909,17 @@ func TestBindFixupsIsPerEngineAndPosition(t *testing.T) {
 		}
 	}
 
-	// MySQL: nil everywhere except the BIT column (position 4), and the BIT
-	// adapter folds the boolean text to a byte while leaving the payload bytes
-	// that MySQL's own 0x form and Parquet hand over untouched — the width-safety
-	// boundary that keeps a real BIT(8) 0x30 from being re-read as the text "0".
+	// MySQL: nil everywhere except the BIT column (position 4) and the two numeric
+	// columns (BIGINT at 2, FLOAT at 3). The BIT adapter folds the boolean text to
+	// a byte while leaving the payload bytes that MySQL's own 0x form and Parquet
+	// hand over untouched — the width-safety boundary that keeps a real BIT(8) 0x30
+	// from being re-read as the text "0". The numeric adapters are pinned in
+	// TestMySQLBindBoolTextFoldsPeerBooleanText.
 	if got := Must(EngineMySQL).BindFixups(types); len(got) != len(types) {
 		t.Fatalf("mysql: %d adapters for %d columns", len(got), len(types))
 	} else {
 		for i, f := range got {
-			want := i == 4
+			want := i == 2 || i == 3 || i == 4
 			if (f != nil) != want {
 				t.Errorf("mysql: column %d (%q) adapter = %v, want present=%v", i, types[i], f != nil, want)
 			}

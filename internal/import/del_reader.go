@@ -39,10 +39,10 @@ type DelReader struct {
 	// any other column a 0x token is ordinary text.
 	binaryCols []bool
 	// binds holds the target engine's value adapter per file-column position,
-	// from backend.BindFixups. Nil for PostgreSQL (and for every non-BIT MySQL
-	// column), so those imports bind exactly what they bound before; MySQL answers
-	// only for a BIT target, folding a peer engine's boolean text to a byte. See
-	// SetBindFixups and mysql.go's mysqlBindBit.
+	// from backend.BindFixups. PostgreSQL answers nil for every column and MySQL
+	// only for a BIT or numeric target (another engine's boolean text), so those
+	// imports bind exactly what they bound before everywhere else. See
+	// SetBindFixups and mysql.go's mysqlBindBit and mysqlBindBoolText.
 	binds []func(interface{}) interface{}
 
 	// Delimiter layout, resolved once. scanRows is a bufio.SplitFunc that runs
@@ -116,8 +116,9 @@ func (d *DelReader) isBinaryColumn(idx int) bool {
 // Dameng a decimal text past about fifteen digits is re-parsed through a 64-bit
 // float, an integer past int64 wraps, and a BIT column reads "0x01" as false.
 // All of it is the driver's and the server's measured behaviour, documented with
-// its numbers in internal/backend/bind_dameng.go; MySQL and PostgreSQL answer
-// nil for every column and change nothing here.
+// its numbers in internal/backend/bind_dameng.go. MySQL answers for a BIT or
+// numeric target only (another engine's boolean text), and PostgreSQL answers nil
+// for every column and changes nothing here.
 func (d *DelReader) SetBindFixups(fixups []func(interface{}) interface{}) {
 	d.binds = fixups
 }

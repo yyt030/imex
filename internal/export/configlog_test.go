@@ -195,3 +195,69 @@ func TestEffectiveHexBlob(t *testing.T) {
 		}
 	}
 }
+
+// TestSQLBinaryHex pins the target-side half of the binary encoding rule: a
+// --format sql dump written in the pg or dm grammar cannot carry a raw byte in a
+// text literal at all, so those dialects always go out as the dialect's own hex
+// literal, whatever the source engine's charset rule answered. MySQL's grammar is
+// left exactly as effectiveHexBlob decided, because a MySQL dump with the bytes
+// verbatim is what has always loaded.
+func TestSQLBinaryHex(t *testing.T) {
+	cases := []struct {
+		name     string
+		engine   string
+		dialect  string
+		encoding string
+		charset  string
+		want     bool
+	}{
+		{"mysql source, explicit pg dialect", "mysql", "pg", "auto", "utf8mb4", true},
+		{"mysql source, explicit dm dialect", "mysql", "dm", "auto", "utf8mb4", true},
+		{"mysql source, explicit pg dialect, raw asked for", "mysql", "pg", "raw", "utf8mb4", true},
+		{"mysql source, auto dialect", "mysql", "auto", "auto", "utf8mb4", false},
+		{"mysql source, explicit mysql dialect", "mysql", "mysql", "auto", "utf8mb4", false},
+		{"mysql source, mysql dialect with raw asked for", "mysql", "mysql", "raw", "gbk", false},
+		{"pg source, auto dialect", "pg", "auto", "auto", "utf8mb4", true},
+		{"gauss source, auto dialect folds to pg", "gauss", "auto", "auto", "utf8mb4", true},
+		{"dm source, auto dialect", "dm", "auto", "auto", "utf8mb4", true},
+		{"pg spelling is normalised for auto", "PG", "auto", "auto", "utf8mb4", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := config.NewExportConfig()
+			cfg.Format = config.FormatSQL
+			cfg.Engine = c.engine
+			cfg.SQLDialect = c.dialect
+			cfg.BlobEncoding = c.encoding
+			cfg.DefaultCharset = c.charset
+			// The same pair of arguments the exported-with-config-record path
+			// passes: the engine the record has, folded through normalisation.
+			got := sqlBinaryHex(cfg, dialectEngine(cfg), effectiveHexBlob(cfg))
+			if got != c.want {
+				t.Errorf("sqlBinaryHex(engine=%q dialect=%q encoding=%q charset=%q) = %v, want %v",
+					c.engine, c.dialect, c.encoding, c.charset, got, c.want)
+			}
+		})
+	}
+}
+
+// TestExportConfigRecordReportsDialectHex: the record has to say what the SQL
+// writer applies, so a --sql-dialect pg run from a MySQL source reports hex_blob
+// true even though the source engine alone answered false.
+func TestExportConfigRecordReportsDialectHex(t *testing.T) {
+	cfg := config.NewExportConfig()
+	cfg.Format = config.FormatSQL
+	cfg.Engine = "mysql"
+	cfg.SQLDialect = "pg"
+	cfg.DefaultCharset = "utf8mb4"
+	if keys := configKeys(t, exportConfigFields(cfg)); keys["hex_blob"] != true {
+		t.Errorf("hex_blob = %v for a pg-dialect SQL dump, want true", keys["hex_blob"])
+	}
+
+	// The same run with --format del keeps the source-side answer: the DEL reader
+	// round-trips quoted raw bytes, so nothing forces hex there.
+	cfg.Format = config.FormatDel
+	if keys := configKeys(t, exportConfigFields(cfg)); keys["hex_blob"] != false {
+		t.Errorf("hex_blob = %v for a DEL dump, want false: the dialect rule is SQL-only", keys["hex_blob"])
+	}
+}

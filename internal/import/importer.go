@@ -373,14 +373,27 @@ func (imp *Importer) Import(ctx context.Context) error {
 	// words — is the one that decides what Go value reaches the driver. Dameng
 	// answers for several columns (its text path re-parses a decimal through a
 	// 64-bit float, wraps an integer past int64, and reads a BIT column's text as
-	// a boolean). MySQL answers only for a BIT target, folding another engine's
-	// boolean text ("1"/"0") to the bit byte it stores. PostgreSQL gets an
-	// all-nil list and binds exactly what it bound before.
-	if imp.cfg.Format == "del" || imp.cfg.Format == "parquet" {
+	// a boolean). MySQL answers for a BIT target, folding another engine's boolean
+	// text ("1"/"0") to the bit byte it stores, and for a numeric target, folding
+	// pg's "t"/"f" (DEL, Parquet) and true (SQL dump) to the integer text the
+	// placeholder parses. PostgreSQL gets an all-nil list and binds exactly what it
+	// bound before.
+	//
+	// The SQL format needs only this third lookup — its own reader has no kinds or
+	// binary flags, because a dump states its literals' types in its own grammar —
+	// and it is the format where the fold matters most: a dump written by another
+	// engine is exactly what a user replays into MySQL.
+	if imp.cfg.Format == "del" || imp.cfg.Format == "parquet" || imp.cfg.Format == "sql" {
 		kinds, binaries, types, err := imp.columnInfoFor(ctx, readerColumns)
 		if err != nil {
-			if imp.cfg.Format == "del" {
+			switch imp.cfg.Format {
+			case "del":
 				common.Logger.Warn("failed to resolve target column types; DEL text modifiers disabled", "error", err)
+			case "sql":
+				// Without the type words the fold cannot know which columns are
+				// numeric, so a pg dump's boolean text reaches MySQL as it always
+				// did here: rejected by the server. Saying so beats failing silently.
+				common.Logger.Warn("failed to resolve target column types; cross-engine literal fold disabled for this SQL file", "error", err)
 			}
 		} else if delReader, ok := reader.(*DelReader); ok {
 			delReader.SetColumnKinds(kinds)
@@ -390,6 +403,8 @@ func (imp *Importer) Import(ctx context.Context) error {
 			parquetReader.SetBinaryColumns(binaries)
 			parquetReader.SetColumnKinds(kinds)
 			parquetReader.SetBindFixups(imp.backend().BindFixups(types))
+		} else if sqlReader, ok := reader.(*SQLReader); ok {
+			sqlReader.SetBindFixups(sqlBindFixups(imp.backend().BindFixups(types), binaries, imp.sqlDialect()))
 		}
 	}
 
@@ -709,6 +724,29 @@ func (imp *Importer) headerLooksLikeData(ctx context.Context, fields []string) (
 		}
 	}
 	return true, nil
+}
+
+// sqlBindFixups narrows the target engine's bind adapters to what a SQL dump can
+// actually mean. One class is dropped, and only for a dump in MySQL's own grammar:
+// its binary columns carry the stored bytes themselves (--blob-encoding auto/raw) or
+// an 0x token the reader already decoded (hex), so the adapter written to rescue
+// another engine's boolean text would read the payload byte 0x30 as the digit "0" and
+// land 0 where the source row held 48 — measured on the live bed in both spellings. A
+// pg or Dameng dump gets no such skip, because those spell a bit column as text and
+// that text is exactly what the adapter was written for.
+//
+// Everything else survives: a numeric target's fold is unambiguous in every grammar,
+// because a dump only puts a raw byte payload where the target column is binary.
+func sqlBindFixups(fixups []func(interface{}) interface{}, binaries []bool, dialect config.SQLDialect) []func(interface{}) interface{} {
+	if dialect != config.SQLDialectMySQL {
+		return fixups
+	}
+	for i, isBin := range binaries {
+		if isBin && i < len(fixups) {
+			fixups[i] = nil
+		}
+	}
+	return fixups
 }
 
 // columnInfoFor resolves the ColumnKind of each target column (by name) from

@@ -47,6 +47,32 @@ type SQLReader struct {
 	// DDL for it) is an empty dump, but one carrying other text is not: the
 	// import has to say so instead of finishing with 0 rows.
 	unrecognized bool
+	// binds holds the target engine's value adapter per file position, from
+	// backend.BindFixups (see DelReader.SetBindFixups for why the question is the
+	// target's, not the file's). ReadRow applies it as the row leaves the reader,
+	// which also covers the first INSERT's rows — those are parsed during
+	// ReadHeader, before the importer has the target types to ask for.
+	binds []func(interface{}) interface{}
+}
+
+// SetBindFixups supplies the per-position value adapters for the target engine. A
+// nil at a position, and a short or absent slice, leaves the value exactly as the
+// statement wrote it.
+func (s *SQLReader) SetBindFixups(fixups []func(interface{}) interface{}) {
+	s.binds = fixups
+}
+
+// applyBind runs the target engine's adapters over one row, position by position.
+// Only the positions that have an adapter are touched, so an all-nil list — every
+// PostgreSQL and Dameng-targeted import, and every other engine's columns that need
+// nothing — hands back the same values the parser produced.
+func (s *SQLReader) applyBind(row []interface{}) {
+	for i, f := range s.binds {
+		if f == nil || i >= len(row) {
+			continue
+		}
+		row[i] = f(row[i])
+	}
 }
 
 // isDM reports whether the reader must apply the Dameng/Oracle literal grammar:
@@ -287,7 +313,8 @@ func indexFold(b []byte, keyword string) int {
 }
 
 // ReadRow returns the next buffered VALUES tuple, advancing through statements
-// and parsing new INSERTs as needed.
+// and parsing new INSERTs as needed, with the target engine's bind adapters applied
+// to the positions SetBindFixups supplied.
 func (s *SQLReader) ReadRow() ([]interface{}, error) {
 	for len(s.pending) == 0 {
 		// Finish the statement being read before opening the next one: the cursor
@@ -317,6 +344,7 @@ func (s *SQLReader) ReadRow() ([]interface{}, error) {
 
 	row := s.pending[0]
 	s.pending = s.pending[1:]
+	s.applyBind(row)
 	return row, nil
 }
 
