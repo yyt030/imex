@@ -381,9 +381,10 @@ type Backend interface {
 
 	// BindFixups is the import-side counterpart of CellFixups: one adapter per
 	// target column, applied to a value between the reader and the driver
-	// placeholder. The argument is the catalogue's own DATA_TYPE words, in the
-	// order of the file's columns — the same list MetadataKind and
-	// MetadataBinary are asked about.
+	// placeholder. The argument is the catalogue's own type word, in the order of
+	// the file's columns — the same list MetadataKind and MetadataBinary are asked
+	// about, except that MySQL spells a BIT column with its width (bit(1), bit(8))
+	// because the width is what decides the answer below.
 	//
 	// It exists because a Go string is not one value to every driver. Dameng's
 	// parses the text it is given with a 64-bit big.Float, so the digits past
@@ -395,13 +396,16 @@ type Backend interface {
 	// A nil at a position means "hand the driver exactly what the reader
 	// produced". PostgreSQL answers nil for every column: it takes the file's
 	// text and the file's bytes as they are, measured on the live beds. MySQL
-	// answers nil for every column except a BIT target, where another engine's
-	// dump writes boolean text ("1"/"0") instead of the 0x token MySQL itself
-	// emits and the driver would read the ASCII digit byte (Error 1406), and a
-	// numeric target, where pg's boolean text ("t"/"f", and the word true in its
-	// SQL dumps) has no form the placeholder parses (Error 1366). Both are
-	// statements about the engine, not unimplemented methods; the folds are in
-	// mysql.go's mysqlBindBit and mysqlBindBoolText.
+	// answers nil for every column except a BIT target and a numeric target. For
+	// the BIT target the answer is keyed to the column's width, which is why the
+	// MySQL catalogue reports bit columns with theirs: at one bit another engine's
+	// boolean text ("1"/"0") cannot be the byte the driver would read (Error 1406),
+	// so it folds; from two bits up that same text may be MySQL's own payload byte
+	// quoted verbatim, so it leaves text alone and folds only a Go bool. A numeric
+	// target folds pg's boolean text ("t"/"f", and the word true in its SQL dumps),
+	// which has no form the placeholder parses (Error 1366). These are statements
+	// about the engine, not unimplemented methods; the folds are mysqlBindBit,
+	// mysqlBindBitWide and mysqlBindBoolText in mysql.go.
 	BindFixups(dataTypes []string) []func(interface{}) interface{}
 
 	// TransientError is the dialect half of "can a reconnect heal this?".

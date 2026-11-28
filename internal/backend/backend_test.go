@@ -425,7 +425,7 @@ func TestProbeStatementsAreByteExact(t *testing.T) {
 		{"target_check", m.TargetColumnCheckSQL(3),
 			"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND UPPER(COLUMN_NAME) IN (?,?,?)"},
 		{"column_types", m.ColumnTypesSQL(3),
-			"SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME IN (?,?,?)"},
+			"SELECT COLUMN_NAME, CASE WHEN DATA_TYPE = 'bit' THEN COLUMN_TYPE ELSE DATA_TYPE END FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME IN (?,?,?)"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -893,7 +893,7 @@ func sameBind(got, want interface{}) bool {
 // moved, a 41-digit value that wrapped into a negative number, and a BIT column
 // that read "0x01" as false (Dameng) or 0x31 as too-long (MySQL).
 func TestBindFixupsIsPerEngineAndPosition(t *testing.T) {
-	types := []string{"VARCHAR2", "NUMBER", "BIGINT", "FLOAT", "BIT", "BLOB", "DATE", "", "NOT_A_TYPE"}
+	types := []string{"VARCHAR2", "NUMBER", "BIGINT", "FLOAT", "BIT", "BLOB", "DATE", "", "NOT_A_TYPE", "bit(8)"}
 
 	// PostgreSQL: nil for every column, the file's text binds as it is.
 	if got := Must(EnginePG).BindFixups(types); len(got) != len(types) {
@@ -909,23 +909,40 @@ func TestBindFixupsIsPerEngineAndPosition(t *testing.T) {
 		}
 	}
 
-	// MySQL: nil everywhere except the BIT column (position 4) and the two numeric
-	// columns (BIGINT at 2, FLOAT at 3). The BIT adapter folds the boolean text to
-	// a byte while leaving the payload bytes that MySQL's own 0x form and Parquet
-	// hand over untouched — the width-safety boundary that keeps a real BIT(8) 0x30
-	// from being re-read as the text "0". The numeric adapters are pinned in
+	// MySQL: nil everywhere except the BIT column (position 4), the two numeric
+	// columns (BIGINT at 2, FLOAT at 3) and the 8-bit BIT column (position 9). The
+	// 1-bit adapter folds the boolean text to a byte; the wider one must not, because
+	// MySQL's own dump under --blob-encoding auto/raw writes a bit(8) payload of 0x30
+	// as the quoted character "0", and folding that is the 48→0 rewrite F5 measured.
+	// Payload bytes stay untouched in both. The numeric adapters are pinned in
 	// TestMySQLBindBoolTextFoldsPeerBooleanText.
 	if got := Must(EngineMySQL).BindFixups(types); len(got) != len(types) {
 		t.Fatalf("mysql: %d adapters for %d columns", len(got), len(types))
 	} else {
 		for i, f := range got {
-			want := i == 2 || i == 3 || i == 4
+			want := i == 2 || i == 3 || i == 4 || i == 9
 			if (f != nil) != want {
 				t.Errorf("mysql: column %d (%q) adapter = %v, want present=%v", i, types[i], f != nil, want)
 			}
 		}
 		if got := Must(EngineMySQL).BindFixups(nil); len(got) != 0 {
 			t.Errorf("mysql: no columns must give no adapters, got %d", len(got))
+		}
+		wide := Must(EngineMySQL).BindFixups(types)[9]
+		for _, c := range []struct {
+			in   interface{}
+			want interface{}
+			why  string
+		}{
+			{"0", "0", "a bit(8) payload written as the character 0 keeps its byte"},
+			{"1", "1", "the same for 0x31"},
+			{"AB", "AB", "a two-byte payload stays text the server reads as bytes"},
+			{true, []byte{1}, "a real bool still becomes the bit byte"},
+			{[]byte{0x30}, []byte{0x30}, "a decoded payload passes through"},
+		} {
+			if !sameBind(wide(c.in), c.want) {
+				t.Errorf("mysql bit(8): %s: %#v = %#v, want %#v", c.why, c.in, wide(c.in), c.want)
+			}
 		}
 		bit := Must(EngineMySQL).BindFixups(types)[4]
 		// bindRender collapses every []byte to "@bytes", so the BIT adapter is

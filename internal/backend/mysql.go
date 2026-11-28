@@ -212,8 +212,16 @@ func (mysqlBackend) ColumnListSQL() string {
 	return "SELECT UPPER(COLUMN_NAME) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
 }
 
+// ColumnTypesSQL answers one type word per target column, and for BIT that word
+// carries its width (measured on MariaDB 10.6.23: DATA_TYPE is the bare "bit" for
+// both bit(1) and bit(8), while COLUMN_TYPE is "bit(1)"/"bit(8)"). The width is not
+// decoration: a 1-bit column cannot hold the ASCII digit byte the other engine's
+// text form decodes to, while a wider BIT column can, and that difference is exactly
+// what decides whether a quoted "0" is a payload byte or boolean text. See
+// BindFixups below. Every other column keeps reporting DATA_TYPE unchanged, so
+// MetadataKind and MetadataBinary see the same vocabulary they always did.
 func (b mysqlBackend) ColumnTypesSQL(n int) string {
-	return "SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME IN (" + b.PlaceholderList(1, n) + ")"
+	return "SELECT COLUMN_NAME, CASE WHEN DATA_TYPE = 'bit' THEN COLUMN_TYPE ELSE DATA_TYPE END FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME IN (" + b.PlaceholderList(1, n) + ")"
 }
 
 // GeneratedColumnsSQL reads EXTRA, the only portable generated-column marker
@@ -283,50 +291,88 @@ func (mysqlBackend) CellFixups(colTypes []*sql.ColumnType) []func([]byte) []byte
 }
 
 // BindFixups answers per target column how an imported value has to reach the
-// driver. Nothing is needed for a MySQL file's own values — the server parses the
-// text it is given for DECIMAL and integer types, and a binary target (BIT or
-// BLOB) is classified as binary, so the DEL reader decodes the 0x token to bytes
-// and the Parquet reader hands the payload over as bytes, which is what those
-// columns store.
+// driver. Nothing is needed for a MySQL file's own values in the common shapes —
+// the server parses the text it is given for DECIMAL and integer types, and a binary
+// target (BIT or BLOB) is classified as binary, so the DEL reader decodes the 0x
+// token to bytes and the Parquet reader hands the payload over as bytes.
 //
-// Two column shapes fed by another engine's file are NOT already covered, and each
-// gets one adapter:
+// Three column shapes are NOT already covered, and each gets one adapter:
 //
-//   - A BIT target. MySQL writes its own BIT as an unquoted 0x token (bit1 is
-//     0x01 in this round's measured dumps), so re-importing a MySQL file decodes
-//     it to bytes and it binds as it always has. A PostgreSQL or Dameng DEL /
-//     Parquet file writes the same one-bit column as the text "1"/"0" (measured:
-//     pg and dm both emit "1"), and the driver reads that 1-character text into a
-//     BIT(1) as the ASCII digit byte 0x31 = 49, which the server rejects with
-//     `Error 1406 (22001): Data too long for column 'bit1'`. mysqlBindBit turns
-//     only that text into the byte payload a BIT column stores.
-//   - A numeric target. A boolean column has no integer-literal spelling in the
-//     other engine's text: pg's DEL and Parquet files carry "t"/"f" and its SQL
-//     dump carries the word true (both measured this round), and each lands on a
-//     TINYINT(1) column as `Error 1366 (22007): Incorrect integer value: 't' for
-//     column ...` — through a placeholder MySQL parses neither the single letters
-//     nor the words. mysqlBindBoolText folds them to "1"/"0".
+//   - A one-bit BIT target. A BIT(1) column cannot hold the ASCII digit byte: a
+//     PostgreSQL or Dameng DEL / Parquet file writes that column as the text "1"/"0"
+//     (measured: pg and dm both emit "1"), and the driver reads the 1-character text
+//     as 0x31 = 49, which the server rejects with `Error 1406 (22001): Data too long
+//     for column 'bit1'`. mysqlBindBit turns only that text into the byte payload a
+//     BIT column stores.
+//   - A wider BIT target (BIT(2)..BIT(64)). Here the same text is NOT provably wrong,
+//     because MySQL's own file may put the payload byte in quotes: under
+//     `--blob-encoding auto`/`raw` a bit(8) holding 0x30 is written as the character
+//     "0" (measured: `1,"0","<0x01>"` — the 1-bit column arrives as a raw byte, the
+//     8-bit one as printable text). Folding that to 0 silently rewrote 48 as 0 on the
+//     same-engine round trip, which is the defect this width key closes. So a wide
+//     BIT column binds text verbatim — which is also what makes the payload correct,
+//     since MySQL takes a string's own bytes as the BIT value — and only a real Go
+//     bool gets a byte. mysqlBindBitWide is that narrower adapter.
+//   - A numeric target. A boolean column has no integer-literal spelling in the other
+//     engine's text: pg's DEL and Parquet files carry "t"/"f" and its SQL dump carries
+//     the word true (both measured), and each lands on a TINYINT(1) column as
+//     `Error 1366 (22007): Incorrect integer value: 't' for column ...` — through a
+//     placeholder MySQL parses neither the single letters nor the words.
+//     mysqlBindBoolText folds them to "1"/"0".
 //
-// Both are deliberately keyed to strings: the unquoted-hex form the same column
-// carries in a MySQL file reaches the placeholder as []byte (decodeHexField in
-// sql_reader.go runs first), and raw bytes are left exactly as they are, so a real
-// BIT(8) payload such as 0x30 is never mistaken for the text "0". Only the boolean
-// spellings move — the four the numeric fold takes ("t"/"f"/"true"/"false") and the
-// six the BIT fold takes (those four plus "1"/"0") — so nothing but the failing
-// cross-engine path changes: a numeric column cannot store the text "t" or "true"
-// under any sql_mode, so every value the fold touches is one the server was about
-// to reject.
+// All three are deliberately keyed to strings, and the two BIT ones to width: the
+// unquoted-hex form the same column carries in a MySQL file reaches the placeholder as
+// []byte (decodeHexField in sql_reader.go runs first), and []byte is left exactly as it
+// is. What moves is provably-broken text only — the four boolean spellings on a numeric
+// column (a numeric column cannot store "t" or "true" under any sql_mode), and on a
+// 1-bit column the six spellings that cannot fit as bytes. A wide BIT column keeps
+// every text verbatim, so the only cost there is the cross-engine bit text form README
+// 2.1.12 already routes to `--blob-encoding hex` or Parquet.
 func (mysqlBackend) BindFixups(dataTypes []string) []func(interface{}) interface{} {
 	fixups := make([]func(interface{}) interface{}, len(dataTypes))
 	for i, dt := range dataTypes {
 		switch {
 		case isMySQLBitType(dt):
-			fixups[i] = mysqlBindBit
+			if mysqlBitWidth(dt) == 1 {
+				fixups[i] = mysqlBindBit
+			} else {
+				fixups[i] = mysqlBindBitWide
+			}
 		case isMySQLNumericType(dt):
 			fixups[i] = mysqlBindBoolText
 		}
 	}
 	return fixups
+}
+
+// mysqlBitWidth reads the width suffix ColumnTypesSQL supplies for a BIT column.
+// A bare "bit" is MySQL's own default — bit(1) — and an unparsable suffix is treated
+// the same way, because folding is only provably needed at one bit; anything a wider
+// column would need is left to bind verbatim.
+func mysqlBitWidth(dataType string) int {
+	name := strings.ToUpper(strings.TrimSpace(dataType))
+	p := strings.IndexByte(name, '(')
+	if p < 0 {
+		return 1
+	}
+	rest := strings.TrimSpace(name[p+1:])
+	if q := strings.IndexByte(rest, ')'); q >= 0 {
+		rest = strings.TrimSpace(rest[:q])
+	}
+	n := 0
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return 1
+		}
+		n = n*10 + int(r-'0')
+		if n > 64 {
+			return 64
+		}
+	}
+	if n <= 1 {
+		return 1
+	}
+	return n
 }
 
 // baseTypeName is the catalogue DATA_TYPE word on its own: case- and
@@ -399,9 +445,11 @@ func boolTextFold(s string) (string, bool) {
 }
 
 // mysqlBindBit reduces the boolean text another engine writes for a one-bit
-// column to the single byte a MySQL BIT stores. Bytes (MySQL's own 0x form, once
-// decoded, and every Parquet payload) and every other value pass through
-// untouched, so this only ever fixes the pg→my / dm→my boolean case.
+// column to the single byte a MySQL BIT stores. It is the BIT(1) adapter: at one
+// bit the ASCII digit byte cannot fit, so the fold is the only reading left. Bytes
+// (MySQL's own 0x form, once decoded, and every Parquet payload) and every other
+// value pass through untouched, so this only ever fixes the pg→my / dm→my boolean
+// case.
 func mysqlBindBit(v interface{}) interface{} {
 	switch x := v.(type) {
 	case string:
@@ -412,6 +460,25 @@ func mysqlBindBit(v interface{}) interface{} {
 			return []byte{0}
 		}
 		return x
+	case bool:
+		if x {
+			return []byte{1}
+		}
+		return []byte{0}
+	}
+	return v
+}
+
+// mysqlBindBitWide is the adapter for BIT(2)..BIT(64), and it deliberately leaves
+// every string alone. A wider column can hold the ASCII byte a printable character
+// stands for, and MySQL's own DEL / SQL dump under --blob-encoding auto or raw puts
+// exactly that byte in the quotes — a bit(8) holding 0x30 is written as "0" and
+// measuring it back as 0 is the silent 48→0 rewrite this avoids. Binding the text
+// verbatim is what MySQL itself means by it: the server takes the string's bytes as
+// the BIT value, so "0" arrives as 0x30 and "AB" as 0x4142. Only a genuine Go bool,
+// which no file spelling can be confused with, still becomes a byte.
+func mysqlBindBitWide(v interface{}) interface{} {
+	switch x := v.(type) {
 	case bool:
 		if x {
 			return []byte{1}

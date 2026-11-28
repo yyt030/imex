@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/imex/internal/backend"
 	"github.com/imex/internal/config"
 )
 
@@ -669,54 +670,44 @@ func TestSQLReader_WithoutBindFixupsBindsParsedText(t *testing.T) {
 	}
 }
 
-// TestSQLBindFixupsKeepsBytePayloadsOutOfTheFold pins the one place the SQL format
-// must NOT do what the DEL and Parquet formats do. A dump in MySQL's own grammar
-// writes a binary column as the stored bytes (--blob-encoding auto/raw) or as an 0x
-// token the reader already decoded (hex), so feeding that position through the
-// adapter written for another engine's boolean text turns the payload byte 0x30 into
-// the digit "0" and lands 0 where the source row held 48 — the live-bed measurement
-// that this skip exists for. The numeric fold is unaffected, and a pg or Dameng
-// dump keeps every adapter, because those spell a bit column as text.
-func TestSQLBindFixupsKeepsBytePayloadsOutOfTheFold(t *testing.T) {
-	mark := func(name string) func(interface{}) interface{} {
-		return func(v interface{}) interface{} { return name }
-	}
-	fresh := func() []func(interface{}) interface{} {
-		return []func(interface{}) interface{}{mark("a"), mark("bit"), mark("num")}
-	}
-	binaries := []bool{false, true, false}
+// TestSQLReader_MySQLDumpPayloadsSurviveTheFold pins what replaces the grammar filter
+// this route used to carry. An import has no --sql-dialect: its dialect is the target
+// engine's own, so it says nothing about who wrote the file, and filtering by it used
+// to switch the whole BIT fold off on the SQL route. What actually keeps a MySQL dump
+// intact is the width key in backend.BindFixups — measured here end to end through the
+// reader: bit(8) holding 0x30 arrives as the quoted character "0" and must bind as that
+// text (the server stores 48), bit(1) arrives as the raw byte 0x01 and must not be
+// touched, and a tinyint fed pg's boolean text still folds.
+func TestSQLReader_MySQLDumpPayloadsSurviveTheFold(t *testing.T) {
+	input := "INSERT INTO `t` (`B8`,`B1`,`FLAG`) VALUES ('0','\x01','t'),(NULL,NULL,'false');\n"
+	r := NewSQLReader(bufio.NewReader(strings.NewReader(input)), config.SQLDialectMySQL)
+	r.SetBindFixups(backend.Must(backend.EngineMySQL).BindFixups([]string{"bit(8)", "bit(1)", "tinyint(1)"}))
 
-	got := sqlBindFixups(fresh(), binaries, config.SQLDialectMySQL)
-	if got[1] != nil {
-		t.Error("mysql-grammar dump: a binary target still has an adapter; its raw byte would be re-read as boolean text")
+	if _, err := r.ReadHeader(); err != nil {
+		t.Fatalf("ReadHeader: %v", err)
 	}
-	// The other two positions are not byte payloads in this grammar, so the fold
-	// they carry (if any) has nothing ambiguous to read.
-	if got[0] == nil || got[0]("v") != "a" {
-		t.Error("mysql-grammar dump: position 0 must keep its adapter")
+	first, err := r.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow 1: %v", err)
 	}
-	if got[2] == nil || got[2]("v") != "num" {
-		t.Error("mysql-grammar dump: position 2 (a numeric target) must keep the boolean-text fold")
+	if first[0] != "0" {
+		t.Errorf("bit(8) payload: %#v = %#v, want the text \"0\" so the server stores 0x30", input, first[0])
 	}
-
-	for _, d := range []config.SQLDialect{config.SQLDialectPG, config.SQLDialectDM} {
-		got := sqlBindFixups(fresh(), binaries, d)
-		for i, f := range got {
-			if f == nil {
-				t.Errorf("%s-grammar dump: position %d must keep its adapter (bit columns are text there)", d, i)
-			}
-		}
+	if s, ok := first[1].(string); !ok || len(s) != 1 || s[0] != 1 {
+		t.Errorf("bit(1) raw byte: got %#v, want the one-byte payload 0x01 untouched", first[1])
+	}
+	if first[2] != "1" {
+		t.Errorf("tinyint with pg text t: %#v, want \"1\"", first[2])
 	}
 
-	// Mismatched lengths must not panic: the catalogue answers one entry per file
-	// column, and a column it does not know yields "" and false.
-	if got := sqlBindFixups(fresh(), []bool{true}, config.SQLDialectMySQL); got[1] == nil {
-		t.Errorf("a short binary list must still clear the position it knows about")
+	second, err := r.ReadRow()
+	if err != nil {
+		t.Fatalf("ReadRow 2: %v", err)
 	}
-	if got := sqlBindFixups(fresh(), nil, config.SQLDialectMySQL); got[1] == nil {
-		t.Errorf("no binary flags must clear nothing")
+	if second[0] != nil || second[1] != nil {
+		t.Errorf("NULL literals must stay NULL, got %#v / %#v", second[0], second[1])
 	}
-	if got := sqlBindFixups(nil, []bool{true, true, true}, config.SQLDialectMySQL); len(got) != 0 {
-		t.Errorf("no adapters must stay no adapters, got %d", len(got))
+	if second[2] != "0" {
+		t.Errorf("tinyint with the word false: %#v, want \"0\"", second[2])
 	}
 }

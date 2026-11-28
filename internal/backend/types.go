@@ -48,8 +48,14 @@ func classifyColumnKind(databaseTypeName string) common.ColumnKind {
 // isBinaryTypeName reports whether a driver DatabaseTypeName denotes a raw
 // binary column (BLOB/BINARY/...). These map to plain BYTE_ARRAY (no UTF-8
 // logical annotation) in Parquet so non-UTF8 content round-trips intact.
+//
+// A length suffix is dropped first, because MySQL's own target-column catalogue
+// answers BIT columns with their width (bit(1)/bit(8), so that BindFixups can tell
+// the two apart) while the driver's DatabaseTypeName is the bare word. Both spellings
+// have to mean the same thing here, or a BIT target would lose its binary flag the
+// moment the catalogue started being precise about it.
 func isBinaryTypeName(databaseTypeName string) bool {
-	switch strings.ToUpper(databaseTypeName) {
+	switch baseTypeName(databaseTypeName) {
 	case "TINYBLOB", "BLOB", "MEDIUMBLOB", "LONGBLOB", "LONG",
 		"BINARY", "VARBINARY", "GEOMETRY", "BIT":
 		return true
